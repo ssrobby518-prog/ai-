@@ -56,7 +56,9 @@ Consumers of the generated `deep_analysis.md` should be aware of the following s
 - Existing LLM prompts are updated; if you have custom prompts, review the new structure in `core/deep_analyzer.py`.
 
 ### Rollback Anchor
-- This repository does not yet have git history initialized. No prior commit hash is available.
-- **Recommended rollback procedure**: Before merging v0.2.0, initialize git and tag the pre-change state as `v0.1.0`. If a rollback is needed post-release, revert to `v0.1.0` tag.
+- **v0.1.0 baseline**: commit `a7ae42b` (tag `v0.1.0`)
+- **Rollback procedure**: `git checkout v0.1.0` to revert to pre-v0.2.0 state.
 - Files introduced in v0.2.0 that can be safely removed for rollback: `core/entity_extraction.py`, `tests/test_entity_extraction.py`, `tests/test_deep_analysis.py`, `tests/test_classification.py`, `ARCHITECTURE.md`.
 - `pyproject.toml` version was bumped from `0.1.0` to `0.2.0`.
+
+Release finalized via git initialization and tagging.
