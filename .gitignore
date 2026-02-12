@@ -1,0 +1,35 @@
+# Virtual environment
+venv/
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime outputs
+data/
+outputs/
+logs/
+*.db
+*.sqlite3
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+*.egg-info/
+
+# Env files
+.env
+.env.*

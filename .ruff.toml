@@ -1,0 +1,15 @@
+line-length = 120
+target-version = "py311"
+src = ["config", "core", "schemas", "scripts", "utils", "tests"]
+exclude = ["venv", ".venv", "data", "outputs", "logs", "__pycache__"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+# Pre-existing warnings in files not touched by v0.2.0.
+# Tracked here for governance; to be resolved in a future cleanup PR.
+[lint.per-file-ignores]
+"core/ingest_news.py" = ["I001"]   # import block ordering – pre-existing
+"utils/dedupe.py" = ["F401"]       # unused `re` import – pre-existing
+"utils/logging_utils.py" = ["E501"] # line too long (132 > 120) – pre-existing
