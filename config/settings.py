@@ -69,11 +69,23 @@ LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-chat")
 NOTION_TOKEN: str = os.getenv("NOTION_TOKEN", "")
 NOTION_DATABASE_ID: str = os.getenv("NOTION_DATABASE_ID", "")
 FEISHU_WEBHOOK_URL: str = os.getenv("FEISHU_WEBHOOK_URL", "")
+SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
+
+# ---------------------------------------------------------------------------
+# Email (SMTP)
+# ---------------------------------------------------------------------------
+SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER: str = os.getenv("SMTP_USER", "")
+SMTP_PASS: str = os.getenv("SMTP_PASS", "")
+ALERT_EMAIL: str = os.getenv("ALERT_EMAIL", "")
 
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 SCHEDULER_INTERVAL_SECONDS: int = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "900"))
+SCHEDULER_CRON_HOUR: int = int(os.getenv("SCHEDULER_CRON_HOUR", "9"))
+SCHEDULER_CRON_MINUTE: int = int(os.getenv("SCHEDULER_CRON_MINUTE", "0"))
 
 # ---------------------------------------------------------------------------
 # Deep Analysis (Z4)

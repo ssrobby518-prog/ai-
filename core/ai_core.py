@@ -355,8 +355,8 @@ def chain_a_fallback(item: RawItem) -> SchemaA:
     """Rule-based extraction when LLM is unavailable."""
     body = item.body
 
-    # Summary: first 200 chars
-    summary = body[:200] + ("..." if len(body) > 200 else "")
+    # Summary: first 2000 chars (gives fallback enough text for mechanism keyword matching)
+    summary = body[:2000] + ("..." if len(body) > 2000 else "")
 
     # Entity extraction via the new pipeline
     result = extract_entities(
@@ -370,7 +370,7 @@ def chain_a_fallback(item: RawItem) -> SchemaA:
 
     # Key points: first 3 substantial sentences
     sentences = re.split(r"[.。!！?？;；\n]", body)
-    key_points = [s.strip() for s in sentences if len(s.strip()) > 15][:3]
+    key_points = [s.strip() for s in sentences if len(s.strip()) > 15][:8]
 
     # Content-based classification
     category, _confidence = classify_content(item.title, body, item.source_category)

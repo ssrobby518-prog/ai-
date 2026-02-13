@@ -20,6 +20,7 @@ from utils.logger import get_logger
 def write_deep_analysis(
     report: DeepAnalysisReport,
     output_path: Path | None = None,
+    metrics_md: str = "",
 ) -> Path:
     """Generate deep_analysis.md with the 5-part structure."""
     log = get_logger()
@@ -227,6 +228,10 @@ def write_deep_analysis(
             "",
         ]
     )
+
+    # Append run metrics if provided
+    if metrics_md:
+        lines.append(metrics_md)
 
     content = "\n".join(lines)
     path.write_text(content, encoding="utf-8")

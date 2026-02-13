@@ -254,6 +254,9 @@ def fetch_all_news() -> list[RawItem]:
 
     離線模式下回傳空清單（由呼叫端處理降級邏輯）。
     """
+    from utils.article_fetch import enrich_items_async
+    from utils.metrics import get_collector
+
     log = get_logger()
 
     if is_offline_mode():
@@ -261,4 +264,6 @@ def fetch_all_news() -> list[RawItem]:
 
     items = fetch_hackernews() + fetch_rss()
     log.info("所有來源合計抓取：%d 筆", len(items))
-    return items
+
+    collector = get_collector()
+    return enrich_items_async(items, stats=collector.enrich_stats)

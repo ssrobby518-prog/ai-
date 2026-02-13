@@ -111,10 +111,15 @@ def fetch_feed(feed_cfg: dict) -> list[RawItem]:
 
 def fetch_all_feeds() -> list[RawItem]:
     """Fetch all configured feeds and combine results."""
+    from utils.article_fetch import enrich_items_async
+    from utils.metrics import get_collector
+
     all_items: list[RawItem] = []
     for feed_cfg in settings.RSS_FEEDS:
         all_items.extend(fetch_feed(feed_cfg))
-    return all_items
+
+    collector = get_collector()
+    return enrich_items_async(all_items, stats=collector.enrich_stats)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +212,16 @@ def filter_items(items: list[RawItem]) -> list[RawItem]:
 # ---------------------------------------------------------------------------
 # Batching
 # ---------------------------------------------------------------------------
+
+
+def fetch_from_plugins() -> list[RawItem]:
+    """Fetch items from all registered source plugins (auto-discovered)."""
+    from core.sources import fetch_all_sources
+
+    log = get_logger()
+    items = fetch_all_sources()
+    log.info("Plugins returned %d total items", len(items))
+    return items
 
 
 def batch_items(items: list[RawItem], batch_size: int | None = None) -> Generator[list[RawItem], None, None]:

@@ -224,7 +224,7 @@ def test_evidence_gated_core_facts() -> None:
 
 
 def test_opportunities_not_generic() -> None:
-    """Opportunities should reference item-specific entities or stakeholders."""
+    """Opportunities should reference item-specific key_points content."""
     for r in _DIVERSE_ITEMS:
         analysis = _analyze_item_fallback(r)
 
@@ -233,11 +233,14 @@ def test_opportunities_not_generic() -> None:
             f"Item {r.item_id}: has {len(analysis.opportunities)} opportunities, max is 3"
         )
 
-        # At least one opportunity should reference an entity from this item
-        if r.schema_a.entities:
+        # At least one opportunity should reference a key_point (first 30 chars)
+        if r.schema_a.key_points:
             all_opps = " ".join(analysis.opportunities)
-            entity_found = any(e in all_opps for e in r.schema_a.entities[:3])
-            assert entity_found, f"Item {r.item_id}: no opportunity references item entities {r.schema_a.entities[:3]}"
+            kp_found = any(kp[:30] in all_opps for kp in r.schema_a.key_points)
+            assert kp_found, (
+                f"Item {r.item_id}: no opportunity references key_points content. "
+                f"key_points[:30]: {[kp[:30] for kp in r.schema_a.key_points]}"
+            )
 
 
 def test_strategic_outlook_has_metrics_and_risks() -> None:
@@ -332,3 +335,66 @@ def test_golden_snapshot_stable() -> None:
     assert len(current["opportunities"]) == len(golden["opportunities"])
     # Signal strength should be deterministic
     assert current["signal_strength"] == golden["signal_strength"]
+
+
+def test_non_tech_content_no_absurd_roles() -> None:
+    """Climate/desert article with geographic entities must NOT produce absurd role assignments.
+
+    Entities like 'Taklamakan', 'Desert', 'Central Asian' should never appear in
+    stakeholder role slots like '能源企業（如 Taklamakan）'.
+    """
+    r = _make_result(
+        "item_climate_desert",
+        "China plants trees around the Taklamakan Desert to combat desertification",
+        "China has planted so many trees around the Taklamakan Desert that scientists "
+        "recorded a measurable change in local climate. Huge-scale ecological engineering "
+        "around the edges of one of the world's largest deserts is showing results.",
+        category="氣候/能源",
+        entities=["Taklamakan", "Desert", "Central Asian"],
+        key_points=[
+            "China has planted so many trees around the Taklamakan Desert",
+            "Scientists recorded a measurable change in local climate",
+            "Huge-scale ecological engineering is showing results",
+        ],
+    )
+    analysis = _analyze_item_fallback(r)
+
+    # forces_incentives must NOT contain absurd entity-role patterns
+    assert "（如 Taklamakan）" not in analysis.forces_incentives
+    assert "（如 Desert）" not in analysis.forces_incentives
+
+    # first_principles must NOT address entities as stakeholders
+    assert "對 Taklamakan" not in analysis.first_principles
+    assert "對 Desert" not in analysis.first_principles
+
+    # observation_metrics must NOT use entity names in product-tracking patterns
+    all_metrics = " ".join(analysis.observation_metrics)
+    assert "Taklamakan 的公開產品" not in all_metrics
+
+
+def test_empty_key_points_graceful_fallback() -> None:
+    """Items with empty key_points and body should not crash and produce valid output."""
+    r = _make_result(
+        "item_empty",
+        "Some headline with no body content",
+        "",
+        category="綜合資訊",
+        entities=[],
+        key_points=[],
+    )
+    analysis = _analyze_item_fallback(r)
+
+    # Must not crash; core_facts should have at least the title
+    assert len(analysis.core_facts) >= 1, "core_facts should have at least 1 entry (title fallback)"
+
+    # forces_incentives should not be empty
+    assert len(analysis.forces_incentives) > 0, "forces_incentives should not be empty"
+
+    # speculative_effects should have at least 1 entry
+    assert len(analysis.speculative_effects) >= 1, "speculative_effects should have at least 1 entry"
+
+    # opportunities should exist
+    assert len(analysis.opportunities) >= 1, "opportunities should have at least 1 entry"
+
+    # observation_metrics should come from category lookup
+    assert len(analysis.observation_metrics) >= 3, "observation_metrics should have at least 3 entries"

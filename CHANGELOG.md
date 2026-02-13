@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.2.3] - 2026-02-12
+
+### Added
+- **Async enrichment**: `enrich_items_async()` via asyncio + aiohttp with semaphore concurrency (default 3) and per-domain politeness (0.5s). Falls back to sync when event loop is unavailable.
+- **Multi-strategy extraction**: trafilatura primary + BeautifulSoup fallback. Improves success rate on pages where trafilatura returns empty.
+- **Retry with backoff**: Up to 2 retries with exponential backoff + jitter. 403/429 classified as `blocked` (no retry).
+- **Quality gate**: Minimum text length (400 chars) and junk character ratio check. Below threshold → `extract_low_quality`.
+- **Error classification**: `timeout`, `http_error`, `blocked`, `extract_empty`, `extract_low_quality`, `connection_error`, `skipped_policy`.
+- **Entity cleaner** (`utils/entity_cleaner.py`): Removes UI words (Sign/Subscribe/Cookie/etc.), URL fragments, pure numbers, unknown short acronyms. Geographic generic words (Desert/River) removed only when context is non-geographic.
+- **Metrics collector** (`utils/metrics.py`): Produces `outputs/metrics.json` per run with enrichment stats (success rate, latency p50/p95, fail reasons) and entity cleaning stats. Appends `## Run Metrics` section to `deep_analysis.md`.
+- Tests: `test_article_fetch_retry_and_quality.py`, `test_enrichment_async_rate_limit.py`, `test_entity_cleaner.py`, `test_metrics_output.py`.
+
+### Changed
+- `utils/article_fetch.py`: Complete rewrite — retry, quality gate, multi-strategy extraction, async support.
+- `core/ingestion.py`: `fetch_all_feeds()` now uses `enrich_items_async()` with shared metrics.
+- `core/news_sources.py`: `fetch_all_news()` now uses `enrich_items_async()` with shared metrics.
+- `core/deep_delivery.py`: `write_deep_analysis()` accepts optional `metrics_md` parameter.
+- `scripts/run_once.py`: Integrates metrics collector, entity cleaner, and async enrichment.
+- `core/ai_core.py`: `chain_a_fallback()` summary_zh expanded to 2000 chars, key_points to 8 sentences (v0.2.2).
+
+### Dependencies
+- Added `aiohttp>=3.9.0` for async HTTP (optional — sync fallback exists).
+
+---
+
+## [0.2.1] - 2026-02-12
+
+### Fixed
+- **HN full-text fetch**: HackerNews items now have real article content instead of RSS metadata stubs. Both pipeline paths (`run_once.py` via hnrss.org RSS and `run_daily.py` via Algolia API) detect metadata-only bodies and fetch the original article HTML, extracting clean text via `trafilatura`.
+
+### Added
+- `utils/article_fetch.py`: New module with `_needs_fulltext()` detection, `fetch_article_text()` extraction, and `enrich_items()` batch enrichment.
+- `tests/test_article_fetch.py`: 8 tests covering detection heuristics, fetch success/failure, and mixed-source enrichment.
+
+### Changed
+- `core/ingestion.py`: `fetch_all_feeds()` now calls `enrich_items()` before returning.
+- `core/news_sources.py`: `fetch_all_news()` now calls `enrich_items()` before returning.
+
+### Dependencies
+- Added `trafilatura>=1.8.0` for robust article text extraction.
+
+---
+
 ## [0.2.0] - 2026-02-12
 
 ### Fixed

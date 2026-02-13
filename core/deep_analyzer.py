@@ -125,11 +125,18 @@ _MECHANISM_KEYWORDS: dict[str, list[str]] = {
         "efficacy",
         "patent",
         "license",
+        "climate",
+        "carbon",
+        "emission",
+        "health",
+        "medical",
         "監管",
         "法規",
         "合規",
         "審批",
         "核准",
+        "氣候",
+        "碳排",
     ],
     "激勵設計（incentive design）": [
         "incentive",
@@ -143,12 +150,16 @@ _MECHANISM_KEYWORDS: dict[str, list[str]] = {
         "revenue",
         "business model",
         "ipo",
+        "subsidy",
+        "tax credit",
         "激勵",
         "定價",
         "商業模式",
         "營收",
         "估值",
         "融資",
+        "補貼",
+        "減免",
     ],
     "供應鏈（supply chain）": [
         "supply chain",
@@ -162,11 +173,17 @@ _MECHANISM_KEYWORDS: dict[str, list[str]] = {
         "gigafactory",
         "battery",
         "cell",
+        "energy",
+        "material",
+        "resource",
+        "mineral",
         "供應鏈",
         "晶片",
         "製造",
         "工廠",
         "產能",
+        "能源",
+        "原料",
     ],
     "安全邊界（security boundary）": [
         "security",
@@ -192,51 +209,16 @@ _MECHANISM_KEYWORDS: dict[str, list[str]] = {
         "launch",
         "release",
         "rollout",
+        "market",
+        "consumer",
+        "deployment",
         "推出",
         "採用",
         "上線",
+        "市場",
+        "商用",
     ],
 }
-
-# Stakeholder inference from entities and category
-_STAKEHOLDER_TEMPLATES: dict[str, list[tuple[str, str]]] = {
-    "科技/技術": [
-        ("技術開發者", "希望降低開發成本、提升工具品質"),
-        ("平台營運方", "追求用戶成長與生態鎖定"),
-        ("終端使用者", "期望更好的體驗與更低的使用門檻"),
-    ],
-    "創業/投融資": [
-        ("創始團隊", "追求產品市場契合與估值成長"),
-        ("投資機構", "尋求風險調整後回報最大化"),
-        ("目標使用者", "期望痛點被解決、價格合理"),
-    ],
-    "人工智慧": [
-        ("AI 研究團隊", "追求模型效能突破與論文影響力"),
-        ("應用開發者", "希望降低 AI 整合門檻"),
-        ("終端使用者", "期望可靠、安全、易用的 AI 功能"),
-    ],
-    "政策/監管": [
-        ("立法／監管機構", "追求公共利益保護與市場秩序"),
-        ("被監管企業", "希望合規成本最小化、維持營運彈性"),
-        ("消費者／公民", "期望權益受保護、市場公平競爭"),
-    ],
-    "資安/網路安全": [
-        ("安全研究者", "追求漏洞披露與防禦技術推進"),
-        ("企業安全團隊", "需要即時修補與風險控制"),
-        ("攻擊方", "尋求利用窗口與經濟收益"),
-    ],
-    "健康/生醫": [
-        ("研究機構／藥廠", "追求臨床突破與商業化"),
-        ("醫療體系", "需要有效、可負擔的治療方案"),
-        ("患者", "期望療效改善與可及性提升"),
-    ],
-    "氣候/能源": [
-        ("能源企業", "在轉型壓力下尋求新利潤來源"),
-        ("政府／監管", "推動減碳目標與能源安全"),
-        ("消費者", "期望更低成本與更永續的能源選擇"),
-    ],
-}
-
 
 # ---------------------------------------------------------------------------
 # Helpers: extract evidence from text
@@ -281,53 +263,103 @@ def _select_mechanism(title: str, body: str) -> str:
     return "採用曲線（adoption curve）"
 
 
-def _get_stakeholders(category: str, entities: list[str]) -> list[tuple[str, str, str]]:
-    """Get stakeholders with motivations and constraints.
+# ---------------------------------------------------------------------------
+# Content-driven lookup tables (replace entity-role mapping)
+# ---------------------------------------------------------------------------
 
-    Returns list of (stakeholder_name, motivation, constraint).
-    """
-    templates = _STAKEHOLDER_TEMPLATES.get(category, _STAKEHOLDER_TEMPLATES.get("科技/技術", []))
+_CATEGORY_CONTEXT: dict[str, str] = {
+    "科技/技術": "技術開發者追求降低成本與提升品質；平台營運方追求生態擴展；終端使用者期望更低門檻",
+    "創業/投融資": "創始團隊追求產品市場契合與估值成長；投資機構尋求風險調整後回報；目標使用者期望痛點被解決",
+    "人工智慧": "AI 研究團隊追求模型效能突破；應用開發者希望降低整合門檻；終端使用者期望可靠安全的 AI 功能",
+    "政策/監管": "立法／監管機構追求公共利益保護；被監管企業希望合規成本最小化；消費者期望權益受保護",
+    "資安/網路安全": "安全研究者追求漏洞披露與防禦推進；企業安全團隊需要即時修補；攻擊方尋求利用窗口",
+    "健康/生醫": "研究機構追求臨床突破與商業化；醫療體系需要可負擔的治療方案；患者期望療效改善與可及性提升",
+    "氣候/能源": "能源產業在轉型壓力下尋求新利潤來源；政府推動減碳與能源安全；消費者期望永續選擇",
+    "金融/財經": "金融機構追求風險管理與收益最大化；監管方維護系統穩定；投資人期望透明與公平的市場環境",
+    "消費電子": "硬體廠商追求差異化與供應鏈優勢；軟體生態追求平台黏性；消費者期望性價比與創新體驗",
+    "遊戲/娛樂": "遊戲開發商追求玩家留存與變現；平台方爭奪獨佔內容；玩家期望高品質與公平的遊戲體驗",
+    "綜合資訊": "各方利益相關者根據自身定位追求最大化價值；市場動態由供需與政策共同驅動",
+}
 
-    result: list[tuple[str, str, str]] = []
-    for name, motivation in templates[:3]:
-        # Try to link stakeholder to a specific entity
-        entity_ref = ""
-        if entities:
-            # Simple heuristic: first entity for first stakeholder, etc.
-            idx = len(result) % len(entities)
-            entity_ref = entities[idx]
-
-        # Generate a constraint based on stakeholder type
-        constraints = {
-            "技術開發者": "技術債務與維護成本",
-            "平台營運方": "用戶獲取成本與監管壓力",
-            "終端使用者": "學習曲線與遷移成本",
-            "創始團隊": "資金跑道與團隊擴張壓力",
-            "投資機構": "投資組合風險分散要求",
-            "目標使用者": "替代方案的轉換成本",
-            "AI 研究團隊": "計算資源限制與可重現性",
-            "應用開發者": "整合複雜度與 API 穩定性",
-            "立法／監管機構": "執行資源與跨國協調難度",
-            "被監管企業": "合規成本與競爭力維持",
-            "消費者／公民": "資訊不對稱與參與成本",
-            "安全研究者": "漏洞披露時序與倫理考量",
-            "企業安全團隊": "修補速度與業務連續性平衡",
-            "攻擊方": "防禦技術演進與法律風險",
-            "研究機構／藥廠": "臨床試驗耗時與審批不確定性",
-            "醫療體系": "預算限制與系統整合",
-            "患者": "可及性與經濟負擔",
-            "能源企業": "轉型投資與股東期望",
-            "政府／監管": "政治可行性與國際協定",
-            "消費者": "價格敏感度與行為慣性",
-        }
-        constraint = constraints.get(name, "預算與資源限制")
-
-        if entity_ref:
-            result.append((f"{name}（如 {entity_ref}）", motivation, constraint))
-        else:
-            result.append((name, motivation, constraint))
-
-    return result
+_CATEGORY_METRICS: dict[str, list[str]] = {
+    "科技/技術": [
+        "GitHub stars 與社群活躍度",
+        "競品迭代速度與版本發布頻率",
+        "開發者採用率與 Stack Overflow 討論量",
+        "技術標準化進程與 RFC 提案數",
+        "企業客戶部署案例數",
+    ],
+    "創業/投融資": [
+        "同領域季度融資總額與交易數量",
+        "估值倍數變化趨勢",
+        "人才流動方向（LinkedIn 數據）",
+        "產品上線後的用戶增長率",
+        "市場競爭格局變化（新進入者數量）",
+    ],
+    "人工智慧": [
+        "模型基準測試排名變化",
+        "API 呼叫量與開發者註冊數",
+        "論文引用數與開源社群貢獻量",
+        "企業 AI 支出占比變化",
+        "相關監管政策與指引的發布數量",
+    ],
+    "政策/監管": [
+        "法案進展階段與投票結果",
+        "企業合規成本變化估計",
+        "受影響產業的市值波動",
+        "公眾輿論與利益團體回應數量",
+        "跨國類似政策的連鎖效應",
+    ],
+    "資安/網路安全": [
+        "漏洞修補率與平均修補時間",
+        "攻擊事件頻率與影響規模",
+        "資安支出增長率",
+        "CVE 發布數量趨勢",
+        "資安人才缺口變化",
+    ],
+    "健康/生醫": [
+        "臨床試驗進展階段與結果",
+        "藥物審批時程與通過率",
+        "醫療支出與保險覆蓋變化",
+        "患者可及性指標",
+        "相關專利申請數量",
+    ],
+    "氣候/能源": [
+        "碳排放監測趨勢",
+        "再生能源裝機量與發電占比",
+        "碳交易價格與市場規模",
+        "綠色投資流入金額",
+        "氣候政策承諾與執行進度",
+    ],
+    "金融/財經": [
+        "相關資產類別的波動率變化",
+        "資金流向與交易量",
+        "信用利差與違約率",
+        "監管罰款與合規行動數量",
+        "金融科技採用率",
+    ],
+    "消費電子": [
+        "產品出貨量與市佔率變化",
+        "用戶滿意度與退貨率",
+        "供應鏈交期與零件成本",
+        "App 生態系統活躍度",
+        "競品發布時程與規格比較",
+    ],
+    "遊戲/娛樂": [
+        "遊戲日活躍用戶（DAU）與營收",
+        "平台市佔率與獨佔內容數量",
+        "玩家社群情緒與評分",
+        "電競賽事觀看量與贊助金額",
+        "新遊戲發布數量與品質評價",
+    ],
+    "綜合資訊": [
+        "相關領域的季度趨勢報告",
+        "產業研究機構的預測調整",
+        "社群媒體討論量與情緒變化",
+        "主要媒體報導頻率",
+        "相關指數或基準的變動",
+    ],
+}
 
 
 # ---------------------------------------------------------------------------
@@ -490,16 +522,26 @@ def _fallback_event_breakdown(r: MergedResult, core_facts: list[str], evidence: 
 
 
 def _fallback_forces_incentives(r: MergedResult) -> str:
-    """Generate item-specific forces & incentives analysis."""
+    """Generate content-grounded forces & incentives analysis."""
     a = r.schema_a
     cat = a.category or "綜合資訊"
-    entities = a.entities[:3]
-
-    stakeholders = _get_stakeholders(cat, entities)
+    kps = a.key_points
+    title = a.title_zh or ""
 
     lines = []
-    for name, motivation, constraint in stakeholders:
-        lines.append(f"- {name}：{motivation}（約束：{constraint}）")
+    # Primary dynamic from key_points or title
+    primary = kps[0] if kps else title
+    if primary:
+        lines.append(f"- 主要動態：{primary}")
+
+    # Background context from second key_point or title
+    background = kps[1] if len(kps) > 1 else title
+    if background and background != primary:
+        lines.append(f"- 背景脈絡：{background}")
+
+    # Stakeholder context from category lookup
+    context = _CATEGORY_CONTEXT.get(cat, _CATEGORY_CONTEXT["綜合資訊"])
+    lines.append(f"- 利益相關方：{context}")
 
     return "\n".join(lines) if lines else "暫無利益相關方分析。"
 
@@ -515,10 +557,11 @@ def _fallback_first_principles(r: MergedResult) -> tuple[str, str]:
 
     mechanism = _select_mechanism(title, body)
 
-    # Build item-specific explanation
-    entity_str = "、".join(a.entities[:3]) if a.entities else "相關參與者"
+    # Build content-grounded explanation
+    kps = a.key_points
+    anchor = f"「{kps[0][:80]}」" if kps else f"「{title[:80]}」"
 
-    text = f"核心機制：{mechanism}\n該事件的底層邏輯與「{mechanism}」直接相關。對 {entity_str} 而言，"
+    text = f"核心機制：{mechanism}\n該事件的底層邏輯與「{mechanism}」直接相關。根據{anchor}，"
 
     # Add mechanism-specific reasoning
     mech_lower = mechanism.lower()
@@ -548,13 +591,18 @@ def _fallback_derivable_effects(r: MergedResult) -> list[str]:
     """Generate derivable (low-speculation) effects based on item content."""
     a, b = r.schema_a, r.schema_b
     effects: list[str] = []
-    entities = a.entities[:2]
-    entity_str = "、".join(entities) if entities else "相關方"
+    cat = a.category or "綜合資訊"
+    kps = a.key_points
 
-    # Always include one content-based effect
-    if a.key_points:
-        first_fact = a.key_points[0][:60]
-        effects.append(f"基於「{first_fact}」，{entity_str} 的現有用戶／合作方需要評估相容性影響")
+    # Content-based effect from first key_point
+    if kps:
+        first_fact = kps[0][:80]
+        effects.append(f"基於「{first_fact}」，{cat} 領域的現有參與者需要評估相容性影響")
+
+    # Second key_point as additional effect source
+    if len(kps) > 1:
+        second_fact = kps[1][:80]
+        effects.append(f"「{second_fact}」將驅動相關方重新評估現有策略與資源配置")
 
     if b.heat >= 7:
         effects.append(f"高關注度（熱度 {b.heat:.0f}）將促使同業加速跟進或發表回應")
@@ -571,98 +619,86 @@ def _fallback_speculative_effects(r: MergedResult, mechanism: str = "") -> list[
     """Generate clearly labeled speculative effects with validation signals."""
     a, b = r.schema_a, r.schema_b
     effects: list[str] = []
-    entities = a.entities[:2]
-    entity_str = "、".join(entities) if entities else "相關方"
+    kps = a.key_points
     cat = a.category or "綜合資訊"
     mech_short = mechanism.split("（")[0] if "（" in mechanism else (mechanism or "相關領域")
+    trend_anchor = f"「{kps[0][:50]}」所述趨勢" if kps else f"{cat} 領域的此動態"
 
     if b.novelty >= 6:
         effects.append(
-            f"[假說] 若 {entity_str} 在 {mech_short} 方面的突破被市場驗證，"
+            f"[假說] 若{trend_anchor}被市場驗證，"
             f"可能重塑 {cat} 領域的競爭格局"
-            f"（驗證信號：關注 3 個月內 {entity_str} 相關產品的採用率與媒體報導量）"
+            f"（驗證信號：關注 3 個月內 {cat} 領域相關產品的採用率與媒體報導量）"
         )
 
     if b.feasibility >= 6 and b.utility >= 6:
         effects.append(
-            f"[假說] {entity_str} 的 {mech_short} 方案若證明可行，"
+            f"[假說] 若{trend_anchor}中的 {mech_short} 方案證明可行，"
             f"可能引發 {cat} 領域更大規模的資源投入"
             f"（驗證信號：觀察下一季度 {cat} 領域的融資金額與人才流動）"
         )
 
     if not effects:
         effects.append(
-            f"[假說] {entity_str} 的動態可能透過 {mech_short} 間接影響上下游產業鏈"
-            f"（驗證信號：追蹤 {entity_str} 相關供應商或客戶的公開動態）"
+            f"[假說] {trend_anchor}可能透過 {mech_short} 間接影響上下游產業鏈"
+            f"（驗證信號：追蹤 {cat} 領域供應商或客戶的公開動態）"
         )
 
     return effects
 
 
 def _fallback_opportunities(r: MergedResult, mechanism: str) -> list[str]:
-    """Generate max 3 opportunities, each tied to mechanism + stakeholder."""
+    """Generate max 3 content-driven opportunities."""
     a = r.schema_a
-    entities = a.entities[:3]
-    entity_str = "、".join(entities) if entities else "核心參與者"
     cat = a.category or "綜合資訊"
-
-    # Get stakeholders
-    stakeholder_data = _get_stakeholders(cat, entities)
-    stakeholder_names = [s[0] for s in stakeholder_data]
+    kps = a.key_points
+    mech_short = mechanism.split("（")[0] if "（" in mechanism else mechanism
 
     opps: list[str] = []
 
-    # Opportunity 1: directly from mechanism
-    mech_short = mechanism.split("（")[0] if "（" in mechanism else mechanism
-    if stakeholder_names:
-        opps.append(f"針對 {stakeholder_names[0]} 的 {mech_short} 需求，可探索為 {entity_str} 提供相關工具或服務的機會")
+    # Opportunity 1: category + mechanism → service/solution need
+    opps.append(f"{cat} 領域在 {mech_short} 方面存在服務缺口，可探索提供相關工具或解決方案的機會")
 
-    # Opportunity 2: from entities
-    if len(entities) >= 2:
-        opps.append(f"{entities[0]} 與 {entities[1]} 之間的互動空間可能產生整合或橋接機會")
-    elif entities:
-        opps.append(f"圍繞 {entities[0]} 的上下游生態存在服務缺口，可評估補充性產品或服務的可行性")
+    # Opportunity 2: from first key_point → trend adaptation need
+    if kps:
+        fact = kps[0][:60]
+        opps.append(f"基於「{fact}」的趨勢，相關方可能需要新的解決方案來適應變化")
 
-    # Opportunity 3: from category-specific signal
-    if a.key_points:
-        fact = a.key_points[0][:40]
-        if len(stakeholder_names) >= 2:
-            opps.append(f"基於「{fact}」的趨勢，{stakeholder_names[1]} 可能需要新的解決方案來適應變化")
+    # Opportunity 3: from third key_point → market gap
+    if len(kps) > 2:
+        fact = kps[2][:60]
+        opps.append(f"「{fact}」揭示的市場缺口可作為切入點，評估補充性產品或服務的可行性")
 
     return opps[:3]
 
 
 def _fallback_observation_metrics(r: MergedResult) -> list[str]:
-    """Generate 3-5 measurable observation metrics."""
-    a = r.schema_a
-    entities = a.entities[:2]
-    metrics: list[str] = []
-
-    if entities:
-        metrics.append(f"{entities[0]} 的公開產品更新或版本發布頻率")
-    metrics.append("相關領域的季度融資總額與交易數量")
-    metrics.append("技術社群（GitHub stars、HN 討論數）的參與度趨勢")
-    if len(entities) >= 2:
-        metrics.append(f"{entities[1]} 的市場份額或用戶數變化")
-    metrics.append("監管機構相關政策或指導文件的發布動態")
-
-    return metrics[:5]
+    """Generate 3-5 domain-specific observation metrics from category lookup."""
+    cat = r.schema_a.category or "綜合資訊"
+    return _CATEGORY_METRICS.get(cat, _CATEGORY_METRICS["綜合資訊"])[:5]
 
 
 def _fallback_counter_risks(r: MergedResult) -> list[str]:
-    """Generate 1-2 counter-examples/risks that could invalidate the outlook."""
+    """Generate 2 counter-risks with mitigation direction."""
     a = r.schema_a
-    entities = a.entities[:2]
-    entity_str = "、".join(entities) if entities else "相關參與者"
+    kps = a.key_points
+    cat = a.category or "綜合資訊"
+    trend_anchor = f"「{kps[0][:50]}」所述趨勢" if kps else "此方向"
 
     risks: list[str] = [
-        f"若 {entity_str} 未能持續投入資源，該方向可能失去動能並被替代方案取代",
+        f"若{trend_anchor}未能持續，該方向可能失去動能並被替代方案取代",
     ]
 
     if a.category in ("政策/監管", "資安/網路安全"):
-        risks.append("突發的監管政策變動可能徹底改變可行性與時程預期")
+        risks.append(
+            f"突發的監管政策變動可能徹底改變可行性與時程預期；"
+            f"建議持續追蹤 {cat} 領域的政策動態作為緩解措施"
+        )
     else:
-        risks.append("技術或市場環境的快速變化可能使當前評估在 6-12 個月後過時")
+        risks.append(
+            f"技術或市場環境的快速變化可能使當前評估在 6-12 個月後過時；"
+            f"建議定期回顧 {cat} 領域的關鍵指標作為緩解措施"
+        )
 
     return risks[:2]
 
@@ -671,8 +707,7 @@ def _fallback_strategic_outlook(r: MergedResult, mechanism: str, metrics: list[s
     """Generate item-specific 3-year strategic outlook."""
     b = r.schema_b
     a = r.schema_a
-    entities = a.entities[:2]
-    entity_str = "、".join(entities) if entities else "相關方"
+    cat = a.category or "綜合資訊"
     mech_short = mechanism.split("（")[0] if "（" in mechanism else mechanism
 
     if b.feasibility >= 7:
@@ -683,8 +718,13 @@ def _fallback_strategic_outlook(r: MergedResult, mechanism: str, metrics: list[s
         timeline = "長期（2-3 年）才可能看到規模化落地"
 
     parts = [
-        f"基於 {mech_short} 的分析框架，{entity_str} 的動態預計在{timeline}。",
+        f"基於 {mech_short} 的分析框架，此事件對 {cat} 領域的影響預計在{timeline}。",
     ]
+
+    # Reference key_points content for grounding
+    kps = a.key_points
+    if kps:
+        parts.append(f"核心依據：「{kps[0][:60]}」。")
 
     if metrics:
         parts.append(f"觀察指標：{'、'.join(metrics[:3])}。")
