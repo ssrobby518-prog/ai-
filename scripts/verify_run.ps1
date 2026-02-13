@@ -12,7 +12,7 @@ $env:PYTHONIOENCODING = "utf-8"
 Write-Host "=== Verification Start ===" -ForegroundColor Cyan
 
 # 0) Text integrity pre-check (CRLF / BOM / autocrlf)
-Write-Host "`n[0/6] Running text integrity check..." -ForegroundColor Yellow
+Write-Host "`n[0/7] Running text integrity check..." -ForegroundColor Yellow
 $integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
 if (Test-Path $integrityScript) {
     & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
@@ -25,7 +25,7 @@ if (Test-Path $integrityScript) {
 }
 
 # 1) Remove previous education outputs
-Write-Host "`n[1/6] Removing previous education outputs..." -ForegroundColor Yellow
+Write-Host "`n[1/7] Removing previous education outputs..." -ForegroundColor Yellow
 $filesToRemove = @(
     "docs\reports\deep_analysis_education_version.md",
     "docs\reports\deep_analysis_education_version_ppt.md",
@@ -40,7 +40,7 @@ foreach ($f in $filesToRemove) {
 }
 
 # 2) Run pipeline with calibration profile
-Write-Host "`n[2/6] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
+Write-Host "`n[2/7] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
 $env:RUN_PROFILE = "calibration"
 # Prefer venv python if available, otherwise fall back to system python
 $venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
@@ -56,7 +56,7 @@ if ($exitCode -ne 0) {
 Write-Host "  Pipeline succeeded" -ForegroundColor Green
 
 # 3) Verify FILTER_SUMMARY exists in log
-Write-Host "`n[3/6] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
+Write-Host "`n[3/7] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
 $filterLog = Select-String -Path "logs\app.log" -Pattern "FILTER_SUMMARY" -SimpleMatch | Select-Object -Last 1
 if ($filterLog) {
     Write-Host "  FILTER_SUMMARY hit:" -ForegroundColor Green
@@ -67,7 +67,7 @@ if ($filterLog) {
 }
 
 # 4) Verify education report exists on disk (NOT required to be git-tracked)
-Write-Host "`n[4/6] Checking education report file..." -ForegroundColor Yellow
+Write-Host "`n[4/7] Checking education report file..." -ForegroundColor Yellow
 $eduFile = "docs\reports\deep_analysis_education_version.md"
 if (Test-Path $eduFile) {
     Get-Item $eduFile | Format-List FullName, LastWriteTime, Length
@@ -77,7 +77,7 @@ if (Test-Path $eduFile) {
 }
 
 # 5) Verify education report contains key sections
-Write-Host "`n[5/6] Verifying education report content..." -ForegroundColor Yellow
+Write-Host "`n[5/7] Verifying education report content..." -ForegroundColor Yellow
 $patterns = @("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Metrics", "mermaid")
 $hits = Select-String -Path $eduFile -Pattern $patterns -SimpleMatch
 if ($hits.Count -ge 3) {
@@ -96,7 +96,7 @@ if ($emptyHit) {
 }
 
 # 6) Artifact policy hard-fail guard
-Write-Host "`n[6/6] Artifact policy check (hard-fail)..." -ForegroundColor Yellow
+Write-Host "`n[6/7] Artifact policy check (hard-fail)..." -ForegroundColor Yellow
 
 function Assert-NotTracked($pattern) {
     $tracked = git ls-files -- $pattern 2>$null
@@ -112,6 +112,15 @@ Assert-NotTracked "docs/reports/deep_analysis_education_version*.md"
 Assert-NotTracked "outputs/*"
 
 Write-Host "  Artifact policy check passed." -ForegroundColor Green
+
+# 7) Education report quality gate
+Write-Host "`n[7/7] Education report quality gate..." -ForegroundColor Yellow
+& $py -m pytest tests/test_education_report_quality.py -q 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "  Education quality gate FAILED" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Education quality gate passed." -ForegroundColor Green
 
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Education reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
