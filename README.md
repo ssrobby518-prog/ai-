@@ -136,14 +136,24 @@ git commit -m "chore: renormalize line endings"
 
 ## Generated Reports（Artifact Policy）
 
-以下檔案是 pipeline 執行時自動產生的 **build artifacts**，不納入版控：
+以下檔案是 pipeline 執行時自動產生的 **build artifacts**，**永遠不可 commit**：
 
-- `docs/reports/deep_analysis_education_version.md`
-- `docs/reports/deep_analysis_education_version_ppt.md`
-- `docs/reports/deep_analysis_education_version_xmind.md`
-- `outputs/deep_analysis_education.md`（已被 `outputs/` 規則忽略）
+| 路徑 Pattern | 說明 |
+|---|---|
+| `docs/reports/deep_analysis_education_version*.md` | Z5 教育版報告（Notion/PPT/XMind） |
+| `outputs/*` | 所有 pipeline 產出（digest、deep_analysis、metrics 等） |
 
-這些檔案在 `.gitignore` 中被排除。如需分享報告，請直接傳送檔案或透過 CI release artifact。
+這些檔案已在 `.gitignore` 中排除，`verify_run.ps1` Step 6 會做 hard-fail 檢查。
+
+**若 verify_run.ps1 因 artifact policy 失敗，請執行：**
+```powershell
+git rm --cached <file>
+# 例如：
+git rm --cached docs/reports/deep_analysis_education_version*.md
+git rm --cached outputs/deep_analysis_education.md
+```
+
+如需分享報告，請直接傳送檔案或透過 CI release artifact。
 
 `docs/reports/` 下的規格文件（如 `education_renderer_spec.md`）仍然保留在版控中。
 測試用 golden snapshot（`tests/golden_*.md`）也保留在版控中。

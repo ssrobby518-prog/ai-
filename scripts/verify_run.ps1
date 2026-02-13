@@ -95,16 +95,23 @@ if ($emptyHit) {
     }
 }
 
-# 6) Artifact policy reminder
-Write-Host "`n[6/6] Artifact policy check..." -ForegroundColor Yellow
-$trackedReports = git ls-files -- "docs/reports/deep_analysis_education_version*.md" 2>$null
-if ($trackedReports) {
-    Write-Host "  WARNING: Generated reports are still git-tracked:" -ForegroundColor Red
-    foreach ($tr in $trackedReports) { Write-Host "    $tr" -ForegroundColor Red }
-    Write-Host "  Run: git rm --cached docs/reports/deep_analysis_education_version*.md" -ForegroundColor Yellow
-} else {
-    Write-Host "  OK (generated reports are NOT tracked — artifact policy enforced)" -ForegroundColor Green
+# 6) Artifact policy hard-fail guard
+Write-Host "`n[6/6] Artifact policy check (hard-fail)..." -ForegroundColor Yellow
+
+function Assert-NotTracked($pattern) {
+    $tracked = git ls-files -- $pattern 2>$null
+    if ($tracked) {
+        Write-Host "  FAIL: Generated artifact is git-tracked:" -ForegroundColor Red
+        foreach ($t in $tracked) { Write-Host "    $t" -ForegroundColor Red }
+        Write-Host "  Fix: git rm --cached $pattern" -ForegroundColor Yellow
+        exit 1
+    }
 }
+
+Assert-NotTracked "docs/reports/deep_analysis_education_version*.md"
+Assert-NotTracked "outputs/*"
+
+Write-Host "  Artifact policy check passed." -ForegroundColor Green
 
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Education reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
