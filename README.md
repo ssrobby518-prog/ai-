@@ -108,6 +108,46 @@ Set `LLM_PROVIDER=deepseek` (or any OpenAI-compatible provider) with `LLM_BASE_U
 - **Notion** (optional): Database pages with scores and tags
 - **Feishu** (optional): Interactive card messages via webhook
 
+## Windows Git 建議設定
+
+```powershell
+# 確保 LF 不被自動轉換（本 repo 以 .gitattributes 控制 EOL）
+git config --global core.autocrlf false
+
+# 避免中文路徑 / 檔名顯示為 escape sequence
+git config --global core.quotepath false
+
+# 確保 commit / log 使用 UTF-8
+git config --global i18n.commitEncoding utf-8
+git config --global i18n.logOutputEncoding utf-8
+```
+
+**遇到 PowerShell 亂碼？** 在腳本開頭加入：
+```powershell
+chcp 65001 | Out-Null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+```
+
+**遇到 git diff 出現大量 CRLF 變更？** 執行：
+```powershell
+git add --renormalize .
+git commit -m "chore: renormalize line endings"
+```
+
+## Generated Reports（Artifact Policy）
+
+以下檔案是 pipeline 執行時自動產生的 **build artifacts**，不納入版控：
+
+- `docs/reports/deep_analysis_education_version.md`
+- `docs/reports/deep_analysis_education_version_ppt.md`
+- `docs/reports/deep_analysis_education_version_xmind.md`
+- `outputs/deep_analysis_education.md`（已被 `outputs/` 規則忽略）
+
+這些檔案在 `.gitignore` 中被排除。如需分享報告，請直接傳送檔案或透過 CI release artifact。
+
+`docs/reports/` 下的規格文件（如 `education_renderer_spec.md`）仍然保留在版控中。
+測試用 golden snapshot（`tests/golden_*.md`）也保留在版控中。
+
 ## 如何啟用教育版報告（Z5）
 
 1. 在 `.env` 中設定 `EDU_REPORT_ENABLED=true`（預設已開啟）

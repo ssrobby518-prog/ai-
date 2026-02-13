@@ -23,6 +23,12 @@ logs/
 *.db
 *.sqlite3
 
+# Generated education reports (build artifacts — do not commit)
+# Spec/documentation files in docs/reports/ are still tracked.
+docs/reports/deep_analysis_education_version.md
+docs/reports/deep_analysis_education_version_ppt.md
+docs/reports/deep_analysis_education_version_xmind.md
+
 # OS
 Thumbs.db
 .DS_Store

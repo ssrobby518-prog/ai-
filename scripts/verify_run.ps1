@@ -11,8 +11,21 @@ $env:PYTHONIOENCODING = "utf-8"
 
 Write-Host "=== Verification Start ===" -ForegroundColor Cyan
 
+# 0) Text integrity pre-check (CRLF / BOM / autocrlf)
+Write-Host "`n[0/6] Running text integrity check..." -ForegroundColor Yellow
+$integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
+if (Test-Path $integrityScript) {
+    & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Text integrity check failed — fix issues before continuing." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "  check_text_integrity.ps1 not found, skipping." -ForegroundColor Yellow
+}
+
 # 1) Remove previous education outputs
-Write-Host "`n[1/5] Removing previous education outputs..." -ForegroundColor Yellow
+Write-Host "`n[1/6] Removing previous education outputs..." -ForegroundColor Yellow
 $filesToRemove = @(
     "docs\reports\deep_analysis_education_version.md",
     "docs\reports\deep_analysis_education_version_ppt.md",
@@ -27,14 +40,14 @@ foreach ($f in $filesToRemove) {
 }
 
 # 2) Run pipeline with calibration profile
-Write-Host "`n[2/5] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
+Write-Host "`n[2/6] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
 $env:RUN_PROFILE = "calibration"
 # Prefer venv python if available, otherwise fall back to system python
 $venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
 if (Test-Path $venvPython) { $py = $venvPython } else { $py = "python" }
 & $py scripts/run_once.py
 $exitCode = $LASTEXITCODE
-$env:RUN_PROFILE = $null  # 清除環境變數
+$env:RUN_PROFILE = $null
 
 if ($exitCode -ne 0) {
     Write-Host "  Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
@@ -43,7 +56,7 @@ if ($exitCode -ne 0) {
 Write-Host "  Pipeline succeeded" -ForegroundColor Green
 
 # 3) Verify FILTER_SUMMARY exists in log
-Write-Host "`n[3/5] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
+Write-Host "`n[3/6] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
 $filterLog = Select-String -Path "logs\app.log" -Pattern "FILTER_SUMMARY" -SimpleMatch | Select-Object -Last 1
 if ($filterLog) {
     Write-Host "  FILTER_SUMMARY hit:" -ForegroundColor Green
@@ -53,8 +66,8 @@ if ($filterLog) {
     exit 1
 }
 
-# 4) Verify education report exists
-Write-Host "`n[4/5] Checking education report file..." -ForegroundColor Yellow
+# 4) Verify education report exists on disk (NOT required to be git-tracked)
+Write-Host "`n[4/6] Checking education report file..." -ForegroundColor Yellow
 $eduFile = "docs\reports\deep_analysis_education_version.md"
 if (Test-Path $eduFile) {
     Get-Item $eduFile | Format-List FullName, LastWriteTime, Length
@@ -64,7 +77,7 @@ if (Test-Path $eduFile) {
 }
 
 # 5) Verify education report contains key sections
-Write-Host "[5/5] Verifying education report content..." -ForegroundColor Yellow
+Write-Host "`n[5/6] Verifying education report content..." -ForegroundColor Yellow
 $patterns = @("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Metrics", "mermaid")
 $hits = Select-String -Path $eduFile -Pattern $patterns -SimpleMatch
 if ($hits.Count -ge 3) {
@@ -82,4 +95,17 @@ if ($emptyHit) {
     }
 }
 
+# 6) Artifact policy reminder
+Write-Host "`n[6/6] Artifact policy check..." -ForegroundColor Yellow
+$trackedReports = git ls-files -- "docs/reports/deep_analysis_education_version*.md" 2>$null
+if ($trackedReports) {
+    Write-Host "  WARNING: Generated reports are still git-tracked:" -ForegroundColor Red
+    foreach ($tr in $trackedReports) { Write-Host "    $tr" -ForegroundColor Red }
+    Write-Host "  Run: git rm --cached docs/reports/deep_analysis_education_version*.md" -ForegroundColor Yellow
+} else {
+    Write-Host "  OK (generated reports are NOT tracked — artifact policy enforced)" -ForegroundColor Green
+}
+
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
+Write-Host "NOTE: Education reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
+Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
