@@ -53,14 +53,16 @@ def normalize_url(url: str) -> str:
     # 移除尾端斜線（但保留根路徑 /）
     path = parsed.path.rstrip("/") or "/"
 
-    normalized = urlunparse((
-        parsed.scheme.lower(),
-        parsed.netloc.lower(),
-        path,
-        parsed.params,
-        new_query,
-        "",  # 移除 fragment
-    ))
+    normalized = urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            path,
+            parsed.params,
+            new_query,
+            "",  # 移除 fragment
+        )
+    )
 
     return normalized
 
@@ -101,7 +103,9 @@ def dedupe_items(items: list[RawItem], logger: logging.Logger | None = None) -> 
     if logger:
         logger.info(
             "URL 去重：去重前 %d 筆 → 去重後 %d 筆（移除 %d 筆重複）",
-            before_count, after_count, removed,
+            before_count,
+            after_count,
+            removed,
         )
 
     return result

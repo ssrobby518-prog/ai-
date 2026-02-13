@@ -64,19 +64,25 @@ def _safe_get(url: str, source_label: str) -> requests.Response | None:
         except requests.Timeout:
             log.warning(
                 "[%s] 第 %d 次請求逾時（%ds），%s",
-                source_label, attempt, _REQUEST_TIMEOUT,
+                source_label,
+                attempt,
+                _REQUEST_TIMEOUT,
                 "重試中..." if attempt < _MAX_RETRIES else "已放棄。",
             )
         except requests.ConnectionError as exc:
             log.warning(
                 "[%s] 第 %d 次連線失敗：%s，%s",
-                source_label, attempt, exc,
+                source_label,
+                attempt,
+                exc,
                 "重試中..." if attempt < _MAX_RETRIES else "已放棄。",
             )
         except requests.HTTPError as exc:
             log.warning(
                 "[%s] 第 %d 次 HTTP 錯誤：%s，%s",
-                source_label, attempt, exc,
+                source_label,
+                attempt,
+                exc,
                 "重試中..." if attempt < _MAX_RETRIES else "已放棄。",
             )
         except Exception as exc:
@@ -216,8 +222,12 @@ def fetch_rss() -> list[RawItem]:
                 if tp:
                     try:
                         dt = datetime(
-                            tp.tm_year, tp.tm_mon, tp.tm_mday,
-                            tp.tm_hour, tp.tm_min, tp.tm_sec,
+                            tp.tm_year,
+                            tp.tm_mon,
+                            tp.tm_mday,
+                            tp.tm_hour,
+                            tp.tm_min,
+                            tp.tm_sec,
                             tzinfo=UTC,
                         )
                         published_at = dt.isoformat()

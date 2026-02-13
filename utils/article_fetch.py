@@ -271,10 +271,10 @@ async def _async_fetch_one(
                         headers={"User-Agent": "AI-Intel-Scraper/1.0"},
                     ) as resp,
                 ):
-                        if resp.status in _BLOCKED_CODES:
-                            return "", ERR_BLOCKED, time.time() - t0
-                        resp.raise_for_status()
-                        html = await resp.text()
+                    if resp.status in _BLOCKED_CODES:
+                        return "", ERR_BLOCKED, time.time() - t0
+                    resp.raise_for_status()
+                    html = await resp.text()
             except TimeoutError:
                 last_error = ERR_TIMEOUT
                 if attempt < _MAX_RETRIES:
@@ -312,7 +312,10 @@ async def _enrich_items_async_impl(
 
     async def _process(idx: int, item: RawItem) -> None:
         text, err, latency = await _async_fetch_one(
-            item.url, semaphore, domain_locks, domain_lock,
+            item.url,
+            semaphore,
+            domain_locks,
+            domain_lock,
         )
         if err:
             stats.record_fail(err, latency)

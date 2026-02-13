@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -38,9 +38,11 @@ def test_discover_sources_returns_newsource_instances() -> None:
 
 def test_fetch_all_sources_returns_rawitem_list() -> None:
     """fetch_all_sources should return a list (possibly empty) of RawItem."""
-    with patch("core.news_sources.fetch_hackernews", return_value=[]), \
-         patch("core.sources.techcrunch_rss.fetch_feed", return_value=[]), \
-         patch("core.sources.kr36.fetch_feed", return_value=[]):
+    with (
+        patch("core.news_sources.fetch_hackernews", return_value=[]),
+        patch("core.sources.techcrunch_rss.fetch_feed", return_value=[]),
+        patch("core.sources.kr36.fetch_feed", return_value=[]),
+    ):
         from core.sources import fetch_all_sources
 
         result = fetch_all_sources()
@@ -50,9 +52,14 @@ def test_fetch_all_sources_returns_rawitem_list() -> None:
 def test_hackernews_plugin_fetch() -> None:
     """HackerNews plugin should delegate to fetch_hackernews."""
     fake_item = RawItem(
-        item_id="abc", title="Test", url="https://example.com",
-        body="body", published_at="2025-01-01", source_name="HackerNews",
-        source_category="tech", lang="en",
+        item_id="abc",
+        title="Test",
+        url="https://example.com",
+        body="body",
+        published_at="2025-01-01",
+        source_name="HackerNews",
+        source_category="tech",
+        lang="en",
     )
     with patch("core.news_sources.fetch_hackernews", return_value=[fake_item]):
         from core.sources.hackernews import HackerNewsSource

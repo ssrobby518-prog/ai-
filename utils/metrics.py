@@ -130,8 +130,7 @@ class MetricsCollector:
             "## Run Metrics",
             "",
             f"- **run_id**: `{self.run_id}`",
-            f"- **enrich_success_rate**: {s.success_rate:.1f}%"
-            f" ({s.success}/{s.attempted})",
+            f"- **enrich_success_rate**: {s.success_rate:.1f}% ({s.success}/{s.attempted})",
             f"- **total_runtime_seconds**: {self.total_runtime_seconds}",
             f"- **entity_noise_removed**: {self.entity_noise_removed}",
         ]

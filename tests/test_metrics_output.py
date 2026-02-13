@@ -59,12 +59,21 @@ class TestMetricsCollector:
 
         # Verify all required fields
         required_fields = {
-            "run_id", "timestamp", "total_items", "passed_gate",
+            "run_id",
+            "timestamp",
+            "total_items",
+            "passed_gate",
             "total_runtime_seconds",
-            "enrich_attempted", "enrich_success", "enrich_fail",
-            "enrich_success_rate", "enrich_fail_reasons",
-            "enrich_latency_p50", "enrich_latency_p95",
-            "entity_before_count", "entity_after_count", "entity_noise_removed",
+            "enrich_attempted",
+            "enrich_success",
+            "enrich_fail",
+            "enrich_success_rate",
+            "enrich_fail_reasons",
+            "enrich_latency_p50",
+            "enrich_latency_p95",
+            "entity_before_count",
+            "entity_after_count",
+            "entity_noise_removed",
         }
         assert required_fields.issubset(data.keys()), f"Missing: {required_fields - set(data.keys())}"
 

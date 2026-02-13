@@ -41,7 +41,8 @@ def ingest_news() -> list[MergedResult]:
     passed_count = sum(1 for r in results if r.passed_gate)
     log.info(
         "AI Core 處理完成：%d 筆已處理 | %d 筆通過品質閘門",
-        len(results), passed_count,
+        len(results),
+        passed_count,
     )
 
     return results

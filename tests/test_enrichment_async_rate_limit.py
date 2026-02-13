@@ -46,10 +46,7 @@ class TestSemaphoreConcurrency:
                     current_concurrent -= 1
             return "Content " * 100, "", 0.05
 
-        items = [
-            _make_hn_item(f"item_{i}", f"https://site{i}.com/article")
-            for i in range(6)
-        ]
+        items = [_make_hn_item(f"item_{i}", f"https://site{i}.com/article") for i in range(6)]
         stats = EnrichStats()
 
         with patch("utils.article_fetch._async_fetch_one", side_effect=mock_fetch):
@@ -108,6 +105,5 @@ class TestPerDomainPoliteness:
             gap = domain_timestamps[i] - domain_timestamps[i - 1]
             # Allow small tolerance for timing
             assert gap >= _POLITENESS_DELAY * 0.8, (
-                f"Gap {gap:.3f}s < {_POLITENESS_DELAY * 0.8:.3f}s between "
-                f"same-domain requests"
+                f"Gap {gap:.3f}s < {_POLITENESS_DELAY * 0.8:.3f}s between same-domain requests"
             )

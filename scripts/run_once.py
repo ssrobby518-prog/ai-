@@ -12,9 +12,10 @@ from core.ai_core import process_batch
 from core.deep_analyzer import analyze_batch
 from core.deep_delivery import write_deep_analysis
 from core.delivery import print_console_summary, push_to_feishu, push_to_notion, write_digest
-from core.ingestion import batch_items, dedup_items, fetch_all_feeds, filter_items
-from core.storage import get_existing_item_ids, init_db, save_items, save_results
+from core.education_renderer import render_education_report, write_education_reports, render_error_report
+from core.ingestion import FilterSummary, batch_items, dedup_items, fetch_all_feeds, filter_items
 from core.notifications import send_all_notifications
+from core.storage import get_existing_item_ids, init_db, save_items, save_results
 from utils.entity_cleaner import clean_entities
 from utils.logger import setup_logger
 from utils.metrics import get_collector, reset_collector
@@ -45,6 +46,7 @@ def run_pipeline() -> None:
     log.info("=" * 60)
     t_start = time.time()
     from datetime import UTC, datetime
+
     t_start_iso = datetime.now(UTC).isoformat()
 
     # Initialize metrics collector
@@ -72,53 +74,61 @@ def run_pipeline() -> None:
     deduped = dedup_items(raw_items, existing_ids)
 
     # Filter
-    filtered = filter_items(deduped)
+    filtered, filter_summary = filter_items(deduped)
 
-    if not filtered:
-        log.warning("No items passed filters. Exiting.")
-        collector.stop()
-        collector.write_json()
-        send_all_notifications(t_start_iso, 0, True, "")
-        return
+    # Build filter_summary dict for Z5
+    filter_summary_dict: dict = {
+        "input_count": filter_summary.input_count,
+        "kept_count": filter_summary.kept_count,
+        "dropped_by_reason": dict(filter_summary.dropped_by_reason),
+    }
 
-    # Save raw items to DB
-    save_items(settings.DB_PATH, filtered)
+    all_results: list = []
+    digest_path = None
 
-    # Z2: AI Core (batch processing)
-    log.info("--- Z2: AI Core ---")
-    all_results = []
-    for batch_num, batch in enumerate(batch_items(filtered), 1):
-        log.info("Processing batch %d (%d items)", batch_num, len(batch))
-        results = process_batch(batch)
-        all_results.extend(results)
+    if filtered:
+        # Save raw items to DB
+        save_items(settings.DB_PATH, filtered)
 
-    # Entity cleaning (between extraction and deep analysis)
-    _apply_entity_cleaning(all_results)
+        # Z2: AI Core (batch processing)
+        log.info("--- Z2: AI Core ---")
+        for batch_num, batch in enumerate(batch_items(filtered), 1):
+            log.info("Processing batch %d (%d items)", batch_num, len(batch))
+            results = process_batch(batch)
+            all_results.extend(results)
 
-    # Update metrics
-    collector.total_items = len(all_results)
-    collector.passed_gate = sum(1 for r in all_results if r.passed_gate)
+        # Entity cleaning (between extraction and deep analysis)
+        _apply_entity_cleaning(all_results)
 
-    # Z3: Storage & Delivery
-    log.info("--- Z3: Storage & Delivery ---")
-    save_results(settings.DB_PATH, all_results)
+        # Update metrics
+        collector.total_items = len(all_results)
+        collector.passed_gate = sum(1 for r in all_results if r.passed_gate)
 
-    # Local sink
-    digest_path = write_digest(all_results)
-    print_console_summary(all_results)
+        # Z3: Storage & Delivery
+        log.info("--- Z3: Storage & Delivery ---")
+        save_results(settings.DB_PATH, all_results)
 
-    # Optional sinks
-    push_to_notion(all_results)
-    push_to_feishu(all_results)
+        # Local sink
+        digest_path = write_digest(all_results)
+        print_console_summary(all_results)
+
+        # Optional sinks
+        push_to_notion(all_results)
+        push_to_feishu(all_results)
+    else:
+        log.warning("No items passed filters — skipping Z2/Z3, proceeding to Z4/Z5.")
+        digest_path = write_digest([])
+        print_console_summary([])
 
     # Z4: Deep Analysis (non-blocking)
+    z4_report = None  # 供 Z5 使用
     if settings.DEEP_ANALYSIS_ENABLED:
         passed_results = [r for r in all_results if r.passed_gate]
         if passed_results:
             try:
                 log.info("--- Z4: Deep Analysis ---")
-                report = analyze_batch(passed_results)
-                deep_path = write_deep_analysis(report, metrics_md=collector.as_markdown())
+                z4_report = analyze_batch(passed_results)
+                deep_path = write_deep_analysis(z4_report, metrics_md=collector.as_markdown())
                 log.info("Deep analysis: %s", deep_path)
             except Exception as exc:
                 log.error("Z4 Deep Analysis failed (non-blocking): %s", exc)
@@ -130,6 +140,44 @@ def run_pipeline() -> None:
     # Finalize metrics
     collector.stop()
     metrics_path = collector.write_json()
+
+    # Z5: Education Renderer (non-blocking, always runs)
+    if settings.EDU_REPORT_ENABLED:
+        try:
+            log.info("--- Z5: Education Renderer ---")
+            metrics_dict = collector.to_dict()
+            # 模式 A（優先）：結構化輸入
+            z5_results = all_results if all_results else None
+            z5_report = z4_report
+            # 模式 B fallback：讀取文本
+            z5_text = None
+            if z5_report is None:
+                da_path = Path(settings.DEEP_ANALYSIS_OUTPUT_PATH)
+                if da_path.exists():
+                    z5_text = da_path.read_text(encoding="utf-8")
+
+            notion_md, ppt_md, xmind_md = render_education_report(
+                results=z5_results,
+                report=z5_report,
+                metrics=metrics_dict,
+                deep_analysis_text=z5_text,
+                max_items=settings.EDU_REPORT_MAX_ITEMS,
+                filter_summary=filter_summary_dict,
+            )
+            edu_paths = write_education_reports(notion_md, ppt_md, xmind_md)
+            log.info("Z5: 教育版報告已生成 → %s", [str(p) for p in edu_paths])
+        except Exception as exc:
+            log.error("Z5 Education Renderer failed (non-blocking): %s", exc)
+            try:
+                err_md = render_error_report(exc)
+                err_path = Path(settings.PROJECT_ROOT) / "outputs" / "deep_analysis_education.md"
+                err_path.parent.mkdir(parents=True, exist_ok=True)
+                err_path.write_text(err_md, encoding="utf-8")
+                log.info("Z5: 錯誤說明已寫入 %s", err_path)
+            except Exception:
+                log.error("Z5: 連錯誤報告都寫不出來")
+    else:
+        log.info("Z5: Education report disabled")
 
     elapsed = time.time() - t_start
     passed = sum(1 for r in all_results if r.passed_gate)

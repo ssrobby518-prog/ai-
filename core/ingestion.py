@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Generator
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import feedparser
@@ -171,11 +172,25 @@ def _detect_lang(text: str) -> str:
         return ""
 
 
-def filter_items(items: list[RawItem]) -> list[RawItem]:
-    """Apply time, language, keyword, and length filters."""
+@dataclass
+class FilterSummary:
+    """Per-reason breakdown of items dropped by filter_items()."""
+
+    input_count: int = 0
+    kept_count: int = 0
+    dropped_by_reason: dict[str, int] = field(default_factory=dict)
+    # reasons: too_old, lang_not_allowed, keyword_mismatch, body_too_short
+
+
+def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
+    """Apply time, language, keyword, and length filters.
+
+    Returns (filtered_items, summary) where summary contains per-reason drop counts.
+    """
     log = get_logger()
     cutoff = datetime.now(UTC) - timedelta(hours=settings.NEWER_THAN_HOURS)
     result: list[RawItem] = []
+    summary = FilterSummary(input_count=len(items))
 
     for item in items:
         # Time filter
@@ -183,6 +198,7 @@ def filter_items(items: list[RawItem]) -> list[RawItem]:
             try:
                 pub_dt = datetime.fromisoformat(item.published_at)
                 if pub_dt < cutoff:
+                    summary.dropped_by_reason["too_old"] = summary.dropped_by_reason.get("too_old", 0) + 1
                     continue
             except ValueError:
                 pass  # keep items with unparseable dates
@@ -191,22 +207,33 @@ def filter_items(items: list[RawItem]) -> list[RawItem]:
         if settings.ALLOW_LANG:
             detected = _detect_lang(item.title + " " + item.body[:200])
             if detected and detected not in settings.ALLOW_LANG:
+                summary.dropped_by_reason["lang_not_allowed"] = summary.dropped_by_reason.get("lang_not_allowed", 0) + 1
                 continue
 
         # Keyword filter (if configured, at least one keyword must appear)
         if settings.KEYWORD_FILTER:
             combined = (item.title + " " + item.body).lower()
             if not any(kw.lower() in combined for kw in settings.KEYWORD_FILTER):
+                summary.dropped_by_reason["keyword_mismatch"] = summary.dropped_by_reason.get("keyword_mismatch", 0) + 1
                 continue
 
         # Min body length
         if len(item.body) < settings.MIN_BODY_LENGTH:
+            summary.dropped_by_reason["body_too_short"] = summary.dropped_by_reason.get("body_too_short", 0) + 1
             continue
 
         result.append(item)
 
+    summary.kept_count = len(result)
+    dropped_total = summary.input_count - summary.kept_count
     log.info("Filters: %d -> %d items", len(items), len(result))
-    return result
+    log.info(
+        "FILTER_SUMMARY kept=%d dropped_total=%d reasons=%s",
+        summary.kept_count,
+        dropped_total,
+        summary.dropped_by_reason,
+    )
+    return result, summary
 
 
 # ---------------------------------------------------------------------------

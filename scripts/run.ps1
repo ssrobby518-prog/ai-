@@ -20,8 +20,8 @@ try {
 
     Write-Host ""
     Write-Host "============================================"
-    Write-Host "  AI Intel Scraper — Pipeline Run"
-    Write-Host "  Timestamp: $ts"
+    Write-Host "  AI Intel Scraper — 管線執行"
+    Write-Host "  產生時間: $ts"
     Write-Host "============================================"
     Write-Host ""
 
@@ -31,8 +31,8 @@ try {
 
     if ($exitCode -ne 0) {
         Write-Host ""
-        Write-Host "[ERROR] Pipeline failed with exit code $exitCode." -ForegroundColor Red
-        Write-Host "        Skipping archive step."
+        Write-Host "[錯誤] 管線執行失敗，代碼 $exitCode。" -ForegroundColor Red
+        Write-Host "        已略過歸檔步驟。"
         exit $exitCode
     }
 
@@ -42,35 +42,34 @@ try {
     foreach ($f in $files) {
         $src = Join-Path "outputs" $f
         if (Test-Path $src) {
-            Copy-Item -Path $src -Destination (Join-Path $runDir $f) -Force
+            $srcFull = (Resolve-Path $src).Path
+            $destFull = (Join-Path (Resolve-Path $runDir).Path $f)
+            [System.IO.File]::Copy($srcFull, $destFull, $true)
         }
     }
 
-    # --- write latest_run pointers (atomic: write tmp then move) ---
+    # --- write latest_run pointers ---
     $outDir = "outputs"
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
     $absOutDir = (Resolve-Path $outDir).Path
-    $tmpRun = Join-Path $absOutDir "latest_run.txt.tmp"
-    $tmpDir = Join-Path $absOutDir "latest_run_dir.txt.tmp"
+    $runPath = Join-Path $absOutDir "latest_run.txt"
+    $dirPath = Join-Path $absOutDir "latest_run_dir.txt"
 
     $utf8NoBOM = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($tmpRun, "$ts`r`n", $utf8NoBOM)
-    [System.IO.File]::WriteAllText($tmpDir, "outputs\runs\$ts\`r`n", $utf8NoBOM)
-
-    Move-Item -Path $tmpRun -Destination (Join-Path $outDir "latest_run.txt") -Force
-    Move-Item -Path $tmpDir -Destination (Join-Path $outDir "latest_run_dir.txt") -Force
+    [System.IO.File]::WriteAllText($runPath, "$ts`r`n", $utf8NoBOM)
+    [System.IO.File]::WriteAllText($dirPath, "outputs\runs\$ts\`r`n", $utf8NoBOM)
 
     # --- 印出結果路徑 ---
     Write-Host ""
     Write-Host "============================================"
-    Write-Host "  Run archived to: $runDir\"
+    Write-Host "  本次歸檔位置: $runDir\"
     Write-Host "============================================"
 
     foreach ($f in $files) {
         $src = Join-Path "outputs" $f
         if (Test-Path $src) {
-            Write-Host "  Latest: outputs\$f"
+            Write-Host "  最新檔案: outputs\$f"
         }
     }
 

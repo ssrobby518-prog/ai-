@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import smtplib
 from email.mime.text import MIMEText
+from typing import Any
 
 import requests
 from config import settings
@@ -80,7 +81,7 @@ def notify_notion_run(timestamp: str, item_count: int, success: bool, report_pat
         return False
     try:
         status = "Success" if success else "Failure"
-        payload = {
+        payload: dict[str, Any] = {
             "parent": {"database_id": db_id},
             "properties": {
                 "Name": {"title": [{"text": {"content": f"Pipeline Run {timestamp}"}}]},
@@ -111,9 +112,7 @@ def notify_notion_run(timestamp: str, item_count: int, success: bool, report_pat
         return False
 
 
-def send_all_notifications(
-    timestamp: str, item_count: int, success: bool, report_path: str
-) -> dict[str, bool]:
+def send_all_notifications(timestamp: str, item_count: int, success: bool, report_path: str) -> dict[str, bool]:
     """Fire all configured notification channels. Never raises."""
     results: dict[str, bool] = {}
     for channel_name, fn in [

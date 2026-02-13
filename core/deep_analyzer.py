@@ -690,14 +690,10 @@ def _fallback_counter_risks(r: MergedResult) -> list[str]:
     ]
 
     if a.category in ("政策/監管", "資安/網路安全"):
-        risks.append(
-            f"突發的監管政策變動可能徹底改變可行性與時程預期；"
-            f"建議持續追蹤 {cat} 領域的政策動態作為緩解措施"
-        )
+        risks.append(f"突發的監管政策變動可能徹底改變可行性與時程預期；建議持續追蹤 {cat} 領域的政策動態作為緩解措施")
     else:
         risks.append(
-            f"技術或市場環境的快速變化可能使當前評估在 6-12 個月後過時；"
-            f"建議定期回顧 {cat} 領域的關鍵指標作為緩解措施"
+            f"技術或市場環境的快速變化可能使當前評估在 6-12 個月後過時；建議定期回顧 {cat} 領域的關鍵指標作為緩解措施"
         )
 
     return risks[:2]

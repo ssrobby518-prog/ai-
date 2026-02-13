@@ -4,8 +4,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.notifications import (
@@ -29,8 +27,7 @@ def test_slack_skip_when_unconfigured() -> None:
 
 
 def test_slack_send_when_configured() -> None:
-    with patch("core.notifications.settings") as mock_settings, \
-         patch("core.notifications.requests.post") as mock_post:
+    with patch("core.notifications.settings") as mock_settings, patch("core.notifications.requests.post") as mock_post:
         mock_settings.SLACK_WEBHOOK_URL = "https://hooks.slack.com/test"
         mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.raise_for_status = MagicMock()
@@ -39,8 +36,10 @@ def test_slack_send_when_configured() -> None:
 
 
 def test_slack_handles_failure() -> None:
-    with patch("core.notifications.settings") as mock_settings, \
-         patch("core.notifications.requests.post", side_effect=Exception("boom")):
+    with (
+        patch("core.notifications.settings") as mock_settings,
+        patch("core.notifications.requests.post", side_effect=Exception("boom")),
+    ):
         mock_settings.SLACK_WEBHOOK_URL = "https://hooks.slack.com/test"
         assert notify_slack(TS, 5, True, REPORT) is False
 
@@ -56,8 +55,10 @@ def test_email_skip_when_unconfigured() -> None:
 
 
 def test_email_send_when_configured() -> None:
-    with patch("core.notifications.settings") as mock_settings, \
-         patch("core.notifications.smtplib.SMTP") as mock_smtp_cls:
+    with (
+        patch("core.notifications.settings") as mock_settings,
+        patch("core.notifications.smtplib.SMTP") as mock_smtp_cls,
+    ):
         mock_settings.SMTP_HOST = "smtp.test.com"
         mock_settings.SMTP_PORT = 587
         mock_settings.SMTP_USER = "user"
@@ -82,8 +83,7 @@ def test_notion_skip_when_unconfigured() -> None:
 
 
 def test_notion_send_when_configured() -> None:
-    with patch("core.notifications.settings") as mock_settings, \
-         patch("core.notifications.requests.post") as mock_post:
+    with patch("core.notifications.settings") as mock_settings, patch("core.notifications.requests.post") as mock_post:
         mock_settings.NOTION_TOKEN = "secret_token"
         mock_settings.NOTION_DATABASE_ID = "db123"
         mock_post.return_value = MagicMock(status_code=200)
@@ -108,9 +108,11 @@ def test_send_all_returns_dict() -> None:
 
 def test_send_all_never_crashes() -> None:
     """Even if individual channels raise, send_all should not crash."""
-    with patch("core.notifications.notify_slack", side_effect=Exception("slack boom")), \
-         patch("core.notifications.notify_email", side_effect=Exception("email boom")), \
-         patch("core.notifications.notify_notion_run", side_effect=Exception("notion boom")):
+    with (
+        patch("core.notifications.notify_slack", side_effect=Exception("slack boom")),
+        patch("core.notifications.notify_email", side_effect=Exception("email boom")),
+        patch("core.notifications.notify_notion_run", side_effect=Exception("notion boom")),
+    ):
         result = send_all_notifications(TS, 0, True, "")
         assert isinstance(result, dict)
         assert all(v is False for v in result.values())

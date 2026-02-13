@@ -67,13 +67,14 @@ def setup_daily_logger(logs_dir: Path | None = None) -> logging.Logger:
         core_logger.setLevel(logging.INFO)
     # 檢查是否已有指向同一檔案的 handler，避免重複
     has_daily_fh = any(
-        isinstance(h, logging.FileHandler) and h.baseFilename == fh.baseFilename
-        for h in core_logger.handlers
+        isinstance(h, logging.FileHandler) and h.baseFilename == fh.baseFilename for h in core_logger.handlers
     )
     if not has_daily_fh:
         core_logger.addHandler(fh)
     # 確保有主控台輸出
-    has_console = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in core_logger.handlers)
+    has_console = any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in core_logger.handlers
+    )
     if not has_console:
         core_logger.addHandler(ch)
 

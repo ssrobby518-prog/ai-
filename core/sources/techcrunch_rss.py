@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from core.ingestion import fetch_feed
 from schemas.models import RawItem
 from utils.logger import get_logger
+
+from core.ingestion import fetch_feed
 
 from .base import NewsSource
 

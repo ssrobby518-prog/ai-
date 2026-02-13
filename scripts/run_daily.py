@@ -30,15 +30,7 @@ from utils.logging_utils import setup_daily_logger
 # 降級輸出：當管線完全失敗時仍產出最小可用報告
 # ---------------------------------------------------------------------------
 
-_DEGRADED_HEADER = (
-    "> **⚠️ 本次為降級輸出（Degraded Output）**\n"
-    ">\n"
-    "> {reason}\n"
-    ">\n"
-    "> 產生時間：{timestamp}\n"
-    "\n"
-    "---\n\n"
-)
+_DEGRADED_HEADER = "> **⚠️ 本次為降級輸出（Degraded Output）**\n>\n> {reason}\n>\n> 產生時間：{timestamp}\n\n---\n\n"
 
 
 def _write_degraded_digest(reason: str) -> Path:
@@ -50,9 +42,7 @@ def _write_degraded_digest(reason: str) -> Path:
     header = _DEGRADED_HEADER.format(reason=reason, timestamp=now)
 
     content = (
-        "# AI 情報報告\n\n"
-        + header
-        + f"生成時間: {now}\n\n"
+        "# AI 情報報告\n\n" + header + f"生成時間: {now}\n\n"
         "總處理筆數: 0 | 通過門檻: 0\n\n"
         "---\n\n"
         "*本次無項目通過品質門檻。*\n"
@@ -70,9 +60,7 @@ def _write_degraded_deep_analysis(reason: str) -> Path:
     header = _DEGRADED_HEADER.format(reason=reason, timestamp=now)
 
     content = (
-        "# AI 深度情報分析報告\n\n"
-        + header
-        + f"生成時間: {now}\n"
+        "# AI 深度情報分析報告\n\n" + header + f"生成時間: {now}\n"
         "分析項目數: 0\n\n"
         "---\n\n"
         "## PART 1: 執行層元信號 (Executive Meta Signals)\n\n"
@@ -119,6 +107,7 @@ def main() -> None:
     log.info("--- 步驟 1：抓取新聞 ---")
     try:
         from core.ingest_news import ingest_news
+
         all_results = ingest_news()
     except Exception as exc:
         log.error("步驟 1 失敗：%s", exc)
@@ -154,6 +143,7 @@ def main() -> None:
     log.info("--- 步驟 2：產出 Digest ---")
     try:
         from core.delivery import write_digest
+
         digest_path = write_digest(all_results)
         log.info("Digest 輸出：%s", digest_path)
     except Exception as exc:
@@ -167,6 +157,7 @@ def main() -> None:
         try:
             from core.deep_analyzer import analyze_batch
             from core.deep_delivery import write_deep_analysis
+
             report = analyze_batch(passed)
             deep_path = write_deep_analysis(report)
             log.info("深度分析輸出：%s", deep_path)
@@ -186,7 +177,9 @@ def main() -> None:
     log.info("=" * 60)
     log.info(
         "每日管線完成 | 處理 %d 筆 | 通過 %d 筆 | 耗時 %.2f 秒",
-        total, len(passed), elapsed,
+        total,
+        len(passed),
+        elapsed,
     )
     log.info("=" * 60)
 

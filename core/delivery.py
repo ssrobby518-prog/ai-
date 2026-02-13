@@ -1,4 +1,3 @@
-
 """Z3 – Delivery sinks.
 
 - Local: outputs/digest.md + console summary

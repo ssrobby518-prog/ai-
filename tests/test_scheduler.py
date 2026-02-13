@@ -4,15 +4,12 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def test_scheduler_creates_cron_job() -> None:
     """BlockingScheduler should have exactly one job after setup."""
-    with patch("config.settings.SCHEDULER_CRON_HOUR", 9), \
-         patch("config.settings.SCHEDULER_CRON_MINUTE", 0):
+    with patch("config.settings.SCHEDULER_CRON_HOUR", 9), patch("config.settings.SCHEDULER_CRON_MINUTE", 0):
         from apscheduler.schedulers.blocking import BlockingScheduler
         from apscheduler.triggers.cron import CronTrigger
 
