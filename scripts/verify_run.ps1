@@ -3,6 +3,12 @@
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_run.ps1
 
 $ErrorActionPreference = "Stop"
+
+# UTF-8 console hardening — prevent garbled CJK output
+chcp 65001 | Out-Null
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = "utf-8"
+
 Write-Host "=== Verification Start ===" -ForegroundColor Cyan
 
 # 1) Remove previous education outputs
