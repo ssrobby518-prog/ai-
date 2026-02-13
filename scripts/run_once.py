@@ -12,8 +12,8 @@ from core.ai_core import process_batch
 from core.deep_analyzer import analyze_batch
 from core.deep_delivery import write_deep_analysis
 from core.delivery import print_console_summary, push_to_feishu, push_to_notion, write_digest
-from core.education_renderer import render_education_report, write_education_reports, render_error_report
-from core.ingestion import FilterSummary, batch_items, dedup_items, fetch_all_feeds, filter_items
+from core.education_renderer import render_education_report, render_error_report, write_education_reports
+from core.ingestion import batch_items, dedup_items, fetch_all_feeds, filter_items
 from core.notifications import send_all_notifications
 from core.storage import get_existing_item_ids, init_db, save_items, save_results
 from utils.entity_cleaner import clean_entities

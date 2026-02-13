@@ -23,11 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from schemas.education_models import (
+    TERM_METAPHORS,
     EduNewsCard,
     SystemHealthReport,
     is_invalid_item,
     translate_fail_reason,
-    TERM_METAPHORS,
 )
 from schemas.models import DeepAnalysisReport, ItemDeepDive, MergedResult
 from utils.logger import get_logger
@@ -306,7 +306,7 @@ def _build_action_items(dive: ItemDeepDive | None, category: str, title: str) ->
         title_short = title[:20]
         actions = [
             f"本週內：搜尋「{title_short}」的最新報導，確認事件進展 → 產出：摘要筆記",
-            f"兩週內：評估此事件對自身工作或投資的潛在影響 → 產出：風險/機會清單",
+            "兩週內：評估此事件對自身工作或投資的潛在影響 → 產出：風險/機會清單",
         ]
     return actions[:3]
 
@@ -996,7 +996,7 @@ def _render_xmind_md(
     date_str = report_time.split(" ")[0] if " " in report_time else report_time
 
     lines.append(f"AI 深度情報分析（{date_str}）")
-    lines.append(f"  今日結論")
+    lines.append("  今日結論")
     valid_count = sum(1 for c in cards if c.is_valid_news)
     invalid_count = len(cards) - valid_count
     lines.append(f"    有效新聞 {valid_count} 則")
@@ -1004,68 +1004,68 @@ def _render_xmind_md(
     lines.append(f"    成功率 {health.success_rate:.0f}%")
     lines.append(f"    健康度 {health.traffic_light_label}")
 
-    lines.append(f"  系統流程（Z1-Z5）")
-    lines.append(f"    Z1 資料擷取")
-    lines.append(f"    Z2 AI 分析核心")
-    lines.append(f"    Z3 儲存與交付")
-    lines.append(f"    Z4 深度分析")
-    lines.append(f"    Z5 教育版轉譯")
+    lines.append("  系統流程（Z1-Z5）")
+    lines.append("    Z1 資料擷取")
+    lines.append("    Z2 AI 分析核心")
+    lines.append("    Z3 儲存與交付")
+    lines.append("    Z4 深度分析")
+    lines.append("    Z5 教育版轉譯")
 
     for i, card in enumerate(cards, 1):
         title = card.title_plain[:30]
         if not card.is_valid_news:
             lines.append(f"  無效項目 {i}：{title}")
-            lines.append(f"    判定：無效內容")
+            lines.append("    判定：無效內容")
             lines.append(f"    原因：{card.invalid_cause or '抓取失敗'}")
             lines.append(f"    修復：{card.invalid_fix or '調整策略'}")
             continue
 
         lines.append(f"  新聞 {i}：{title}")
-        lines.append(f"    摘要")
+        lines.append("    摘要")
         lines.append(f"      發生了什麼：{card.what_happened[:50]}")
         lines.append(f"      為什麼重要：{card.why_important[:50]}")
         lines.append(f"      關注重點：{card.focus_action[:50]}")
 
-        lines.append(f"    事實核對")
+        lines.append("    事實核對")
         for fact in card.fact_check_confirmed[:3]:
             lines.append(f"      ✅ {fact[:50]}")
         for uv in card.fact_check_unverified[:2]:
             lines.append(f"      ⚠️ {uv[:50]}")
 
-        lines.append(f"    證據")
+        lines.append("    證據")
         for ev in card.evidence_lines[:3]:
             lines.append(f"      {ev[:60]}")
 
-        lines.append(f"    技術解讀")
+        lines.append("    技術解讀")
         if card.technical_interpretation:
             # 分成多行
             interp = card.technical_interpretation[:120]
             lines.append(f"      {interp}")
 
-        lines.append(f"    二階效應")
+        lines.append("    二階效應")
         for eff in card.derivable_effects[:2]:
             lines.append(f"      直接：{eff[:50]}")
         for eff in card.speculative_effects[:2]:
             lines.append(f"      間接：{eff[:50]}")
 
-        lines.append(f"    行動建議")
+        lines.append("    行動建議")
         for act in card.action_items[:3]:
             lines.append(f"      {act[:60]}")
 
-        lines.append(f"    素材")
+        lines.append("    素材")
         for img in card.image_suggestions[:1]:
             lines.append(f"      {img[:60]}")
         for vid in card.video_suggestions[:1]:
             lines.append(f"      {vid[:60]}")
 
-    lines.append(f"  Metrics & 運維")
+    lines.append("  Metrics & 運維")
     lines.append(f"    成功率 {health.success_rate:.0f}%")
     lines.append(f"    P50 延遲 {health.p50_latency:.1f}s")
     lines.append(f"    P95 延遲 {health.p95_latency:.1f}s")
     lines.append(f"    雜訊清除 {health.entity_noise_removed} 個")
     lines.append(f"    健康度 {health.traffic_light_emoji} {health.traffic_light_label}")
     if health.fail_reasons:
-        lines.append(f"    失敗原因")
+        lines.append("    失敗原因")
         for reason, count in health.fail_reasons.items():
             lines.append(f"      {translate_fail_reason(reason)} ×{count}")
 

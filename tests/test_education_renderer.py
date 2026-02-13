@@ -18,10 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.education_renderer import render_education_report
 from schemas.education_models import (
-    EduNewsCard,
     SystemHealthReport,
-    is_system_banner,
     is_invalid_item,
+    is_system_banner,
 )
 from schemas.models import (
     DeepAnalysisReport,

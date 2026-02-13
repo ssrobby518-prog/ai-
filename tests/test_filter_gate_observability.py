@@ -14,13 +14,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core.ingestion import FilterSummary, filter_items
+from core.ingestion import filter_items
 from schemas.models import RawItem
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -66,6 +63,7 @@ class TestCalibrationProfile:
         with patch.dict(os.environ, env, clear=False):
             # Re-import to trigger module-level if-block
             import importlib
+
             from config import settings
             importlib.reload(settings)
 
@@ -81,6 +79,7 @@ class TestCalibrationProfile:
 
     def test_prod_profile_unchanged(self):
         import importlib
+
         from config import settings
 
         with patch.dict(os.environ, {"RUN_PROFILE": "prod"}, clear=False):
@@ -97,6 +96,7 @@ class TestCalibrationProfile:
             "MIN_BODY_LENGTH": "50",
         }
         import importlib
+
         from config import settings
 
         with patch.dict(os.environ, env, clear=False):
@@ -141,13 +141,13 @@ class TestFilterSummary:
             _make_item(item_id="short", body="x"),
             _make_item(item_id="good"),
         ]
-        result, summary = filter_items(items)
+        _, summary = filter_items(items)
         assert summary.kept_count == 1
         assert summary.dropped_by_reason.get("too_old", 0) == 1
         assert summary.dropped_by_reason.get("body_too_short", 0) == 1
 
     def test_empty_input(self):
-        result, summary = filter_items([])
+        _, summary = filter_items([])
         assert summary.input_count == 0
         assert summary.kept_count == 0
         assert summary.dropped_by_reason == {}
@@ -174,7 +174,7 @@ class TestZeroItemsZ5Render:
                 "body_too_short": 10,
             },
         }
-        notion_md, ppt_md, xmind_md = render_education_report(
+        notion_md, _, _ = render_education_report(
             results=None,
             metrics={},
             filter_summary=fs,
@@ -199,7 +199,6 @@ class TestZeroItemsZ5Render:
 
     def test_nonempty_report_no_filter_section(self):
         """When cards exist, the filter empty section should NOT appear."""
-        from core.education_renderer import render_education_report
         from tests.test_education_renderer import _render_all
 
         notion_md, _, _ = _render_all()
@@ -220,7 +219,7 @@ class TestFilterSummaryInLog:
             _make_item(item_id="good"),
         ]
         with caplog.at_level(logging.INFO):
-            result, summary = filter_items(items)
+            _, _ = filter_items(items)
 
         filter_log = [r for r in caplog.records if "FILTER_SUMMARY" in r.message]
         assert len(filter_log) == 1
