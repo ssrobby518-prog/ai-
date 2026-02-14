@@ -57,3 +57,13 @@ if (-not $allExist) {
 }
 
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
+
+# Auto-open PPT for review (only PPT, not docx/xmind/md)
+$pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
+if (Test-Path $pptxPath) {
+    $pptxAbs = (Resolve-Path $pptxPath).Path
+    Write-Host "`nOpening: $pptxAbs" -ForegroundColor Yellow
+    Start-Process -FilePath $pptxAbs
+} else {
+    Write-Host "`nWARN: PPT not found: $pptxPath" -ForegroundColor Red
+}

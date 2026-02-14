@@ -245,6 +245,36 @@ if (-not $v3Pass) {
 }
 Write-Host "  Executive Output v3 guard passed." -ForegroundColor Green
 
+Write-Host "`n=== Auto-open artifacts (optional) ===" -ForegroundColor Cyan
+
+function Try-OpenFile([string]$path) {
+    try {
+        if (-not (Test-Path $path)) {
+            Write-Host "  SKIP (missing): $path" -ForegroundColor Yellow
+            return
+        }
+        Start-Process -FilePath $path | Out-Null
+        Write-Host "  OPEN: $path" -ForegroundColor Green
+    } catch {
+        Write-Host "  WARN: Failed to open $path => $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$outDir = Join-Path $root "outputs"
+
+$docx = Join-Path $outDir "executive_report.docx"
+$pptx = Join-Path $outDir "executive_report.pptx"
+$md = Join-Path $outDir "notion_page.md"
+$xmd = Join-Path $outDir "mindmap.xmind"
+
+Try-OpenFile $docx
+Try-OpenFile $pptx
+Try-OpenFile $md
+Try-OpenFile $xmd
+
+Write-Host "=== Done ===" -ForegroundColor Cyan
+
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
