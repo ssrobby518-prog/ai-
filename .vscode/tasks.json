@@ -10,7 +10,8 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/scripts/generate_reports.ps1"
+                "${workspaceFolder}/scripts/generate_reports.ps1",
+                "-OpenPpt"
             ],
             "group": "build",
             "presentation": {
