@@ -2,9 +2,10 @@
 
 極簡、留白、大標題。黑白灰為主色，#212838 深藍 + #E65A37 橘色 accent。
 Callout box（▌重點提示框）+ Divider 分隔線 + Notion 風格簡潔表格。
-每則新聞：圖片 + 6 欄決策卡（事件/事實/影響/風險/行動/要問誰）+ 總經理決策 QA。
+每則新聞：事件一句話/已知事實/為什麼重要/可能影響/建議下一步/關鍵引述/名詞解釋/來源。
 
 禁用詞彙：ai捕捉、AI Intel、Z1~Z5、pipeline、ETL、verify_run、ingestion、ai_core
+禁用系統運作字眼：系統健康、資料可信度、延遲、P95、雜訊清除、健康狀態
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from core.content_strategy import (
     build_decision_card,
     build_executive_qa,
     build_term_explainer,
+    is_non_event_or_index,
     sanitize,
 )
 from core.image_helper import get_news_image
@@ -148,39 +150,41 @@ def _build_cover_section(doc: Document, report_time: str, total_items: int,
     _add_divider(doc)
     info_p = doc.add_paragraph()
     info_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_info = info_p.add_run(
-        f"{report_time}  |  {total_items} 則分析  |  "
-        f"{health.traffic_light_emoji} {health.traffic_light_label}"
-    )
+    # No system health metrics — CEO deck only shows item count
+    run_info = info_p.add_run(f"{report_time}  |  {total_items} 則分析")
     run_info.font.size = Pt(11)
     run_info.font.color.rgb = GRAY_COLOR
     doc.add_page_break()
 
 
 def _build_key_takeaways(doc: Document, cards: list[EduNewsCard],
-                         health: SystemHealthReport, total_items: int) -> None:
-    valid_cards = [c for c in cards if c.is_valid_news]
-    lines = [f"本日分析 {total_items} 則，{len(valid_cards)} 則值得關注。"]
-    for c in valid_cards[:3]:
+                         total_items: int) -> None:
+    """Key takeaways — NO system health/metrics."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    lines = [f"本日分析 {total_items} 則，{len(event_cards)} 則值得關注。"]
+    for c in event_cards[:3]:
         dc = build_decision_card(c)
         lines.append(f"• {sanitize(c.title_plain[:40])} — {dc['event']}")
-    lines.append(f"資料完整率 {health.success_rate:.0f}%｜{health.traffic_light_label}")
+    if not event_cards:
+        lines.append("本日無重大事件需要決策。")
     _add_callout(doc, "Key Takeaways", lines)
     _add_divider(doc)
 
 
 def _build_overview_table(doc: Document, cards: list[EduNewsCard]) -> None:
     _add_heading(doc, "今日總覽", level=1)
-    valid_cards = [c for c in cards if c.is_valid_news]
-    invalid_count = len(cards) - len(valid_cards)
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    non_event = [c for c in cards if c.is_valid_news and is_non_event_or_index(c)]
+    invalid_count = len(cards) - len(event_cards) - len(non_event)
     p = doc.add_paragraph(
-        f"共 {len(cards)} 則資料，{len(valid_cards)} 則有效新聞"
-        + (f"、{invalid_count} 則已過濾" if invalid_count else "") + "。"
+        f"共 {len(cards)} 則資料，{len(event_cards)} 則事件新聞"
+        + (f"、{len(non_event)} 則索引/非事件已排除" if non_event else "")
+        + (f"、{invalid_count} 則無效已過濾" if invalid_count else "") + "。"
     )
     p.runs[0].font.size = Pt(11)
-    if valid_cards:
+    if event_cards:
         rows = []
-        for i, card in enumerate(valid_cards, 1):
+        for i, card in enumerate(event_cards, 1):
             rows.append([
                 str(i), sanitize(card.title_plain[:35]),
                 card.category or "綜合", f"{card.final_score:.1f}",
@@ -210,29 +214,50 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     except Exception:
         pass
 
-    # Article-style content blocks
+    # Article-style content blocks (same structure as PPT)
     article = build_ceo_article_blocks(card)
 
-    # One-liner summary
-    _add_bold_label(doc, "摘要", article["one_liner"])
+    # 1. Event one-liner
+    _add_bold_label(doc, "事件", article["one_liner"])
 
-    # Why it matters
-    p_why = doc.add_paragraph()
-    r = p_why.add_run("為什麼重要：")
-    r.bold = True
-    r.font.size = Pt(11)
-    r.font.color.rgb = DARK_TEXT
-    r2 = p_why.add_run(sanitize(article["why_it_matters"]))
-    r2.font.size = Pt(11)
+    # 2. Known facts
+    facts = article.get("known_facts", [])
+    if facts:
+        _add_callout(doc, "已知事實", [f"• {sanitize(f)}" for f in facts[:3]])
 
-    # What to do
-    _add_bold_label(doc, "下一步", article["what_to_do"])
+    # 3. Why it matters
+    why_parts = article.get("why_it_matters", [])
+    if why_parts:
+        _add_callout(doc, "為什麼重要", [f"• {sanitize(w)}" for w in why_parts[:3]])
 
-    # Quote callout
-    if article["quote"]:
+    # 4. Possible impact
+    impacts = article.get("possible_impact", [])
+    if impacts:
+        _add_callout(doc, "可能影響", [f"• {sanitize(imp)}" for imp in impacts[:3]])
+
+    # 5. What to do
+    actions = article.get("what_to_do", [])
+    if actions:
+        _add_callout(doc, "建議下一步", [f"• {sanitize(a)}" for a in actions[:2]])
+
+    # 6. Quote
+    if article.get("quote"):
         _add_callout(doc, "關鍵引述", [article["quote"]])
 
-    # Decision table (kept for DOCX — provides structured reference)
+    # 7. Key terms — CEO-readable explanations
+    term_items = build_term_explainer(card)
+    if term_items:
+        term_lines = [f"{it['term']}：{sanitize(it['explain'])}" for it in term_items]
+        _add_callout(doc, "重要名詞白話解釋", term_lines)
+
+    # 8. Source
+    if card.source_url and card.source_url.startswith("http"):
+        p_src = doc.add_paragraph()
+        run_src = p_src.add_run(f"原始來源：{card.source_url}")
+        run_src.font.size = Pt(9)
+        run_src.font.color.rgb = GRAY_COLOR
+
+    # Decision table (compact reference)
     dc = build_decision_card(card)
     table_rows = []
     max_r = max(len(dc["effects"]), len(dc["risks"]), len(dc["actions"]), 1)
@@ -249,27 +274,14 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     qa_lines = build_executive_qa(card, dc)
     _add_callout(doc, "總經理決策 QA", qa_lines)
 
-    # Key terms — context-aware explanations (not Q/A template)
-    term_items = build_term_explainer(card)
-    if term_items:
-        term_lines = [f"{it['term']}：{sanitize(it['explain'])}" for it in term_items]
-        _add_callout(doc, "關鍵名詞解讀", term_lines)
-
-    # Source
-    if card.source_url and card.source_url.startswith("http"):
-        p_src = doc.add_paragraph()
-        run_src = p_src.add_run(f"原始來源：{card.source_url}")
-        run_src.font.size = Pt(9)
-        run_src.font.color.rgb = GRAY_COLOR
-
 
 def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:
     doc.add_page_break()
     _add_heading(doc, "待決事項與 Owner", level=1)
 
     items: list[str] = []
-    valid_cards = [c for c in cards if c.is_valid_news]
-    for i, c in enumerate(valid_cards[:5], 1):
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    for i, c in enumerate(event_cards[:5], 1):
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
         items.append(f"{i}. {action} → Owner: {dc['owner']}")
@@ -281,7 +293,7 @@ def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:
     _add_divider(doc)
 
     footer = doc.add_paragraph()
-    run_ft = footer.add_run("本報告由自動化趨勢分析系統生成")
+    run_ft = footer.add_run("本報告由自動化趨勢分析產生")
     run_ft.font.size = Pt(9)
     run_ft.font.color.rgb = RGBColor(180, 180, 180)
 
@@ -310,10 +322,14 @@ def generate_executive_docx(
     style.font.size = Pt(11)
 
     _build_cover_section(doc, report_time, total_items, health)
-    _build_key_takeaways(doc, cards, health, total_items)
+    _build_key_takeaways(doc, cards, total_items)
     _build_overview_table(doc, cards)
-    for i, card in enumerate(cards, 1):
+
+    # Only include event cards in detail sections
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    for i, card in enumerate(event_cards, 1):
         _build_news_card_section(doc, card, i)
+
     _build_conclusion_section(doc, cards)
 
     doc.save(str(output_path))

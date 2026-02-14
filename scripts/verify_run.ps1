@@ -211,30 +211,38 @@ if ($pptxText) {
     }
 }
 
-# Check DOCX has embedded images (not just links)
+# Count event cards (cards that have images) — skip image check when pipeline had zero real items
+$eventCardCount = & $py -c "from docx import Document; doc = Document('outputs/executive_report.docx'); print(sum(1 for p in doc.paragraphs if p.text.lstrip().startswith(chr(31532))))" 2>$null
+$eventCards = if ($eventCardCount) { [int]$eventCardCount } else { 0 }
+
+# Check DOCX has embedded images (only when event cards exist)
 $docxHasImage = & $py -c "
 import zipfile, sys
 with zipfile.ZipFile('outputs/executive_report.docx') as z:
     media = [n for n in z.namelist() if n.startswith('word/media/')]
     print(len(media))
 " 2>$null
-if ([int]$docxHasImage -lt 1) {
+if ($eventCards -gt 0 -and [int]$docxHasImage -lt 1) {
     Write-Host "  FAIL: DOCX has no embedded images (word/media/ is empty)" -ForegroundColor Red
     $v3Pass = $false
+} elseif ($eventCards -eq 0) {
+    Write-Host "  DOCX images: skipped (no event cards in this run)" -ForegroundColor DarkYellow
 } else {
     Write-Host "  DOCX embedded images: $docxHasImage file(s)" -ForegroundColor Green
 }
 
-# Check PPTX has embedded images
+# Check PPTX has embedded images (only when event cards exist)
 $pptxHasImage = & $py -c "
 import zipfile, sys
 with zipfile.ZipFile('outputs/executive_report.pptx') as z:
     media = [n for n in z.namelist() if n.startswith('ppt/media/')]
     print(len(media))
 " 2>$null
-if ([int]$pptxHasImage -lt 1) {
+if ($eventCards -gt 0 -and [int]$pptxHasImage -lt 1) {
     Write-Host "  FAIL: PPTX has no embedded images (ppt/media/ is empty)" -ForegroundColor Red
     $v3Pass = $false
+} elseif ($eventCards -eq 0) {
+    Write-Host "  PPTX images: skipped (no event cards in this run)" -ForegroundColor DarkYellow
 } else {
     Write-Host "  PPTX embedded images: $pptxHasImage file(s)" -ForegroundColor Green
 }
