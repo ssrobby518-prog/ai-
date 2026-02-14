@@ -11,6 +11,19 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 Set-Location $repoRoot
 
 # ---------------------------------------------------------------------------
+# (0.5) Shortcut existence hint (interactive only, no side effects)
+# ---------------------------------------------------------------------------
+if ([Environment]::UserInteractive) {
+    $desktopDir = Join-Path $env:USERPROFILE "Desktop"
+    $expectedLnk = Join-Path $desktopDir "Executive PPT (Open).lnk"
+    if (-not (Test-Path $expectedLnk)) {
+        Write-Host "[HINT] Desktop shortcut 'Executive PPT (Open).lnk' not found." -ForegroundColor Yellow
+        Write-Host "       Run:  powershell -NoProfile -ExecutionPolicy Bypass -File `"$repoRoot\scripts\install_desktop_ppt_shortcut.ps1`"" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+# ---------------------------------------------------------------------------
 # (1) Diagnostics
 # ---------------------------------------------------------------------------
 $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
