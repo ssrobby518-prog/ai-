@@ -321,7 +321,7 @@ class TestXmindGenerator:
         )
         assert result.exists()
         assert result.suffix == ".xmind"
-        assert result.stat().st_size > 500
+        assert result.stat().st_size > 10_000  # >10KB
 
     def test_xmind_is_valid_zip(self, tmp_path):
         from core.xmind_generator import generate_xmind
@@ -367,6 +367,9 @@ class TestXmindGenerator:
             assert len(content) >= 1
             assert "rootTopic" in content[0]
             assert "creator" in metadata
+            assert "timestamp" in metadata
+            assert "theme" in metadata
+            assert "zoom" in metadata
 
     def test_xmind_no_banned_words(self, tmp_path):
         from core.xmind_generator import generate_xmind
