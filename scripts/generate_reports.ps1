@@ -103,61 +103,35 @@ if (-not $allExist) {
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------------------
-# Open PPT — copy to _open.pptx first, then triple fallback open
+# Open PPT — copy to _open.pptx, then Explorer shell execute (GUI session)
 # ---------------------------------------------------------------------------
 if ($shouldOpen) {
     $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
     if (Test-Path $pptxPath) {
         $pptxAbs = (Resolve-Path $pptxPath).Path
-        Write-Host "`n  Resolve-Path OK : $pptxAbs" -ForegroundColor DarkGray
 
         # Copy to _open.pptx to dodge PowerPoint file lock
         $pptxOpenAbs = Join-Path $projectRoot "outputs\executive_report_open.pptx"
         Copy-Item $pptxAbs $pptxOpenAbs -Force
-        Write-Host "  Copy-Item OK    : $pptxOpenAbs" -ForegroundColor DarkGray
 
-        $pptOpenResolved = (Resolve-Path $pptxOpenAbs).Path
-        Write-Host "  Opening PPT (triple fallback)..." -ForegroundColor Yellow
-        $opened = $false
+        $pptxOpenAbs = (Resolve-Path $pptxOpenAbs).Path
+        Write-Host "`n  Repo root resolved: $projectRoot" -ForegroundColor Green
+        Write-Host "  Open file exists: $pptxOpenAbs" -ForegroundColor Green
+        Write-Host "  Launching PPT via Explorer shell..." -ForegroundColor Yellow
 
-        # Fallback 1: cmd /c start
-        try {
-            Write-Host "  [1/3] cmd /c start..." -ForegroundColor DarkGray
-            Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptOpenResolved`"" -ErrorAction Stop
-            Write-Host "  [1/3] succeeded." -ForegroundColor Green
-            $opened = $true
-        } catch {
-            Write-Host "  [1/3] failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "explorer.exe"
+        $psi.Arguments = "`"$pptxOpenAbs`""
+        $psi.UseShellExecute = $true
 
-        # Fallback 2: Invoke-Item
-        if (-not $opened) {
-            try {
-                Write-Host "  [2/3] Invoke-Item..." -ForegroundColor DarkGray
-                Invoke-Item $pptOpenResolved -ErrorAction Stop
-                Write-Host "  [2/3] succeeded." -ForegroundColor Green
-                $opened = $true
-            } catch {
-                Write-Host "  [2/3] failed: $($_.Exception.Message)" -ForegroundColor Yellow
-            }
-        }
+        $proc = [System.Diagnostics.Process]::Start($psi)
 
-        # Fallback 3: explorer.exe
-        if (-not $opened) {
-            try {
-                Write-Host "  [3/3] explorer.exe..." -ForegroundColor DarkGray
-                Start-Process explorer.exe $pptOpenResolved -ErrorAction Stop
-                Write-Host "  [3/3] succeeded." -ForegroundColor Green
-                $opened = $true
-            } catch {
-                Write-Host "  [3/3] failed: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-
-        if (-not $opened) {
-            Write-Error "All 3 open methods failed. File: $pptOpenResolved"
+        if (-not $proc) {
+            Write-Error "Explorer launch failed"
             exit 1
         }
+
+        Write-Host "  PPT launched via Explorer." -ForegroundColor Green
     } else {
         Write-Host "`nWARN: PPT not found at expected path: $pptxPath" -ForegroundColor Red
     }

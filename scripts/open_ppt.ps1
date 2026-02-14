@@ -1,5 +1,5 @@
 # open_ppt.ps1 — Desktop shortcut entry point (self-contained)
-# Flow: generate reports (headless) → copy to _open.pptx → open via triple fallback
+# Flow: generate reports (headless) → copy to _open.pptx → open via Explorer shell
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\open_ppt.ps1
 
 $ErrorActionPreference = "Stop"
@@ -73,52 +73,26 @@ Copy-Item -Path $pptxSrc -Destination $pptxOpen -Force
 Write-Host "  Copy-Item OK: $pptxOpen" -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------------
-# (4) Open via triple fallback: cmd start → Invoke-Item → explorer.exe
+# (4) Open via Explorer shell execute (UseShellExecute = true → GUI session)
 # ---------------------------------------------------------------------------
-$pptAbs = (Resolve-Path $pptxOpen).Path
-Write-Host "  Resolve-Path OK: $pptAbs" -ForegroundColor DarkGray
-Write-Host "  Opening PPT (triple fallback)..." -ForegroundColor Yellow
+$pptxOpenAbs = (Resolve-Path $pptxOpen).Path
+Write-Host "  Repo root resolved: $repoRoot" -ForegroundColor Green
+Write-Host "  Open file exists: $pptxOpenAbs" -ForegroundColor Green
+Write-Host "  Launching PPT via Explorer shell..." -ForegroundColor Yellow
 
-$opened = $false
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "explorer.exe"
+$psi.Arguments = "`"$pptxOpenAbs`""
+$psi.UseShellExecute = $true
 
-# Fallback 1: cmd /c start (most reliable for desktop shortcuts)
-try {
-    Write-Host "  [1/3] Trying: cmd /c start..." -ForegroundColor DarkGray
-    Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptAbs`"" -ErrorAction Stop
-    Write-Host "  [1/3] cmd /c start succeeded." -ForegroundColor Green
-    $opened = $true
-} catch {
-    Write-Host "  [1/3] cmd /c start failed: $($_.Exception.Message)" -ForegroundColor Yellow
-}
+$proc = [System.Diagnostics.Process]::Start($psi)
 
-# Fallback 2: Invoke-Item
-if (-not $opened) {
-    try {
-        Write-Host "  [2/3] Trying: Invoke-Item..." -ForegroundColor DarkGray
-        Invoke-Item $pptAbs -ErrorAction Stop
-        Write-Host "  [2/3] Invoke-Item succeeded." -ForegroundColor Green
-        $opened = $true
-    } catch {
-        Write-Host "  [2/3] Invoke-Item failed: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-}
-
-# Fallback 3: explorer.exe
-if (-not $opened) {
-    try {
-        Write-Host "  [3/3] Trying: explorer.exe..." -ForegroundColor DarkGray
-        Start-Process -FilePath "explorer.exe" -ArgumentList @("`"$pptAbs`"") -ErrorAction Stop
-        Write-Host "  [3/3] explorer.exe succeeded." -ForegroundColor Green
-        $opened = $true
-    } catch {
-        Write-Host "  [3/3] explorer.exe failed: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
-
-if (-not $opened) {
-    Write-Error "All 3 open methods failed. File is at: $pptAbs"
+if (-not $proc) {
+    Write-Error "Explorer launch failed"
     exit 1
 }
+
+Write-Host "  PPT launched via Explorer." -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # (5) Shortcut copy-paste instructions
