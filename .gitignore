@@ -20,6 +20,7 @@ __pycache__/
 # Runtime outputs
 data/
 logs/
+*.log
 *.db
 *.sqlite3
 
