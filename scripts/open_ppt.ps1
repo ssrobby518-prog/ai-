@@ -7,8 +7,11 @@
 
 $ErrorActionPreference = "Stop"
 
-$scriptDir = $PSScriptRoot
-$generateScript = Join-Path $scriptDir "generate_reports.ps1"
+# Force repo root regardless of Start-in, admin elevation, or CWD
+$repoRoot = Split-Path $PSScriptRoot -Parent
+Set-Location $repoRoot
+
+$generateScript = Join-Path $PSScriptRoot "generate_reports.ps1"
 
 if (-not (Test-Path $generateScript)) {
     Write-Host "ERROR: generate_reports.ps1 not found at: $generateScript" -ForegroundColor Red
