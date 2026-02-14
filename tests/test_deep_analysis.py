@@ -312,7 +312,8 @@ def test_golden_snapshot_structure() -> None:
 
     # Write golden snapshot
     golden_path = Path(__file__).parent / "golden_snapshot.json"
-    golden_path.write_text(json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Write with explicit \n to avoid CRLF on Windows
+    golden_path.write_bytes(json.dumps(d, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
 def test_golden_snapshot_stable() -> None:

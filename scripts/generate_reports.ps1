@@ -1,12 +1,16 @@
 # generate_reports.ps1 — One-click executive report generation
 # Usage:
-#   Manual / VSCode task : powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1
-#                          → opens PPT automatically (interactive default)
-#   Scheduled (headless) : powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -NoOpenPpt
-#                          → never opens any file
+#   Manual / VSCode / Desktop shortcut:
+#     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1
+#     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -OpenPpt
+#     → opens executive_report_open.pptx automatically (default behaviour)
+#   Scheduled (headless):
+#     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -NoOpenPpt
+#     → never opens any file
 
 param(
-    [switch] $NoOpenPpt
+    [switch] $NoOpenPpt,
+    [switch] $OpenPpt
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,11 +29,25 @@ Write-Host "`n--- Diagnostics ---" -ForegroundColor DarkGray
 Write-Host "  PSCommandPath    : $PSCommandPath" -ForegroundColor DarkGray
 Write-Host "  PSScriptRoot     : $PSScriptRoot" -ForegroundColor DarkGray
 Write-Host "  PWD              : $($PWD.Path)" -ForegroundColor DarkGray
-Write-Host "  NoOpenPpt switch : IsPresent=$($NoOpenPpt.IsPresent)  Value=$NoOpenPpt" -ForegroundColor DarkGray
+Write-Host "  Host.Name        : $($Host.Name)" -ForegroundColor DarkGray
+Write-Host "  SESSIONNAME      : $($env:SESSIONNAME)" -ForegroundColor DarkGray
+Write-Host "  TERM_PROGRAM     : $($env:TERM_PROGRAM)" -ForegroundColor DarkGray
+Write-Host "  WT_SESSION       : $($env:WT_SESSION)" -ForegroundColor DarkGray
+Write-Host "  NoOpenPpt        : IsPresent=$($NoOpenPpt.IsPresent)  Value=$NoOpenPpt" -ForegroundColor DarkGray
+Write-Host "  OpenPpt          : IsPresent=$($OpenPpt.IsPresent)  Value=$OpenPpt" -ForegroundColor DarkGray
 
-# Determine if we should open PPT: YES unless -NoOpenPpt was passed
-$shouldOpen = -not $NoOpenPpt
-Write-Host "  Will open PPT    : $shouldOpen" -ForegroundColor DarkGray
+# Determine if we should open PPT:
+#   -NoOpenPpt → never open (scheduled)
+#   -OpenPpt   → always open (desktop shortcut explicit)
+#   neither    → default = open (manual / VSCode task)
+if ($NoOpenPpt) {
+    $shouldOpen = $false
+} elseif ($OpenPpt) {
+    $shouldOpen = $true
+} else {
+    $shouldOpen = $true
+}
+Write-Host "  shouldOpen       : $shouldOpen" -ForegroundColor DarkGray
 
 # Check Start-Process availability
 $spCmd = Get-Command Start-Process -ErrorAction SilentlyContinue
@@ -85,7 +103,7 @@ if (-not $allExist) {
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------------------
-# Open PPT — only when NOT suppressed (default: open; -NoOpenPpt: skip)
+# Open PPT — copy to _open.pptx first to avoid file-lock from previous run
 # ---------------------------------------------------------------------------
 if ($shouldOpen) {
     $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
@@ -93,8 +111,14 @@ if ($shouldOpen) {
         try {
             $pptxAbs = (Resolve-Path $pptxPath).Path
             Write-Host "`n  Resolve-Path OK : $pptxAbs" -ForegroundColor DarkGray
+
+            # Copy to _open.pptx to dodge PowerPoint file lock
+            $pptxOpenAbs = Join-Path $projectRoot "outputs\executive_report_open.pptx"
+            Copy-Item $pptxAbs $pptxOpenAbs -Force
+            Write-Host "  Copy-Item OK    : $pptxOpenAbs" -ForegroundColor DarkGray
+
             Write-Host "  Opening PPT..." -ForegroundColor Yellow
-            Start-Process -FilePath $pptxAbs -ErrorAction Stop
+            Start-Process -FilePath $pptxOpenAbs -ErrorAction Stop
             Write-Host "  Start-Process succeeded." -ForegroundColor Green
         } catch {
             Write-Error "Start-Process failed: $($_.Exception.Message)"
