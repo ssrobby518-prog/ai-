@@ -1255,23 +1255,18 @@ def _render_xmind_md(
 # ---------------------------------------------------------------------------
 
 
-def render_education_report(
+def _build_cards_and_health(
     results: list[MergedResult] | None = None,
     report: DeepAnalysisReport | None = None,
     metrics: dict[str, Any] | None = None,
     deep_analysis_text: str | None = None,
     max_items: int = 0,
-    filter_summary: dict[str, Any] | None = None,
-) -> tuple[str, str, str]:
-    """Z5 主入口：生成成人教育版報告。
+) -> tuple[list[EduNewsCard], SystemHealthReport, str, int]:
+    """Build intermediate cards + health from inputs.
 
-    模式 A（優先）：傳入 results + report + metrics
-    模式 B（fallback）：傳入 deep_analysis_text + metrics
-
-    回傳 (notion_md, ppt_md, xmind_md) 三份 Markdown 字串。
+    Returns (cards, health, report_time, total_items).
     """
     log = get_logger()
-    log.info("--- Z5: Education Renderer 開始 ---")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M 本機時區")
 
@@ -1317,8 +1312,33 @@ def render_education_report(
         log.info("Z5: 限制最大項目數為 %d", max_items)
 
     log.info("Z5: 共生成 %d 張教育版卡片", len(cards))
+    return cards, health, now, total_items
 
-    notion_md = _render_notion_md(cards, health, now, total_items, metrics, filter_summary=filter_summary)
+
+def render_education_report(
+    results: list[MergedResult] | None = None,
+    report: DeepAnalysisReport | None = None,
+    metrics: dict[str, Any] | None = None,
+    deep_analysis_text: str | None = None,
+    max_items: int = 0,
+    filter_summary: dict[str, Any] | None = None,
+) -> tuple[str, str, str]:
+    """Z5 主入口：生成成人教育版報告。
+
+    模式 A（優先）：傳入 results + report + metrics
+    模式 B（fallback）：傳入 deep_analysis_text + metrics
+
+    回傳 (notion_md, ppt_md, xmind_md) 三份 Markdown 字串。
+    """
+    log = get_logger()
+    log.info("--- Z5: Education Renderer 開始 ---")
+
+    cards, health, now, total_items = _build_cards_and_health(
+        results=results, report=report, metrics=metrics,
+        deep_analysis_text=deep_analysis_text, max_items=max_items,
+    )
+
+    notion_md = _render_notion_md(cards, health, now, total_items, metrics or {}, filter_summary=filter_summary)
     ppt_md = _render_ppt_md(cards, health, now, total_items)
     xmind_md = _render_xmind_md(cards, health, now, total_items)
 
@@ -1358,6 +1378,47 @@ def write_education_reports(
     log.info("Z5: 教育版報告已寫入：%s, %s, %s, %s", notion_path, ppt_path, xmind_path, outputs_path)
 
     return notion_path, ppt_path, xmind_path, outputs_path
+
+
+def generate_binary_reports(
+    results: list[MergedResult] | None = None,
+    report: DeepAnalysisReport | None = None,
+    metrics: dict[str, Any] | None = None,
+    deep_analysis_text: str | None = None,
+    max_items: int = 0,
+    project_root: Path | None = None,
+) -> tuple[Path, Path]:
+    """Generate PPTX + DOCX education reports.
+
+    Returns (pptx_path, docx_path).
+    """
+    from core.doc_generator import generate_education_docx
+    from core.ppt_generator import generate_education_ppt
+
+    log = get_logger()
+    if project_root is None:
+        project_root = Path(__file__).resolve().parent.parent
+    outputs_dir = project_root / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    cards, health, report_time, total_items = _build_cards_and_health(
+        results=results, report=report, metrics=metrics,
+        deep_analysis_text=deep_analysis_text, max_items=max_items,
+    )
+
+    pptx_path = generate_education_ppt(
+        cards=cards, health=health, report_time=report_time,
+        total_items=total_items, output_path=outputs_dir / "education_report.pptx",
+    )
+    log.info("Education PPTX generated")
+
+    docx_path = generate_education_docx(
+        cards=cards, health=health, report_time=report_time,
+        total_items=total_items, output_path=outputs_dir / "education_report.docx",
+    )
+    log.info("Education DOCX generated")
+
+    return pptx_path, docx_path
 
 
 def render_error_report(error: Exception) -> str:

@@ -12,7 +12,12 @@ from core.ai_core import process_batch
 from core.deep_analyzer import analyze_batch
 from core.deep_delivery import write_deep_analysis
 from core.delivery import print_console_summary, push_to_feishu, push_to_notion, write_digest
-from core.education_renderer import render_education_report, render_error_report, write_education_reports
+from core.education_renderer import (
+    generate_binary_reports,
+    render_education_report,
+    render_error_report,
+    write_education_reports,
+)
 from core.ingestion import batch_items, dedup_items, fetch_all_feeds, filter_items
 from core.notifications import send_all_notifications
 from core.storage import get_existing_item_ids, init_db, save_items, save_results
@@ -166,6 +171,20 @@ def run_pipeline() -> None:
             )
             edu_paths = write_education_reports(notion_md, ppt_md, xmind_md)
             log.info("Z5: 教育版報告已生成 → %s", [str(p) for p in edu_paths])
+
+            # Generate PPTX + DOCX binary reports
+            try:
+                pptx_path, docx_path = generate_binary_reports(
+                    results=z5_results,
+                    report=z5_report,
+                    metrics=metrics_dict,
+                    deep_analysis_text=z5_text,
+                    max_items=settings.EDU_REPORT_MAX_ITEMS,
+                )
+                log.info("Education PPTX generated: %s", pptx_path)
+                log.info("Education DOCX generated: %s", docx_path)
+            except Exception as exc_bin:
+                log.error("Z5 binary report generation failed (non-blocking): %s", exc_bin)
         except Exception as exc:
             log.error("Z5 Education Renderer failed (non-blocking): %s", exc)
             try:
