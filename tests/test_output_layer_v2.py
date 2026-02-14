@@ -105,10 +105,10 @@ def _make_cards() -> list[EduNewsCard]:
 
 class TestPptGenerator:
     def test_generates_pptx_file(self, tmp_path):
-        from core.ppt_generator import generate_education_ppt
+        from core.ppt_generator import generate_executive_ppt
 
         out = tmp_path / "test.pptx"
-        result = generate_education_ppt(
+        result = generate_executive_ppt(
             cards=_make_cards(),
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -120,11 +120,11 @@ class TestPptGenerator:
         assert result.stat().st_size > 1000  # not empty
 
     def test_slide_count(self, tmp_path):
-        from core.ppt_generator import generate_education_ppt
+        from core.ppt_generator import generate_executive_ppt
         from pptx import Presentation
 
         out = tmp_path / "test.pptx"
-        generate_education_ppt(
+        generate_executive_ppt(
             cards=_make_cards(),
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -138,10 +138,10 @@ class TestPptGenerator:
         assert len(prs.slides) >= 10
 
     def test_empty_cards(self, tmp_path):
-        from core.ppt_generator import generate_education_ppt
+        from core.ppt_generator import generate_executive_ppt
 
         out = tmp_path / "empty.pptx"
-        result = generate_education_ppt(
+        result = generate_executive_ppt(
             cards=[],
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -159,10 +159,10 @@ class TestPptGenerator:
 
 class TestDocxGenerator:
     def test_generates_docx_file(self, tmp_path):
-        from core.doc_generator import generate_education_docx
+        from core.doc_generator import generate_executive_docx
 
         out = tmp_path / "test.docx"
-        result = generate_education_docx(
+        result = generate_executive_docx(
             cards=_make_cards(),
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -174,11 +174,11 @@ class TestDocxGenerator:
         assert result.stat().st_size > 1000
 
     def test_docx_has_content(self, tmp_path):
-        from core.doc_generator import generate_education_docx
+        from core.doc_generator import generate_executive_docx
         from docx import Document
 
         out = tmp_path / "test.docx"
-        generate_education_docx(
+        generate_executive_docx(
             cards=_make_cards(),
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -189,7 +189,7 @@ class TestDocxGenerator:
         full_text = "\n".join(p.text for p in doc.paragraphs)
 
         # Cover elements
-        assert "AI" in full_text
+        assert "每日科技趨勢簡報" in full_text
         assert "Daily Tech Intelligence" in full_text
 
         # News card elements
@@ -203,11 +203,11 @@ class TestDocxGenerator:
         assert "Next Steps" in full_text or "下一步" in full_text
 
     def test_docx_has_table(self, tmp_path):
-        from core.doc_generator import generate_education_docx
+        from core.doc_generator import generate_executive_docx
         from docx import Document
 
         out = tmp_path / "test.docx"
-        generate_education_docx(
+        generate_executive_docx(
             cards=_make_cards(),
             health=_make_health(),
             report_time="2026-02-13 10:00",
@@ -218,10 +218,10 @@ class TestDocxGenerator:
         assert len(doc.tables) >= 1  # metrics table
 
     def test_empty_cards(self, tmp_path):
-        from core.doc_generator import generate_education_docx
+        from core.doc_generator import generate_executive_docx
 
         out = tmp_path / "empty.docx"
-        result = generate_education_docx(
+        result = generate_executive_docx(
             cards=[],
             health=_make_health(),
             report_time="2026-02-13 10:00",

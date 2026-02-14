@@ -1388,12 +1388,34 @@ def generate_binary_reports(
     max_items: int = 0,
     project_root: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Generate PPTX + DOCX education reports.
+    """Generate PPTX + DOCX education reports (legacy).
 
     Returns (pptx_path, docx_path).
     """
-    from core.doc_generator import generate_education_docx
-    from core.ppt_generator import generate_education_ppt
+    paths = generate_executive_reports(
+        results=results, report=report, metrics=metrics,
+        deep_analysis_text=deep_analysis_text, max_items=max_items,
+        project_root=project_root,
+    )
+    return paths[0], paths[1]
+
+
+def generate_executive_reports(
+    results: list[MergedResult] | None = None,
+    report: DeepAnalysisReport | None = None,
+    metrics: dict[str, Any] | None = None,
+    deep_analysis_text: str | None = None,
+    max_items: int = 0,
+    project_root: Path | None = None,
+) -> tuple[Path, Path, Path, Path]:
+    """Generate all 4 executive output files.
+
+    Returns (pptx_path, docx_path, notion_path, xmind_path).
+    """
+    from core.doc_generator import generate_executive_docx
+    from core.notion_generator import generate_notion_page
+    from core.ppt_generator import generate_executive_ppt
+    from core.xmind_generator import generate_xmind
 
     log = get_logger()
     if project_root is None:
@@ -1406,19 +1428,31 @@ def generate_binary_reports(
         deep_analysis_text=deep_analysis_text, max_items=max_items,
     )
 
-    pptx_path = generate_education_ppt(
+    pptx_path = generate_executive_ppt(
         cards=cards, health=health, report_time=report_time,
-        total_items=total_items, output_path=outputs_dir / "education_report.pptx",
+        total_items=total_items, output_path=outputs_dir / "executive_report.pptx",
     )
-    log.info("Education PPTX generated")
+    log.info("Executive PPTX generated")
 
-    docx_path = generate_education_docx(
+    docx_path = generate_executive_docx(
         cards=cards, health=health, report_time=report_time,
-        total_items=total_items, output_path=outputs_dir / "education_report.docx",
+        total_items=total_items, output_path=outputs_dir / "executive_report.docx",
     )
-    log.info("Education DOCX generated")
+    log.info("Executive DOCX generated")
 
-    return pptx_path, docx_path
+    notion_path = generate_notion_page(
+        cards=cards, health=health, report_time=report_time,
+        total_items=total_items, output_path=outputs_dir / "notion_page.md",
+    )
+    log.info("Notion page generated")
+
+    xmind_path = generate_xmind(
+        cards=cards, health=health, report_time=report_time,
+        output_path=outputs_dir / "mindmap.xmind",
+    )
+    log.info("XMind mindmap generated")
+
+    return pptx_path, docx_path, notion_path, xmind_path
 
 
 def render_error_report(error: Exception) -> str:

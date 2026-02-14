@@ -1,5 +1,5 @@
-# verify_run.ps1 — Education report end-to-end verification
-# Purpose: run pipeline with calibration profile, verify FILTER_SUMMARY + Z5 education output
+# verify_run.ps1 — Executive report end-to-end verification
+# Purpose: run pipeline with calibration profile, verify FILTER_SUMMARY + executive output
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_run.ps1
 
 $ErrorActionPreference = "Stop"
@@ -12,7 +12,7 @@ $env:PYTHONIOENCODING = "utf-8"
 Write-Host "=== Verification Start ===" -ForegroundColor Cyan
 
 # 0) Text integrity pre-check (CRLF / BOM / autocrlf)
-Write-Host "`n[0/8] Running text integrity check..." -ForegroundColor Yellow
+Write-Host "`n[0/9] Running text integrity check..." -ForegroundColor Yellow
 $integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
 if (Test-Path $integrityScript) {
     & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
@@ -24,15 +24,19 @@ if (Test-Path $integrityScript) {
     Write-Host "  check_text_integrity.ps1 not found, skipping." -ForegroundColor Yellow
 }
 
-# 1) Remove previous education outputs
-Write-Host "`n[1/8] Removing previous education outputs..." -ForegroundColor Yellow
+# 1) Remove previous outputs
+Write-Host "`n[1/9] Removing previous outputs..." -ForegroundColor Yellow
 $filesToRemove = @(
     "docs\reports\deep_analysis_education_version.md",
     "docs\reports\deep_analysis_education_version_ppt.md",
     "docs\reports\deep_analysis_education_version_xmind.md",
     "outputs\deep_analysis_education.md",
     "outputs\education_report.docx",
-    "outputs\education_report.pptx"
+    "outputs\education_report.pptx",
+    "outputs\executive_report.docx",
+    "outputs\executive_report.pptx",
+    "outputs\notion_page.md",
+    "outputs\mindmap.xmind"
 )
 foreach ($f in $filesToRemove) {
     if (Test-Path $f) {
@@ -42,7 +46,7 @@ foreach ($f in $filesToRemove) {
 }
 
 # 2) Run pipeline with calibration profile
-Write-Host "`n[2/8] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
+Write-Host "`n[2/9] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
 $env:RUN_PROFILE = "calibration"
 # Prefer venv python if available, otherwise fall back to system python
 $venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
@@ -58,7 +62,7 @@ if ($exitCode -ne 0) {
 Write-Host "  Pipeline succeeded" -ForegroundColor Green
 
 # 3) Verify FILTER_SUMMARY exists in log
-Write-Host "`n[3/8] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
+Write-Host "`n[3/9] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
 $filterLog = Select-String -Path "logs\app.log" -Pattern "FILTER_SUMMARY" -SimpleMatch | Select-Object -Last 1
 if ($filterLog) {
     Write-Host "  FILTER_SUMMARY hit:" -ForegroundColor Green
@@ -69,7 +73,7 @@ if ($filterLog) {
 }
 
 # 4) Verify education report exists on disk (NOT required to be git-tracked)
-Write-Host "`n[4/8] Checking education report file..." -ForegroundColor Yellow
+Write-Host "`n[4/9] Checking education report file..." -ForegroundColor Yellow
 $eduFile = "docs\reports\deep_analysis_education_version.md"
 if (Test-Path $eduFile) {
     Get-Item $eduFile | Format-List FullName, LastWriteTime, Length
@@ -79,7 +83,7 @@ if (Test-Path $eduFile) {
 }
 
 # 5) Verify education report contains key sections
-Write-Host "`n[5/8] Verifying education report content..." -ForegroundColor Yellow
+Write-Host "`n[5/9] Verifying education report content..." -ForegroundColor Yellow
 $patterns = @("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Metrics", "mermaid")
 $hits = Select-String -Path $eduFile -Pattern $patterns -SimpleMatch
 if ($hits.Count -ge 3) {
@@ -98,7 +102,7 @@ if ($emptyHit) {
 }
 
 # 6) Artifact policy hard-fail guard
-Write-Host "`n[6/8] Artifact policy check (hard-fail)..." -ForegroundColor Yellow
+Write-Host "`n[6/9] Artifact policy check (hard-fail)..." -ForegroundColor Yellow
 
 function Assert-NotTracked($pattern) {
     $tracked = git ls-files -- $pattern 2>$null
@@ -116,7 +120,7 @@ Assert-NotTracked "outputs/*"
 Write-Host "  Artifact policy check passed." -ForegroundColor Green
 
 # 7) Education report quality gate
-Write-Host "`n[7/8] Education report quality gate..." -ForegroundColor Yellow
+Write-Host "`n[7/9] Education report quality gate..." -ForegroundColor Yellow
 & $py -m pytest tests/test_education_report_quality.py -q 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "  Education quality gate FAILED" -ForegroundColor Red
@@ -124,34 +128,123 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Education quality gate passed." -ForegroundColor Green
 
-# 8) DOCX / PPTX binary output quality gate
-Write-Host "`n[8/8] Checking DOCX/PPTX binary outputs..." -ForegroundColor Yellow
-$docxFile = "outputs\education_report.docx"
-$pptxFile = "outputs\education_report.pptx"
+# 8) Executive output files check (DOCX/PPTX/Notion/XMind)
+Write-Host "`n[8/9] Checking executive output files..." -ForegroundColor Yellow
+$execFiles = @(
+    @{ Name="DOCX"; Path="outputs\executive_report.docx" },
+    @{ Name="PPTX"; Path="outputs\executive_report.pptx" },
+    @{ Name="Notion"; Path="outputs\notion_page.md" },
+    @{ Name="XMind"; Path="outputs\mindmap.xmind" }
+)
 $binPass = $true
 
-if (Test-Path $docxFile) {
-    $docxInfo = Get-Item $docxFile
-    Write-Host "  DOCX: $($docxInfo.FullName) ($($docxInfo.Length) bytes, $($docxInfo.LastWriteTime))" -ForegroundColor Green
-} else {
-    Write-Host "  FAIL: $docxFile not found" -ForegroundColor Red
-    $binPass = $false
-}
-
-if (Test-Path $pptxFile) {
-    $pptxInfo = Get-Item $pptxFile
-    Write-Host "  PPTX: $($pptxInfo.FullName) ($($pptxInfo.Length) bytes, $($pptxInfo.LastWriteTime))" -ForegroundColor Green
-} else {
-    Write-Host "  FAIL: $pptxFile not found" -ForegroundColor Red
-    $binPass = $false
+foreach ($ef in $execFiles) {
+    if (Test-Path $ef.Path) {
+        $info = Get-Item $ef.Path
+        Write-Host ("  {0}: {1} ({2} bytes, {3})" -f $ef.Name, $info.FullName, $info.Length, $info.LastWriteTime) -ForegroundColor Green
+    } else {
+        Write-Host "  FAIL: $($ef.Path) not found" -ForegroundColor Red
+        $binPass = $false
+    }
 }
 
 if (-not $binPass) {
-    Write-Host "  Binary output quality gate FAILED" -ForegroundColor Red
+    Write-Host "  Executive output check FAILED" -ForegroundColor Red
     exit 1
 }
-Write-Host "  Binary output quality gate passed." -ForegroundColor Green
+Write-Host "  Executive output check passed." -ForegroundColor Green
+
+# 9) Executive Output v3 guard — banned words + embedded images
+Write-Host "`n[9/9] Executive Output v3 guard..." -ForegroundColor Yellow
+
+$bannedWords = @("ai捕捉", "AI Intel", "Z1", "Z2", "Z3", "Z4", "Z5", "pipeline", "ETL", "verify_run", "ingestion", "ai_core")
+$v3Pass = $true
+
+# Check banned words in Notion page (plain text)
+$notionContent = Get-Content "outputs\notion_page.md" -Raw -Encoding UTF8
+foreach ($bw in $bannedWords) {
+    if ($notionContent -match [regex]::Escape($bw)) {
+        Write-Host "  FAIL: Banned word '$bw' found in notion_page.md" -ForegroundColor Red
+        $v3Pass = $false
+    }
+}
+
+# Check banned words in DOCX (extract text via python)
+$docxText = & $py -c "
+from docx import Document
+doc = Document('outputs/executive_report.docx')
+print(' '.join(p.text for p in doc.paragraphs))
+for t in doc.tables:
+    for row in t.rows:
+        for cell in row.cells:
+            print(cell.text, end=' ')
+" 2>$null
+if ($docxText) {
+    foreach ($bw in $bannedWords) {
+        if ($docxText -match [regex]::Escape($bw)) {
+            Write-Host "  FAIL: Banned word '$bw' found in executive_report.docx" -ForegroundColor Red
+            $v3Pass = $false
+        }
+    }
+}
+
+# Check banned words in PPTX (extract text via python)
+$pptxText = & $py -c "
+from pptx import Presentation
+prs = Presentation('outputs/executive_report.pptx')
+for slide in prs.slides:
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for p in shape.text_frame.paragraphs:
+                print(p.text, end=' ')
+        if shape.has_table:
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    print(cell.text, end=' ')
+" 2>$null
+if ($pptxText) {
+    foreach ($bw in $bannedWords) {
+        if ($pptxText -match [regex]::Escape($bw)) {
+            Write-Host "  FAIL: Banned word '$bw' found in executive_report.pptx" -ForegroundColor Red
+            $v3Pass = $false
+        }
+    }
+}
+
+# Check DOCX has embedded images (not just links)
+$docxHasImage = & $py -c "
+import zipfile, sys
+with zipfile.ZipFile('outputs/executive_report.docx') as z:
+    media = [n for n in z.namelist() if n.startswith('word/media/')]
+    print(len(media))
+" 2>$null
+if ([int]$docxHasImage -lt 1) {
+    Write-Host "  FAIL: DOCX has no embedded images (word/media/ is empty)" -ForegroundColor Red
+    $v3Pass = $false
+} else {
+    Write-Host "  DOCX embedded images: $docxHasImage file(s)" -ForegroundColor Green
+}
+
+# Check PPTX has embedded images
+$pptxHasImage = & $py -c "
+import zipfile, sys
+with zipfile.ZipFile('outputs/executive_report.pptx') as z:
+    media = [n for n in z.namelist() if n.startswith('ppt/media/')]
+    print(len(media))
+" 2>$null
+if ([int]$pptxHasImage -lt 1) {
+    Write-Host "  FAIL: PPTX has no embedded images (ppt/media/ is empty)" -ForegroundColor Red
+    $v3Pass = $false
+} else {
+    Write-Host "  PPTX embedded images: $pptxHasImage file(s)" -ForegroundColor Green
+}
+
+if (-not $v3Pass) {
+    Write-Host "  Executive Output v3 guard FAILED" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Executive Output v3 guard passed." -ForegroundColor Green
 
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
-Write-Host "NOTE: Education reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
+Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray

@@ -14,6 +14,7 @@ from core.deep_delivery import write_deep_analysis
 from core.delivery import print_console_summary, push_to_feishu, push_to_notion, write_digest
 from core.education_renderer import (
     generate_binary_reports,
+    generate_executive_reports,
     render_education_report,
     render_error_report,
     write_education_reports,
@@ -172,19 +173,21 @@ def run_pipeline() -> None:
             edu_paths = write_education_reports(notion_md, ppt_md, xmind_md)
             log.info("Z5: 教育版報告已生成 → %s", [str(p) for p in edu_paths])
 
-            # Generate PPTX + DOCX binary reports
+            # Generate executive output files (PPTX + DOCX + Notion + XMind)
             try:
-                pptx_path, docx_path = generate_binary_reports(
+                pptx_path, docx_path, notion_path, xmind_path = generate_executive_reports(
                     results=z5_results,
                     report=z5_report,
                     metrics=metrics_dict,
                     deep_analysis_text=z5_text,
                     max_items=settings.EDU_REPORT_MAX_ITEMS,
                 )
-                log.info("Education PPTX generated: %s", pptx_path)
-                log.info("Education DOCX generated: %s", docx_path)
+                log.info("Executive PPTX generated: %s", pptx_path)
+                log.info("Executive DOCX generated: %s", docx_path)
+                log.info("Notion page generated: %s", notion_path)
+                log.info("XMind mindmap generated: %s", xmind_path)
             except Exception as exc_bin:
-                log.error("Z5 binary report generation failed (non-blocking): %s", exc_bin)
+                log.error("Executive report generation failed (non-blocking): %s", exc_bin)
         except Exception as exc:
             log.error("Z5 Education Renderer failed (non-blocking): %s", exc)
             try:
