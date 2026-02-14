@@ -199,8 +199,8 @@ class TestDocxGenerator:
         # QA block
         assert "Q" in full_text
 
-        # Next steps
-        assert "Next Steps" in full_text or "下一步" in full_text
+        # Pending decisions section
+        assert "待決事項" in full_text or "Owner" in full_text
 
     def test_docx_has_table(self, tmp_path):
         from core.doc_generator import generate_executive_docx
