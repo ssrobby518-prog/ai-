@@ -236,10 +236,11 @@ def build_decision_card(card: EduNewsCard) -> dict[str, list[str] | str]:
 
 
 # ---------------------------------------------------------------------------
-# English term explainer for CEO audience
+# Key term extraction (expanded stopwords, context-aware)
 # ---------------------------------------------------------------------------
 
 _STOP_WORDS = {
+    # Common English
     "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
     "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
     "new", "now", "old", "see", "way", "who", "did", "get", "let", "say",
@@ -251,13 +252,37 @@ _STOP_WORDS = {
     "http", "https", "www", "com", "org", "html", "json", "xml", "url",
     "via", "per", "etc", "just", "very", "much", "most", "only", "then",
     "here", "well", "still", "even", "does", "done", "going", "want",
+    # Additional common non-technical words
+    "said", "says", "many", "been", "were", "they", "them", "both",
+    "same", "while", "during", "before", "since", "between", "under",
+    "within", "through", "already", "several", "another", "however",
+    "including", "according", "although", "using", "based", "part",
+    "report", "reports", "reported", "company", "companies", "people",
+    "data", "time", "made", "last", "next", "down", "help", "show",
+    "shows", "showed", "look", "need", "needs", "work", "works",
+    "plan", "plans", "move", "call", "called", "keep", "start",
+    "started", "come", "came", "think", "given", "give", "gave",
+    "found", "find", "known", "know", "long", "high", "lead",
+    "early", "late", "left", "right", "real", "open", "test",
+    "tests", "tested", "added", "used", "set", "run", "big",
+    # File/web artifacts
+    "file", "files", "page", "pages", "link", "links", "site",
+    "image", "images", "text", "click", "view", "read", "list",
+    "item", "items", "type", "name", "code", "line", "lines",
+    "source", "content", "title", "post", "blog", "web",
+    # Generic verbs/adjectives in news
+    "major", "latest", "recent", "global", "full", "total",
+    "million", "billion", "percent", "number", "version",
 }
 
 _TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{2,}")
 
 
-def _extract_english_terms(card: EduNewsCard) -> list[str]:
-    """Extract unique English technical terms from card fields."""
+def extract_key_terms(card: EduNewsCard) -> list[str]:
+    """Extract unique English technical terms from card fields.
+
+    Improved: broader stopword list, prefers multi-word or capitalized terms.
+    """
     sources = [
         card.title_plain or "",
         card.what_happened or "",
@@ -266,6 +291,8 @@ def _extract_english_terms(card: EduNewsCard) -> list[str]:
     for line in (card.evidence_lines or []):
         sources.append(line)
     for line in (card.fact_check_confirmed or []):
+        sources.append(line)
+    for line in (card.derivable_effects or []):
         sources.append(line)
 
     combined = " ".join(sources)
@@ -283,30 +310,149 @@ def _extract_english_terms(card: EduNewsCard) -> list[str]:
     return unique[:5]
 
 
-def build_term_explainer_qa(card: EduNewsCard) -> list[str]:
-    """Build '重要名詞白話解釋' QA lines for CEO audience.
+# Keep old name as alias for backward compatibility in tests
+_extract_english_terms = extract_key_terms
 
-    Extracts 3-5 English technical terms from the card and generates
-    two Q&A pairs per term: what it is, and why it matters to the company.
+
+# ---------------------------------------------------------------------------
+# Context-aware term explainer (replaces old Q/A template approach)
+# ---------------------------------------------------------------------------
+
+# Curated explanations — keyed by lowercase term
+from schemas.education_models import TERM_METAPHORS as _CURATED_TERMS
+
+
+def build_term_explainer(card: EduNewsCard) -> list[dict[str, str]]:
+    """Build context-aware term explanations for CEO audience.
+
+    Returns list of dicts: [{"term": ..., "explain": ...}, ...]
+    Each explanation references the card's actual content, not generic templates.
     """
-    terms = _extract_english_terms(card)
+    terms = extract_key_terms(card)
     if not terms:
         return []
 
-    category = card.category or "綜合"
+    context_what = sanitize((card.what_happened or "")[:80])
+    context_why = sanitize((card.why_important or "")[:80])
+
+    results: list[dict[str, str]] = []
+    for term in terms[:4]:
+        low = term.lower()
+        # 1) Check curated dictionary first
+        curated = None
+        for key, val in _CURATED_TERMS.items():
+            if low == key.lower() or low in key.lower():
+                curated = val
+                break
+
+        if curated:
+            explain = curated
+        elif context_what:
+            # 2) Build explanation from card context
+            explain = (
+                f"在本則新聞中，{term} 指的是與「{context_what}」相關的"
+                f"技術或概念。"
+            )
+            if context_why:
+                explain += f"重要性在於：{context_why}"
+        else:
+            explain = f"{term}：此術語出現於本則新聞，建議查閱原文瞭解上下文。"
+
+        results.append({"term": term, "explain": sanitize(explain)})
+
+    return results
+
+
+def build_term_explainer_lines(card: EduNewsCard) -> list[str]:
+    """Flat-line version of build_term_explainer for text-based output."""
+    items = build_term_explainer(card)
     lines: list[str] = []
-
-    for term in terms[:3]:
-        lines.append(f"Q：{term} 是什麼？")
-        lines.append(f"A：「{term}」是本則新聞提及的關鍵技術或概念，"
-                     f"屬於 {category} 領域的重要術語。")
+    for item in items:
+        lines.append(f"{item['term']}：{item['explain']}")
         lines.append("")
-        lines.append(f"Q：{term} 對公司有什麼關係？")
-        lines.append(f"A：可能影響公司在成本控制、競爭定位、產品規劃"
-                     f"或合規層面的決策方向。")
-        lines.append("")
-
     return lines
+
+
+# Keep old function name as alias so existing imports don't break
+def build_term_explainer_qa(card: EduNewsCard) -> list[str]:
+    """Backward-compatible alias — returns flat lines."""
+    return build_term_explainer_lines(card)
+
+
+# ---------------------------------------------------------------------------
+# CEO article blocks (replaces Q/A format with article-style content)
+# ---------------------------------------------------------------------------
+
+
+def build_ceo_article_blocks(card: EduNewsCard) -> dict[str, str | list[str]]:
+    """Build article-style content blocks for CEO-readable output.
+
+    Returns dict with keys:
+        headline_cn: Chinese headline (≤30 chars)
+        one_liner: One-sentence summary of the event
+        why_it_matters: Why this matters to the company (2-3 sentences)
+        what_to_do: Concrete next step (1 sentence, no homework)
+        quote: Key evidence quote from the source
+        sources: list of source URLs
+        owner: responsible party
+    """
+    dc = build_decision_card(card)
+
+    # headline — prefer title, truncated
+    headline = sanitize(card.title_plain[:30]) if card.title_plain else "事件摘要"
+
+    # one_liner — what happened in one sentence
+    if card.what_happened:
+        one_liner = sanitize(card.what_happened[:120])
+    else:
+        one_liner = dc["event"]
+
+    # why_it_matters — combine effects + risks into prose
+    parts: list[str] = []
+    for eff in dc["effects"]:
+        if not eff.startswith("缺口"):
+            parts.append(eff)
+    for risk in dc["risks"]:
+        if not risk.startswith("缺口"):
+            parts.append(f"風險：{risk}")
+    if card.why_important:
+        cleaned = sanitize(card.why_important[:150])
+        if cleaned and len(cleaned) > 10:
+            parts.insert(0, cleaned)
+    why_it_matters = "。".join(parts[:3]) + "。" if parts else "影響面待進一步分析。"
+
+    # what_to_do — concrete action, never homework
+    action = dc["actions"][0] if dc["actions"] else "待確認下一步"
+    what_to_do = f"{action}（負責人：{dc['owner']}）"
+
+    # quote — best evidence line
+    quote = ""
+    for line in (card.evidence_lines or []):
+        cleaned = sanitize(line[:150])
+        if cleaned and len(cleaned) > 15:
+            quote = cleaned
+            break
+    if not quote:
+        for line in (card.fact_check_confirmed or []):
+            cleaned = sanitize(line[:150])
+            if cleaned and len(cleaned) > 10:
+                quote = cleaned
+                break
+
+    # sources
+    sources: list[str] = []
+    if card.source_url and card.source_url.startswith("http"):
+        sources.append(card.source_url)
+
+    return {
+        "headline_cn": headline,
+        "one_liner": one_liner,
+        "why_it_matters": why_it_matters,
+        "what_to_do": what_to_do,
+        "quote": quote,
+        "sources": sources,
+        "owner": dc["owner"],
+    }
 
 
 def build_executive_qa(card: EduNewsCard, dc: dict) -> list[str]:

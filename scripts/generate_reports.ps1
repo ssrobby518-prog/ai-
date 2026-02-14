@@ -103,25 +103,59 @@ if (-not $allExist) {
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
 
 # ---------------------------------------------------------------------------
-# Open PPT — copy to _open.pptx first to avoid file-lock from previous run
+# Open PPT — copy to _open.pptx first, then triple fallback open
 # ---------------------------------------------------------------------------
 if ($shouldOpen) {
     $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
     if (Test-Path $pptxPath) {
+        $pptxAbs = (Resolve-Path $pptxPath).Path
+        Write-Host "`n  Resolve-Path OK : $pptxAbs" -ForegroundColor DarkGray
+
+        # Copy to _open.pptx to dodge PowerPoint file lock
+        $pptxOpenAbs = Join-Path $projectRoot "outputs\executive_report_open.pptx"
+        Copy-Item $pptxAbs $pptxOpenAbs -Force
+        Write-Host "  Copy-Item OK    : $pptxOpenAbs" -ForegroundColor DarkGray
+
+        $pptOpenResolved = (Resolve-Path $pptxOpenAbs).Path
+        Write-Host "  Opening PPT (triple fallback)..." -ForegroundColor Yellow
+        $opened = $false
+
+        # Fallback 1: cmd /c start
         try {
-            $pptxAbs = (Resolve-Path $pptxPath).Path
-            Write-Host "`n  Resolve-Path OK : $pptxAbs" -ForegroundColor DarkGray
-
-            # Copy to _open.pptx to dodge PowerPoint file lock
-            $pptxOpenAbs = Join-Path $projectRoot "outputs\executive_report_open.pptx"
-            Copy-Item $pptxAbs $pptxOpenAbs -Force
-            Write-Host "  Copy-Item OK    : $pptxOpenAbs" -ForegroundColor DarkGray
-
-            Write-Host "  Opening PPT via explorer.exe..." -ForegroundColor Yellow
-            Start-Process explorer.exe $pptxOpenAbs -ErrorAction Stop
-            Write-Host "  Start-Process succeeded." -ForegroundColor Green
+            Write-Host "  [1/3] cmd /c start..." -ForegroundColor DarkGray
+            Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptOpenResolved`"" -ErrorAction Stop
+            Write-Host "  [1/3] succeeded." -ForegroundColor Green
+            $opened = $true
         } catch {
-            Write-Error "Start-Process failed: $($_.Exception.Message)"
+            Write-Host "  [1/3] failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+
+        # Fallback 2: Invoke-Item
+        if (-not $opened) {
+            try {
+                Write-Host "  [2/3] Invoke-Item..." -ForegroundColor DarkGray
+                Invoke-Item $pptOpenResolved -ErrorAction Stop
+                Write-Host "  [2/3] succeeded." -ForegroundColor Green
+                $opened = $true
+            } catch {
+                Write-Host "  [2/3] failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+
+        # Fallback 3: explorer.exe
+        if (-not $opened) {
+            try {
+                Write-Host "  [3/3] explorer.exe..." -ForegroundColor DarkGray
+                Start-Process explorer.exe $pptOpenResolved -ErrorAction Stop
+                Write-Host "  [3/3] succeeded." -ForegroundColor Green
+                $opened = $true
+            } catch {
+                Write-Host "  [3/3] failed: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+
+        if (-not $opened) {
+            Write-Error "All 3 open methods failed. File: $pptOpenResolved"
             exit 1
         }
     } else {

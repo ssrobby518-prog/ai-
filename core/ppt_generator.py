@@ -18,8 +18,9 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Cm, Pt
 
 from core.content_strategy import (
+    build_ceo_article_blocks,
     build_decision_card,
-    build_term_explainer_qa,
+    build_term_explainer,
     sanitize,
 )
 from core.image_helper import get_news_image
@@ -262,8 +263,85 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
 
 
 # ---------------------------------------------------------------------------
-# News card slides — full 6-column decision card + term explainer
+# News card slides — two-page article layout per card
+# Page 1: headline + hero image + one-liner + why-it-matters + what-to-do + quote
+# Page 2: key terms with context-aware explanations + sources
 # ---------------------------------------------------------------------------
+
+
+def _slide_article_page1(prs: Presentation, card: EduNewsCard,
+                         idx: int, article: dict) -> None:
+    """Article page 1: headline, image, one-liner, why, what-to-do, quote."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # Headline
+    _add_textbox(slide, Cm(2), Cm(0.5), Cm(30), Cm(1.8),
+                 f"#{idx}  {safe_text(article['headline_cn'], 35)}",
+                 font_size=24, bold=True, color=DARK_TEXT)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    # Hero image
+    img_top = Cm(2.6)
+    text_top = Cm(2.6)
+    try:
+        img_path = get_news_image(card.title_plain, card.category)
+        if img_path and img_path.exists():
+            slide.shapes.add_picture(
+                str(img_path), Cm(1), img_top, Cm(31.8), Cm(6.5),
+            )
+            text_top = Cm(9.5)
+    except Exception:
+        pass
+
+    # Article body
+    body: list[str] = []
+    body.append(safe_text(article["one_liner"], 200))
+    body.append("")
+    body.append(f"為什麼重要：{safe_text(article['why_it_matters'], 200)}")
+    body.append("")
+    body.append(f"下一步：{safe_text(article['what_to_do'], 150)}")
+    if article["quote"]:
+        body.append("")
+        body.append(f"▌ 「{safe_text(article['quote'], 150)}」")
+
+    _add_multiline_textbox(slide, Cm(2), text_top, Cm(30), Cm(18 - text_top.cm),
+                           body, font_size=14, color=DARK_TEXT,
+                           line_spacing=1.5)
+
+
+def _slide_article_page2(prs: Presentation, card: EduNewsCard,
+                         idx: int, article: dict) -> None:
+    """Article page 2: key terms with context-aware explanations + sources."""
+    term_items = build_term_explainer(card)
+    sources = article.get("sources", [])
+
+    # Skip page 2 if no terms and no sources
+    if not term_items and not sources:
+        return
+
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 f"#{idx}  關鍵名詞解讀",
+                 font_size=22, bold=True, color=DARK_TEXT)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    lines: list[str] = []
+    for item in term_items:
+        lines.append(f"{item['term']}：{safe_text(item['explain'], 180)}")
+        lines.append("")
+
+    if sources:
+        lines.append("——————")
+        lines.append("原始來源：")
+        for src in sources[:3]:
+            lines.append(safe_text(src, 100))
+
+    _add_multiline_textbox(slide, Cm(2.5), Cm(3), Cm(29), Cm(15),
+                           lines, font_size=13, color=DARK_TEXT,
+                           line_spacing=1.4)
 
 
 def _slides_news_card(prs: Presentation, card: EduNewsCard, idx: int) -> None:
@@ -275,41 +353,9 @@ def _slides_news_card(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         ])
         return
 
-    try:
-        img_path = get_news_image(card.title_plain, card.category)
-    except Exception:
-        img_path = None
-
-    dc = build_decision_card(card)
-
-    body: list[str] = []
-    body.append(f"事件：{dc['event']}")
-    body.append("")
-    body.append("已知事實：")
-    for f in dc["facts"]:
-        body.append(f"  • {safe_text(f, 100)}")
-    body.append("")
-    body.append("可能影響：")
-    for e in dc["effects"]:
-        body.append(f"  • {safe_text(e, 100)}")
-    body.append("")
-    body.append("主要風險：")
-    for r in dc["risks"]:
-        body.append(f"  • {safe_text(r, 100)}")
-    body.append("")
-    body.append(f"建議行動：{safe_text(dc['actions'][0], 100)}")
-    body.append(f"要問誰：{dc['owner']}")
-
-    _slide_image_text(prs, f"#{idx}  {safe_text(card.title_plain, 35)}", body, img_path)
-
-    # Term explainer slide (PART 4)
-    term_lines = build_term_explainer_qa(card)
-    if term_lines:
-        _slide_text(
-            prs,
-            f"#{idx} 重要名詞白話解釋",
-            term_lines,
-        )
+    article = build_ceo_article_blocks(card)
+    _slide_article_page1(prs, card, idx, article)
+    _slide_article_page2(prs, card, idx, article)
 
 
 # ---------------------------------------------------------------------------

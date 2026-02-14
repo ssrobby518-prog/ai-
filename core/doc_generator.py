@@ -18,9 +18,10 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from core.content_strategy import (
+    build_ceo_article_blocks,
     build_decision_card,
     build_executive_qa,
-    build_term_explainer_qa,
+    build_term_explainer,
     sanitize,
 )
 from core.image_helper import get_news_image
@@ -209,22 +210,30 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     except Exception:
         pass
 
-    # Build decision card via shared strategy
-    dc = build_decision_card(card)
+    # Article-style content blocks
+    article = build_ceo_article_blocks(card)
 
-    # 1) 事件一句話
-    _add_bold_label(doc, "事件", dc["event"])
+    # One-liner summary
+    _add_bold_label(doc, "摘要", article["one_liner"])
 
-    # 2) 已知事實
-    ft = doc.add_paragraph()
-    r = ft.add_run("已知事實：")
+    # Why it matters
+    p_why = doc.add_paragraph()
+    r = p_why.add_run("為什麼重要：")
     r.bold = True
     r.font.size = Pt(11)
     r.font.color.rgb = DARK_TEXT
-    for fact in dc["facts"]:
-        _add_bullet(doc, fact)
+    r2 = p_why.add_run(sanitize(article["why_it_matters"]))
+    r2.font.size = Pt(11)
 
-    # 3-5) Decision table
+    # What to do
+    _add_bold_label(doc, "下一步", article["what_to_do"])
+
+    # Quote callout
+    if article["quote"]:
+        _add_callout(doc, "關鍵引述", [article["quote"]])
+
+    # Decision table (kept for DOCX — provides structured reference)
+    dc = build_decision_card(card)
     table_rows = []
     max_r = max(len(dc["effects"]), len(dc["risks"]), len(dc["actions"]), 1)
     for i in range(max_r):
@@ -236,14 +245,15 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
         ])
     _make_simple_table(doc, ["影響面向", "風險程度", "建議行動", "要問誰"], table_rows)
 
-    # 總經理決策 QA — references actual data, not templates
+    # 總經理決策 QA
     qa_lines = build_executive_qa(card, dc)
     _add_callout(doc, "總經理決策 QA", qa_lines)
 
-    # 重要名詞白話解釋
-    term_lines = build_term_explainer_qa(card)
-    if term_lines:
-        _add_callout(doc, "重要名詞白話解釋", term_lines)
+    # Key terms — context-aware explanations (not Q/A template)
+    term_items = build_term_explainer(card)
+    if term_items:
+        term_lines = [f"{it['term']}：{sanitize(it['explain'])}" for it in term_items]
+        _add_callout(doc, "關鍵名詞解讀", term_lines)
 
     # Source
     if card.source_url and card.source_url.startswith("http"):
