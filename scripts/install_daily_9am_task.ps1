@@ -38,7 +38,7 @@ Write-Host "  Action: $action" -ForegroundColor DarkGray
 
 schtasks /Create `
     /TN $taskName `
-    /TR $action `
+    /TR "`"$action`"" `
     /SC DAILY `
     /ST 09:00 `
     /RL HIGHEST `

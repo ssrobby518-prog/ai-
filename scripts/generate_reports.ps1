@@ -2,7 +2,7 @@
 # Usage:
 #   Desktop shortcut (via open_ppt.ps1):
 #     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -OpenPpt
-#   Manual / VSCode task (default = UserInteractive):
+#   Manual / VSCode task:
 #     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1
 #   Scheduled (headless):
 #     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -NoOpenPpt
@@ -24,7 +24,8 @@ Write-Host "=== Executive Report Generator ===" -ForegroundColor Cyan
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
-Write-Host "`n--- Diagnostics ---" -ForegroundColor DarkGray
+$ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Write-Host "`n--- Diagnostics ($ts) ---" -ForegroundColor DarkGray
 Write-Host "  PSCommandPath    : $PSCommandPath" -ForegroundColor DarkGray
 Write-Host "  PSScriptRoot     : $PSScriptRoot" -ForegroundColor DarkGray
 Write-Host "  PWD              : $($PWD.Path)" -ForegroundColor DarkGray
@@ -45,8 +46,9 @@ if ($NoOpenPpt) {
     $shouldOpen = $true
     $openReason = "OpenPpt switch forcing open"
 } else {
-    $shouldOpen = [Environment]::UserInteractive
-    $openReason = "No switch — using UserInteractive=$([Environment]::UserInteractive)"
+    $isInteractive = [Environment]::UserInteractive -and ($Host.Name -match 'ConsoleHost|Visual Studio Code Host|Windows Terminal')
+    $shouldOpen = $isInteractive
+    $openReason = "No switch — UserInteractive=$([Environment]::UserInteractive), Host=$($Host.Name), isInteractive=$isInteractive"
 }
 Write-Host "  shouldOpen       : $shouldOpen  ($openReason)" -ForegroundColor $(if ($shouldOpen) { "Green" } else { "DarkGray" })
 Write-Host "-------------------`n" -ForegroundColor DarkGray
@@ -113,6 +115,10 @@ if (-not $shouldOpen) {
     exit 0
 }
 
+# --- Snapshot office processes BEFORE open ---
+$procsBefore = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
+Write-Host "`n  Office PIDs before open: [$($procsBefore -join ', ')]" -ForegroundColor DarkGray
+
 # --- Copy to _open.pptx (dodge file lock from previous run) ---
 $pptxSrc = Join-Path $projectRoot "outputs\executive_report.pptx"
 $pptxOpenPath = Join-Path $projectRoot "outputs\executive_report_open.pptx"
@@ -126,62 +132,31 @@ Write-Host "  Resolve-Path : OK" -ForegroundColor Green
 Write-Host "  File size    : $pptxSize bytes" -ForegroundColor Green
 Write-Host "  shouldOpen   : $shouldOpen  ($openReason)" -ForegroundColor Green
 
-# --- 4-layer fallback open chain ---
+# --- Open chain: cmd start (primary) → Start-Process (fallback) ---
 $opened = $false
 
-# Layer 1: COM ShellExecute (closest to user double-click)
-Write-Host "`n  [1/4] COM Shell.Application ShellExecute..." -ForegroundColor Yellow
+# Primary: cmd /c start (most reliable in desktop GUI session)
+Write-Host "`n  [1/2] cmd /c start..." -ForegroundColor Yellow
 try {
-    $shell = New-Object -ComObject Shell.Application
-    $shell.ShellExecute($pptxAbs, $null, $null, "open", 1)
-    Write-Host "  [1/4] COM ShellExecute succeeded." -ForegroundColor Green
+    Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptxAbs`"" -ErrorAction Stop
+    Write-Host "  [1/2] cmd /c start succeeded." -ForegroundColor Green
     $opened = $true
 } catch {
-    Write-Host "  [1/4] COM ShellExecute FAILED" -ForegroundColor Red
+    Write-Host "  [1/2] cmd /c start FAILED" -ForegroundColor Red
     Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
     Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
 }
 
-# Layer 2: cmd /c start (Windows shell)
+# Fallback: Start-Process directly on the file (shell execute)
 if (-not $opened) {
-    Write-Host "`n  [2/4] cmd /c start..." -ForegroundColor Yellow
+    Write-Host "`n  [2/2] Start-Process on file..." -ForegroundColor Yellow
     try {
-        Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptxAbs`"" -ErrorAction Stop
-        Write-Host "  [2/4] cmd /c start succeeded." -ForegroundColor Green
+        Start-Process -FilePath $pptxAbs -ErrorAction Stop
+        Write-Host "  [2/2] Start-Process succeeded." -ForegroundColor Green
         $opened = $true
     } catch {
-        Write-Host "  [2/4] cmd /c start FAILED" -ForegroundColor Red
-        Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
-        Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
-    }
-}
-
-# Layer 3: Invoke-Item (PowerShell shell open)
-if (-not $opened) {
-    Write-Host "`n  [3/4] Invoke-Item..." -ForegroundColor Yellow
-    try {
-        Invoke-Item -LiteralPath $pptxAbs -ErrorAction Stop
-        Write-Host "  [3/4] Invoke-Item succeeded." -ForegroundColor Green
-        $opened = $true
-    } catch {
-        Write-Host "  [3/4] Invoke-Item FAILED" -ForegroundColor Red
-        Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
-        Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
-    }
-}
-
-# Layer 4: explorer.exe (last resort)
-if (-not $opened) {
-    Write-Host "`n  [4/4] explorer.exe..." -ForegroundColor Yellow
-    try {
-        Start-Process -FilePath "explorer.exe" -ArgumentList "`"$pptxAbs`"" -WindowStyle Normal -ErrorAction Stop
-        Write-Host "  [4/4] explorer.exe succeeded." -ForegroundColor Green
-        $opened = $true
-    } catch {
-        Write-Host "  [4/4] explorer.exe FAILED" -ForegroundColor Red
+        Write-Host "  [2/2] Start-Process FAILED" -ForegroundColor Red
         Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
         Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
         Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
@@ -189,27 +164,144 @@ if (-not $opened) {
 }
 
 if (-not $opened) {
-    Write-Error "All 4 open methods failed. File is at: $pptxAbs"
+    Write-Error "Both open methods failed. File is at: $pptxAbs"
     exit 1
 }
 
-# --- Post-verification: check if an office process appeared ---
-Write-Host "`n  Waiting 2s for office process..." -ForegroundColor DarkGray
-Start-Sleep -Seconds 2
+# ---------------------------------------------------------------------------
+# Post-verification: process diff + Win32 window foreground
+# ---------------------------------------------------------------------------
 
-$officeProcs = Get-Process | Where-Object { $_.ProcessName -match "wps|et|wpp|powerpnt|POWERPNT|soffice" }
-if ($officeProcs) {
-    Write-Host "  Post-verify OK: found office process(es):" -ForegroundColor Green
-    foreach ($p in $officeProcs) {
-        Write-Host "    PID=$($p.Id)  Name=$($p.ProcessName)  Title=$($p.MainWindowTitle)" -ForegroundColor Green
+# Load Win32 APIs for window enumeration and foreground
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Collections.Generic;
+
+public class Win32Window {
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+
+    public const int SW_RESTORE = 9;
+
+    public static List<KeyValuePair<IntPtr, string>> GetVisibleWindows() {
+        var result = new List<KeyValuePair<IntPtr, string>>();
+        EnumWindows((hWnd, lParam) => {
+            if (IsWindowVisible(hWnd)) {
+                int len = GetWindowTextLength(hWnd);
+                if (len > 0) {
+                    var sb = new StringBuilder(len + 1);
+                    GetWindowText(hWnd, sb, sb.Capacity);
+                    result.Add(new KeyValuePair<IntPtr, string>(hWnd, sb.ToString()));
+                }
+            }
+            return true;
+        }, IntPtr.Zero);
+        return result;
+    }
+
+    public static bool BringToFront(IntPtr hWnd) {
+        ShowWindow(hWnd, SW_RESTORE);
+        return SetForegroundWindow(hWnd);
+    }
+}
+"@
+
+Write-Host "`n--- Post-verification (two-phase window search) ---" -ForegroundColor Cyan
+
+$targetWindow = $null
+$maxWait = 10
+$elapsed = 0
+
+# Phase 1: search by filename pattern in window title
+$phase1Patterns = @("executive_report_open", "\.pptx")
+Write-Host "  Phase 1: Searching window title for filename pattern (max ${maxWait}s)..." -ForegroundColor DarkGray
+
+while ($elapsed -lt $maxWait) {
+    Start-Sleep -Seconds 1
+    $elapsed++
+
+    $windows = [Win32Window]::GetVisibleWindows()
+    foreach ($w in $windows) {
+        foreach ($pat in $phase1Patterns) {
+            if ($w.Value -match $pat) {
+                $targetWindow = $w
+                break
+            }
+        }
+        if ($targetWindow) { break }
+    }
+    if ($targetWindow) { break }
+
+    # Log new PIDs as they appear
+    $procsAfter = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
+    $newPids = $procsAfter | Where-Object { $_ -notin $procsBefore }
+    if ($newPids -and $elapsed -ge 2) {
+        Write-Host "  New office PIDs detected: [$($newPids -join ', ')] (window not yet titled)" -ForegroundColor DarkGray
+    }
+}
+
+# Phase 2 fallback: if Phase 1 missed, search by new Office PID windows
+if (-not $targetWindow) {
+    Write-Host "  Phase 1 miss. Phase 2: Searching by new Office PID windows..." -ForegroundColor Yellow
+    $procsAfter = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
+    $newPids = $procsAfter | Where-Object { $_ -notin $procsBefore }
+
+    if ($newPids) {
+        Write-Host "  New Office PIDs: [$($newPids -join ', ')]" -ForegroundColor DarkGray
+        # Enumerate all visible windows and match office-like titles
+        $officePattern = "office|ppt|powerpoint|presentation|wps|report|簡報"
+        $windows = [Win32Window]::GetVisibleWindows()
+        Write-Host "  Visible windows matching office keywords:" -ForegroundColor DarkGray
+        foreach ($w in $windows) {
+            if ($w.Value -match $officePattern) {
+                Write-Host "    hWnd=$($w.Key) Title='$($w.Value)'" -ForegroundColor DarkGray
+                if (-not $targetWindow) { $targetWindow = $w }
+            }
+        }
+    } else {
+        Write-Host "  ERROR: No office process detected after ${maxWait}s." -ForegroundColor Red
+        Write-Host "  Root cause: (d) No Office application installed or file association broken." -ForegroundColor Red
+        Write-Host "  File: $pptxAbs" -ForegroundColor Red
+        Write-Error "PPT did NOT open — no Office process found. File: $pptxAbs"
+        exit 1
+    }
+}
+
+if ($targetWindow) {
+    Write-Host "  Window FOUND at ${elapsed}s: '$($targetWindow.Value)'" -ForegroundColor Green
+    Write-Host "  Handle: $($targetWindow.Key)" -ForegroundColor DarkGray
+
+    # Force to foreground
+    $fgResult = [Win32Window]::BringToFront($targetWindow.Key)
+    Write-Host "  SetForegroundWindow: $fgResult" -ForegroundColor $(if ($fgResult) { "Green" } else { "Yellow" })
+
+    # Verify it's now foreground
+    $fgNow = [Win32Window]::GetForegroundWindow()
+    if ($fgNow -eq $targetWindow.Key) {
+        Write-Host "  CONFIRMED: PPT is foreground window." -ForegroundColor Green
+    } else {
+        Write-Host "  NOTE: PPT opened but may not be topmost (another window has focus)." -ForegroundColor Yellow
     }
 } else {
-    Write-Host "  WARNING: No office process detected (wps|powerpnt|soffice)." -ForegroundColor Red
-    Write-Host "  The PPT file may not have opened visually." -ForegroundColor Red
-    Write-Host "  File location: $pptxAbs" -ForegroundColor Yellow
-    # Do NOT exit 1 here — the shell command itself succeeded, and some
-    # environments (e.g. CI, remote desktop) may not have Office installed.
-    # The warning is enough for the user to diagnose.
+    # PIDs exist but no window found — root cause (c)
+    Write-Host "  ERROR: Office process started but no presentation window visible after ${maxWait}s." -ForegroundColor Red
+    Write-Host "  Root cause: (c) Office launched but window not visible/in background." -ForegroundColor Red
+    Write-Host "  Dumping all visible windows for diagnosis:" -ForegroundColor Yellow
+    $allWin = [Win32Window]::GetVisibleWindows()
+    foreach ($w in $allWin) {
+        Write-Host "    hWnd=$($w.Key) Title='$($w.Value)'" -ForegroundColor DarkGray
+    }
+    Write-Error "PPT window not visible after open. Manual mode requires visible window."
+    exit 1
 }
 
 Write-Host "`n=== Done ===" -ForegroundColor Cyan

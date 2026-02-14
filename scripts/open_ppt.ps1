@@ -13,7 +13,8 @@ Set-Location $repoRoot
 # ---------------------------------------------------------------------------
 # (1) Diagnostics
 # ---------------------------------------------------------------------------
-Write-Host "=== Desktop PPT Launcher (open_ppt.ps1) ===" -ForegroundColor Cyan
+$ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+Write-Host "=== Desktop PPT Launcher (open_ppt.ps1) [$ts] ===" -ForegroundColor Cyan
 Write-Host "  PSCommandPath      : $PSCommandPath" -ForegroundColor DarkGray
 Write-Host "  PSScriptRoot       : $PSScriptRoot" -ForegroundColor DarkGray
 Write-Host "  PWD                : $($PWD.Path)" -ForegroundColor DarkGray
@@ -22,6 +23,10 @@ Write-Host "  SESSIONNAME        : $($env:SESSIONNAME)" -ForegroundColor DarkGra
 Write-Host "  USERNAME           : $($env:USERNAME)" -ForegroundColor DarkGray
 Write-Host "  UserInteractive    : $([Environment]::UserInteractive)" -ForegroundColor DarkGray
 Write-Host "  Repo root          : $repoRoot" -ForegroundColor DarkGray
+
+# Verify PPT source exists before calling generate
+$pptxSrc = Join-Path $repoRoot "outputs\executive_report.pptx"
+Write-Host "  PPT source exists  : $(Test-Path $pptxSrc)" -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------------
 # (2) Call generate_reports.ps1 with -OpenPpt (forces open)
