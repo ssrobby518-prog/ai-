@@ -20,14 +20,13 @@ from docx.shared import Cm, Pt, RGBColor
 from core.content_strategy import (
     build_decision_card,
     build_executive_qa,
-    responsible_party,
+    build_term_explainer_qa,
     sanitize,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
     EduNewsCard,
     SystemHealthReport,
-    translate_fail_reason,
 )
 from utils.logger import get_logger
 
@@ -241,56 +240,17 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     qa_lines = build_executive_qa(card, dc)
     _add_callout(doc, "總經理決策 QA", qa_lines)
 
+    # 重要名詞白話解釋
+    term_lines = build_term_explainer_qa(card)
+    if term_lines:
+        _add_callout(doc, "重要名詞白話解釋", term_lines)
+
     # Source
     if card.source_url and card.source_url.startswith("http"):
         p_src = doc.add_paragraph()
         run_src = p_src.add_run(f"原始來源：{card.source_url}")
         run_src.font.size = Pt(9)
         run_src.font.color.rgb = GRAY_COLOR
-
-
-def _build_metrics_section(doc: Document, health: SystemHealthReport) -> None:
-    _add_divider(doc)
-    _add_heading(doc, "系統運作概況", level=1)
-
-    if health.success_rate >= 80:
-        cred = f"今日資料可信度良好（完整率 {health.success_rate:.0f}%），決策依據充分。"
-    elif health.success_rate >= 50:
-        cred = f"今日資料可信度中等（完整率 {health.success_rate:.0f}%），部分結論需保守解讀。"
-    else:
-        cred = f"今日資料可信度偏低（完整率 {health.success_rate:.0f}%），交叉驗證後再做決策。"
-
-    p_cred = doc.add_paragraph()
-    run_cred = p_cred.add_run(cred)
-    run_cred.font.size = Pt(11)
-    run_cred.bold = True
-    run_cred.font.color.rgb = DARK_TEXT
-
-    rows_data = [
-        ["資料完整率", f"{health.success_rate:.0f}%",
-         "良好" if health.success_rate >= 80 else "注意" if health.success_rate >= 50 else "異常"],
-        ["中位數延遲", f"{health.p50_latency:.1f}s",
-         "正常" if health.p50_latency < 10 else "偏慢"],
-        ["高延遲指標", f"{health.p95_latency:.1f}s",
-         "正常" if health.p95_latency < 20 else "偏慢"],
-        ["雜訊清除", f"{health.entity_noise_removed} 筆", "—"],
-        ["總執行時間", f"{health.total_runtime:.1f}s", "—"],
-    ]
-    _make_simple_table(doc, ["指標", "數值", "狀態"], rows_data)
-
-    doc.add_paragraph("")
-    p = doc.add_paragraph()
-    run = p.add_run(f"{health.traffic_light_emoji} 整體評估：{health.traffic_light_label}")
-    run.bold = True
-    run.font.size = Pt(12)
-
-    if health.fail_reasons:
-        p_fail = doc.add_paragraph()
-        r_title = p_fail.add_run("需要處理的風險：")
-        r_title.bold = True
-        r_title.font.size = Pt(11)
-        for reason, count in sorted(health.fail_reasons.items(), key=lambda x: -x[1])[:2]:
-            _add_bullet(doc, f"{translate_fail_reason(reason)}（{count} 次）→ 可能影響資料涵蓋範圍")
 
 
 def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:
@@ -344,8 +304,6 @@ def generate_executive_docx(
     _build_overview_table(doc, cards)
     for i, card in enumerate(cards, 1):
         _build_news_card_section(doc, card, i)
-    doc.add_page_break()
-    _build_metrics_section(doc, health)
     _build_conclusion_section(doc, cards)
 
     doc.save(str(output_path))

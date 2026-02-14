@@ -117,8 +117,8 @@ if ($shouldOpen) {
             Copy-Item $pptxAbs $pptxOpenAbs -Force
             Write-Host "  Copy-Item OK    : $pptxOpenAbs" -ForegroundColor DarkGray
 
-            Write-Host "  Opening PPT..." -ForegroundColor Yellow
-            Start-Process -FilePath $pptxOpenAbs -ErrorAction Stop
+            Write-Host "  Opening PPT via explorer.exe..." -ForegroundColor Yellow
+            Start-Process explorer.exe $pptxOpenAbs -ErrorAction Stop
             Write-Host "  Start-Process succeeded." -ForegroundColor Green
         } catch {
             Write-Error "Start-Process failed: $($_.Exception.Message)"

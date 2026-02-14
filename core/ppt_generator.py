@@ -3,7 +3,7 @@
 白底、左對齊、大留白、細分隔線、無厚重色塊。
 每則新聞一頁一概念；圖片上方全寬 banner + 下方文字。
 色彩系統：#212838 深藍文字 + #E65A37 橘色 accent。
-含嵌入圖片、6 欄決策卡、決策摘要表格。
+含嵌入圖片、6 欄決策卡、名詞白話解釋、決策摘要表格。
 
 禁用詞彙：ai捕捉、AI Intel、Z1~Z5、pipeline、ETL、verify_run、ingestion、ai_core
 """
@@ -14,18 +14,18 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
+from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Cm, Pt
 
 from core.content_strategy import (
     build_decision_card,
+    build_term_explainer_qa,
     sanitize,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
     EduNewsCard,
     SystemHealthReport,
-    translate_fail_reason,
 )
 from utils.logger import get_logger
 
@@ -49,6 +49,12 @@ SLIDE_HEIGHT = Cm(19.05)
 # ---------------------------------------------------------------------------
 
 
+def safe_text(text: str, limit: int = 120) -> str:
+    """Truncate text to limit, adding ellipsis if needed."""
+    t = sanitize(text)
+    return t if len(t) <= limit else t[:limit] + "…"
+
+
 def _set_slide_bg(slide, color: RGBColor = BG_WHITE) -> None:
     bg = slide.background
     fill = bg.fill
@@ -64,8 +70,9 @@ def _add_textbox(
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     p = tf.paragraphs[0]
-    p.text = sanitize(text)
+    p.text = safe_text(text)
     p.font.size = Pt(font_size)
     p.font.color.rgb = color
     p.font.bold = bold
@@ -80,9 +87,10 @@ def _add_multiline_textbox(
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     for i, line in enumerate(lines):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = sanitize(line)
+        p.text = safe_text(line)
         p.font.size = Pt(font_size)
         p.font.color.rgb = color
         if bold_first and i == 0:
@@ -114,7 +122,7 @@ def _add_table_slide(prs: Presentation, title: str,
     tbl = table_shape.table
     for ci, h in enumerate(headers):
         cell = tbl.cell(0, ci)
-        cell.text = sanitize(h)
+        cell.text = safe_text(h)
         for p in cell.text_frame.paragraphs:
             p.font.size = Pt(10)
             p.font.bold = True
@@ -124,7 +132,7 @@ def _add_table_slide(prs: Presentation, title: str,
     for ri, row_data in enumerate(rows):
         for ci, val in enumerate(row_data):
             cell = tbl.cell(ri + 1, ci)
-            cell.text = sanitize(val)
+            cell.text = safe_text(val)
             for p in cell.text_frame.paragraphs:
                 p.font.size = Pt(9)
                 p.font.color.rgb = DARK_TEXT
@@ -166,7 +174,7 @@ def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
     takeaways.append(f"本日分析 {total_items} 則，{len(valid_cards)} 則值得關注")
     for c in valid_cards[:3]:
         dc = build_decision_card(c)
-        takeaways.append(f"{sanitize(c.title_plain[:30])} — {dc['event']}")
+        takeaways.append(f"{safe_text(c.title_plain, 30)} — {dc['event']}")
     takeaways.append(f"資料完整率 {health.success_rate:.0f}%｜{health.traffic_light_label}")
 
     _add_multiline_textbox(
@@ -183,7 +191,7 @@ def _slide_overview_table(prs: Presentation, cards: list[EduNewsCard]) -> None:
     rows = []
     for i, c in enumerate(valid_cards[:8], 1):
         rows.append([
-            str(i), sanitize(c.title_plain[:30]),
+            str(i), safe_text(c.title_plain, 30),
             c.category or "綜合", f"{c.final_score:.1f}",
         ])
     _add_table_slide(prs, "今日總覽  Overview", headers, rows)
@@ -229,7 +237,7 @@ def _slide_image_text(prs: Presentation, title: str,
 
 
 def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> None:
-    """Last slide: pending decisions & owners (not 'Next Steps' teaching tone)."""
+    """Last slide: pending decisions & owners."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
     _add_textbox(slide, Cm(2), Cm(1.5), Cm(30), Cm(2.5),
@@ -242,7 +250,7 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
         owner = dc["owner"]
-        items.append(f"{i}. {action} → Owner: {owner}")
+        items.append(f"{i}. {safe_text(action, 80)} → Owner: {owner}")
 
     if not items:
         items.append("1. 本日無待決事項")
@@ -254,7 +262,7 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
 
 
 # ---------------------------------------------------------------------------
-# News card slides — full 6-column decision card
+# News card slides — full 6-column decision card + term explainer
 # ---------------------------------------------------------------------------
 
 
@@ -279,20 +287,29 @@ def _slides_news_card(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     body.append("")
     body.append("已知事實：")
     for f in dc["facts"]:
-        body.append(f"  • {f}")
+        body.append(f"  • {safe_text(f, 100)}")
     body.append("")
     body.append("可能影響：")
     for e in dc["effects"]:
-        body.append(f"  • {e}")
+        body.append(f"  • {safe_text(e, 100)}")
     body.append("")
     body.append("主要風險：")
     for r in dc["risks"]:
-        body.append(f"  • {r}")
+        body.append(f"  • {safe_text(r, 100)}")
     body.append("")
-    body.append(f"建議行動：{dc['actions'][0]}")
+    body.append(f"建議行動：{safe_text(dc['actions'][0], 100)}")
     body.append(f"要問誰：{dc['owner']}")
 
-    _slide_image_text(prs, f"#{idx}  {sanitize(card.title_plain[:35])}", body, img_path)
+    _slide_image_text(prs, f"#{idx}  {safe_text(card.title_plain, 35)}", body, img_path)
+
+    # Term explainer slide (PART 4)
+    term_lines = build_term_explainer_qa(card)
+    if term_lines:
+        _slide_text(
+            prs,
+            f"#{idx} 重要名詞白話解釋",
+            term_lines,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -329,17 +346,17 @@ def generate_executive_ppt(
         for i, card in enumerate(valid_cards, 1):
             _slides_news_card(prs, card, i)
 
-    # Decision Summary Table (6 columns, no empty-talk)
+    # Decision Summary Table (6 columns)
     if valid_cards:
         decision_rows = []
         for i, c in enumerate(valid_cards[:8], 1):
             dc = build_decision_card(c)
             decision_rows.append([
                 str(i),
-                dc["event"][:18],
-                dc["effects"][0][:20] if dc["effects"] else "缺口",
-                dc["risks"][0][:20] if dc["risks"] else "缺口",
-                dc["actions"][0][:25] if dc["actions"] else "待確認",
+                safe_text(dc["event"], 18),
+                safe_text(dc["effects"][0], 20) if dc["effects"] else "缺口",
+                safe_text(dc["risks"][0], 20) if dc["risks"] else "缺口",
+                safe_text(dc["actions"][0], 25) if dc["actions"] else "待確認",
                 dc["owner"],
             ])
         _add_table_slide(
@@ -351,27 +368,7 @@ def generate_executive_ppt(
     for i, card in enumerate(invalid_cards, len(valid_cards) + 1):
         _slides_news_card(prs, card, i)
 
-    # System status with management interpretation
-    if health.success_rate >= 80:
-        cred = f"今日資料可信度良好（完整率 {health.success_rate:.0f}%），決策依據充分"
-    elif health.success_rate >= 50:
-        cred = f"今日資料可信度中等（完整率 {health.success_rate:.0f}%），部分結論需保守解讀"
-    else:
-        cred = f"今日資料可信度偏低（完整率 {health.success_rate:.0f}%），交叉驗證後再做決策"
-
-    metrics_lines = [
-        cred, "",
-        f"處理延遲：中位數 {health.p50_latency:.1f}s｜P95 {health.p95_latency:.1f}s",
-        f"雜訊清除：{health.entity_noise_removed} 筆",
-        "", f"整體狀態：{health.traffic_light_emoji} {health.traffic_light_label}",
-    ]
-    if health.fail_reasons:
-        metrics_lines.extend(["", "需要處理的風險："])
-        for reason, count in sorted(health.fail_reasons.items(), key=lambda x: -x[1])[:2]:
-            metrics_lines.append(
-                f"  • {translate_fail_reason(reason)}（{count} 次）→ 可能影響資料涵蓋範圍"
-            )
-    _slide_text(prs, "系統運作概況", metrics_lines)
+    # No system health / metrics slide — removed per CEO deck requirements
 
     _slide_pending_decisions(prs, cards)
 

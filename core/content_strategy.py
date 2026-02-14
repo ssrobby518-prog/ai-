@@ -235,6 +235,80 @@ def build_decision_card(card: EduNewsCard) -> dict[str, list[str] | str]:
     }
 
 
+# ---------------------------------------------------------------------------
+# English term explainer for CEO audience
+# ---------------------------------------------------------------------------
+
+_STOP_WORDS = {
+    "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+    "her", "was", "one", "our", "out", "has", "his", "how", "its", "may",
+    "new", "now", "old", "see", "way", "who", "did", "get", "let", "say",
+    "she", "too", "use", "with", "this", "that", "from", "have", "been",
+    "will", "more", "when", "some", "than", "them", "what", "your", "each",
+    "make", "like", "into", "over", "such", "take", "year", "also", "back",
+    "could", "would", "about", "after", "other", "which", "their", "there",
+    "first", "these", "those", "being", "where", "every", "should", "because",
+    "http", "https", "www", "com", "org", "html", "json", "xml", "url",
+    "via", "per", "etc", "just", "very", "much", "most", "only", "then",
+    "here", "well", "still", "even", "does", "done", "going", "want",
+}
+
+_TERM_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{2,}")
+
+
+def _extract_english_terms(card: EduNewsCard) -> list[str]:
+    """Extract unique English technical terms from card fields."""
+    sources = [
+        card.title_plain or "",
+        card.what_happened or "",
+        card.technical_interpretation or "",
+    ]
+    for line in (card.evidence_lines or []):
+        sources.append(line)
+    for line in (card.fact_check_confirmed or []):
+        sources.append(line)
+
+    combined = " ".join(sources)
+    raw_terms = _TERM_RE.findall(combined)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for t in raw_terms:
+        low = t.lower()
+        if low in _STOP_WORDS or low in seen or len(t) < 3:
+            continue
+        seen.add(low)
+        unique.append(t)
+
+    return unique[:5]
+
+
+def build_term_explainer_qa(card: EduNewsCard) -> list[str]:
+    """Build '重要名詞白話解釋' QA lines for CEO audience.
+
+    Extracts 3-5 English technical terms from the card and generates
+    two Q&A pairs per term: what it is, and why it matters to the company.
+    """
+    terms = _extract_english_terms(card)
+    if not terms:
+        return []
+
+    category = card.category or "綜合"
+    lines: list[str] = []
+
+    for term in terms[:3]:
+        lines.append(f"Q：{term} 是什麼？")
+        lines.append(f"A：「{term}」是本則新聞提及的關鍵技術或概念，"
+                     f"屬於 {category} 領域的重要術語。")
+        lines.append("")
+        lines.append(f"Q：{term} 對公司有什麼關係？")
+        lines.append(f"A：可能影響公司在成本控制、競爭定位、產品規劃"
+                     f"或合規層面的決策方向。")
+        lines.append("")
+
+    return lines
+
+
 def build_executive_qa(card: EduNewsCard, dc: dict) -> list[str]:
     """Build 總經理決策 QA lines, referencing actual card data (not templates)."""
     short_title = sanitize(card.title_plain[:20])
