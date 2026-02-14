@@ -6,11 +6,11 @@
             "type": "shell",
             "command": "powershell.exe",
             "args": [
+                "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/scripts/generate_reports.ps1",
-                "-OpenPpt"
+                "${workspaceFolder}/scripts/generate_reports.ps1"
             ],
             "group": "build",
             "presentation": {

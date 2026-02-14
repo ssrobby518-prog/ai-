@@ -13,6 +13,7 @@ Write-Host "=== Installing Daily 9:00 AM Scheduled Task ===" -ForegroundColor Cy
 Write-Host "  Task Name: $taskName"
 Write-Host "  Script:    $scriptPath"
 Write-Host "  Schedule:  Daily at 09:00"
+Write-Host "  Mode:      Headless (-NoOpenPpt)"
 Write-Host ""
 
 # Check script exists
@@ -29,9 +30,11 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  Removed." -ForegroundColor Green
 }
 
-# Create new scheduled task (no -OpenPpt → headless, no file pop-ups)
+# Create new scheduled task — always -NoOpenPpt for headless execution
 $scriptAbs = (Resolve-Path $scriptPath).Path
-$action = "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptAbs`""
+$action = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptAbs`" -NoOpenPpt"
+
+Write-Host "  Action: $action" -ForegroundColor DarkGray
 
 schtasks /Create `
     /TN $taskName `
@@ -49,7 +52,7 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "=== Task installed successfully ===" -ForegroundColor Green
-Write-Host "  The task '$taskName' will run daily at 09:00."
+Write-Host "  The task '$taskName' will run daily at 09:00 (headless, no popup)."
 Write-Host "  To verify:  schtasks /Query /TN $taskName"
 Write-Host "  To remove:  schtasks /Delete /TN $taskName /F"
 Write-Host "  To run now: schtasks /Run /TN $taskName"
