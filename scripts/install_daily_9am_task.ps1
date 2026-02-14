@@ -29,8 +29,9 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  Removed." -ForegroundColor Green
 }
 
-# Create new scheduled task
-$action = "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`""
+# Create new scheduled task (no -OpenPpt → headless, no file pop-ups)
+$scriptAbs = (Resolve-Path $scriptPath).Path
+$action = "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptAbs`""
 
 schtasks /Create `
     /TN $taskName `

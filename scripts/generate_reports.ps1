@@ -1,5 +1,11 @@
 # generate_reports.ps1 — One-click executive report generation
-# Usage: powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 [-OpenPpt]
+# Without -OpenPpt: headless (safe for scheduled tasks)
+# With    -OpenPpt: opens executive_report.pptx after generation
+
+param(
+    [switch] $OpenPpt
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -58,12 +64,14 @@ if (-not $allExist) {
 
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
 
-# Auto-open PPT for review (only PPT, not docx/xmind/md)
-$pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
-if (Test-Path $pptxPath) {
-    $pptxAbs = (Resolve-Path $pptxPath).Path
-    Write-Host "`nOpening: $pptxAbs" -ForegroundColor Yellow
-    Start-Process -FilePath $pptxAbs
-} else {
-    Write-Host "`nWARN: PPT not found: $pptxPath" -ForegroundColor Red
+# Open PPT only when explicitly requested (manual / VSCode task)
+if ($OpenPpt) {
+    $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
+    if (Test-Path $pptxPath) {
+        $pptxAbs = (Resolve-Path $pptxPath).Path
+        Write-Host "`nOpening: $pptxAbs" -ForegroundColor Yellow
+        Start-Process -FilePath $pptxAbs
+    } else {
+        Write-Host "`nWARN: PPT not found: $pptxPath" -ForegroundColor Red
+    }
 }
