@@ -40,7 +40,7 @@ $filesToRemove = @(
 )
 foreach ($f in $filesToRemove) {
     if (Test-Path $f) {
-        Remove-Item $f -Force
+        Remove-Item $f -Force -ErrorAction SilentlyContinue
         Write-Host "  Removed: $f"
     }
 }

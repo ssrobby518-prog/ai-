@@ -13,7 +13,8 @@ __pycache__/
 .pytest_cache/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 
 # Runtime outputs
