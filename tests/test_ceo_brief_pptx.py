@@ -156,7 +156,7 @@ class TestDarkTheme:
         out = tmp_path / "dark_theme.pptx"
 
         with patch("core.ppt_generator.get_news_image", return_value=None):
-            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out)
+            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out, theme="dark")
 
         from pptx import Presentation
         prs = Presentation(str(out))

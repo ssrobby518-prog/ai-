@@ -15,6 +15,7 @@ Used by: ppt_generator.py, doc_generator.py
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from schemas.education_models import EduNewsCard
 
@@ -1719,18 +1720,44 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         else:
             heat = "cool"
 
+        heat_score = 90 if heat == "hot" else 65 if heat == "warm" else 40
+        signal_text = _smart_truncate(sanitize(bucket_cards[0].title_plain or ""), 30)
+        platform_count = len(bucket_cards)
         results.append({
             "signal_type": sig_type,
             "label": type_labels[sig_type],
-            "title": _smart_truncate(
-                sanitize(bucket_cards[0].title_plain or ""), 30
-            ),
-            "source_count": len(bucket_cards),
+            "title": signal_text,
+            "source_count": platform_count,
             "heat": heat,
+            "signal_text": signal_text,
+            "platform_count": platform_count,
+            "heat_score": heat_score,
         })
 
     # Sort by source_count descending
     results.sort(key=lambda x: x["source_count"], reverse=True)
+
+    # v5.1: no-event fallback must return Top 3
+    if not results:
+        fallback_signals = [
+            ("NO_EVENT", "Event Coverage", "No event candidates from scanned content", 0, 35),
+            ("SOURCE_HEALTH", "Source Health", "Source ingestion completed with fallback coverage", 0, 45),
+            ("WATCHLIST", "Watchlist", "Monitor upstream feeds for next actionable event", 0, 40),
+        ]
+        for sig_type, label, signal_text, platform_count, heat_score in fallback_signals:
+            results.append(
+                {
+                    "signal_type": sig_type,
+                    "label": label,
+                    "title": signal_text,
+                    "source_count": platform_count,
+                    "heat": "cool",
+                    "signal_text": signal_text,
+                    "platform_count": platform_count,
+                    "heat_score": heat_score,
+                }
+            )
+        return results
 
     # Always return at least one signal
     if not results:
@@ -1799,8 +1826,34 @@ def build_corp_watch_summary(cards: list[EduNewsCard]) -> dict:
                     "action": dc["actions"][0] if dc["actions"] else "持續監控",
                 })
 
+    source_names = {
+        str(getattr(c, "source_name", "") or "").strip()
+        for c in cards
+        if str(getattr(c, "source_name", "") or "").strip()
+    }
+    fail_counter: Counter[str] = Counter()
+    for c in cards:
+        if bool(getattr(c, "is_valid_news", False)):
+            continue
+        invalid_cause = str(getattr(c, "invalid_cause", "") or "")
+        invalid_reason = str(getattr(c, "invalid_reason", "") or "")
+        reason = sanitize((invalid_cause or invalid_reason or "unknown").strip())
+        if reason:
+            fail_counter[reason] += 1
+
+    top_fail_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in fail_counter.most_common(3)
+    ]
+    total_mentions = len(tier_a_results) + len(tier_b_results)
+
     return {
         "tier_a": tier_a_results[:7],
         "tier_b": tier_b_results[:5],
-        "total_mentions": len(tier_a_results) + len(tier_b_results),
+        "total_mentions": total_mentions,
+        "updates": total_mentions,
+        "sources_total": len(source_names) if source_names else len(cards),
+        "success_count": sum(1 for c in cards if bool(getattr(c, "is_valid_news", False))),
+        "fail_count": sum(1 for c in cards if not bool(getattr(c, "is_valid_news", False))),
+        "top_fail_reasons": top_fail_reasons,
     }

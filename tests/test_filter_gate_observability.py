@@ -26,7 +26,11 @@ from schemas.models import RawItem
 def _make_item(
     item_id: str = "test_001",
     title: str = "AI industry update",
-    body: str = "A" * 200,
+    body: str = (
+        ("The platform team shipped a new distributed inference stack for enterprise traffic. " * 10)
+        + ("Operators validated rollout metrics across regions and confirmed stable latency. " * 10)
+        + ("Customers reported improved throughput while preserving governance and compliance controls. " * 10)
+    ),
     published_hours_ago: int = 1,
     lang: str = "en",
 ) -> RawItem:

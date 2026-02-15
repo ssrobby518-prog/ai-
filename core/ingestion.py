@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 import feedparser
 import requests
 from config import settings
+from core.content_gate import is_valid_article
 from langdetect import LangDetectException, detect
 from rapidfuzz import fuzz
 from schemas.models import RawItem
@@ -179,7 +180,8 @@ class FilterSummary:
     input_count: int = 0
     kept_count: int = 0
     dropped_by_reason: dict[str, int] = field(default_factory=dict)
-    # reasons: too_old, lang_not_allowed, keyword_mismatch, body_too_short
+    # reasons: too_old, lang_not_allowed, keyword_mismatch, body_too_short,
+    #          content_too_short, insufficient_sentences, rejected_keyword:*
 
 
 def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
@@ -220,6 +222,12 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
         # Min body length
         if len(item.body) < settings.MIN_BODY_LENGTH:
             summary.dropped_by_reason["body_too_short"] = summary.dropped_by_reason.get("body_too_short", 0) + 1
+            continue
+
+        # Pre-LLM content gate: reject residual fragments / index-like pages
+        is_valid, rejected_reason = is_valid_article(item.body)
+        if not is_valid and rejected_reason:
+            summary.dropped_by_reason[rejected_reason] = summary.dropped_by_reason.get(rejected_reason, 0) + 1
             continue
 
         result.append(item)

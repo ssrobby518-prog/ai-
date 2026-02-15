@@ -40,15 +40,45 @@ from utils.logger import get_logger
 # ---------------------------------------------------------------------------
 # CEO Motion Slides — Dark Theme colour palette
 # ---------------------------------------------------------------------------
-BG_DARK = RGBColor(0x12, 0x12, 0x18)          # #121218
-TEXT_WHITE = RGBColor(0xF0, 0xF0, 0xF0)        # #F0F0F0
+DARK_BG = RGBColor(0x12, 0x12, 0x18)           # #121218
+DARK_TEXT = RGBColor(0xF0, 0xF0, 0xF0)         # #F0F0F0
+DARK_MUTED = RGBColor(0x64, 0x64, 0x6E)        # #64646E
+DARK_CARD = RGBColor(0x1C, 0x1C, 0x24)         # #1C1C24
+
+LIGHT_BG = RGBColor(0xFF, 0xFF, 0xFF)          # #FFFFFF
+LIGHT_TEXT = RGBColor(0x22, 0x28, 0x33)        # #222833
+LIGHT_MUTED = RGBColor(0x5E, 0x67, 0x73)       # #5E6773
+LIGHT_CARD = RGBColor(0xF2, 0xF4, 0xF8)        # #F2F4F8
+
 HIGHLIGHT_YELLOW = RGBColor(0xFF, 0xD6, 0x00)  # #FFD600
 ACCENT = RGBColor(0xE6, 0x5A, 0x37)            # #E65A37
-SUBTLE_GRAY = RGBColor(0x64, 0x64, 0x6E)       # #64646E
-CARD_BG = RGBColor(0x1C, 0x1C, 0x24)           # #1C1C24
+
+# Backward-compatible exported names used by existing tests/imports.
+BG_DARK = DARK_BG
+TEXT_WHITE = DARK_TEXT
+SUBTLE_GRAY = DARK_MUTED
+CARD_BG = DARK_CARD
 
 SLIDE_WIDTH = Cm(33.867)   # 16:9 default
 SLIDE_HEIGHT = Cm(19.05)
+
+
+def _apply_theme(theme: str) -> None:
+    """Apply runtime palette for the current deck generation."""
+    global BG_DARK, TEXT_WHITE, SUBTLE_GRAY, CARD_BG
+    choice = (theme or "light").strip().lower()
+    if choice == "light":
+        BG_DARK = LIGHT_BG
+        TEXT_WHITE = LIGHT_TEXT
+        SUBTLE_GRAY = LIGHT_MUTED
+        CARD_BG = LIGHT_CARD
+    elif choice == "dark":
+        BG_DARK = DARK_BG
+        TEXT_WHITE = DARK_TEXT
+        SUBTLE_GRAY = DARK_MUTED
+        CARD_BG = DARK_CARD
+    else:
+        raise ValueError(f"Unsupported theme: {theme}")
 
 
 # ---------------------------------------------------------------------------
@@ -473,18 +503,23 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
     heat_colors = {"hot": ACCENT, "warm": HIGHLIGHT_YELLOW, "cool": SUBTLE_GRAY}
 
     for sig in signals[:3]:
-        sig_color = heat_colors.get(sig["heat"], SUBTLE_GRAY)
+        heat_word = str(sig.get("heat", "cool"))
+        sig_color = heat_colors.get(heat_word, SUBTLE_GRAY)
+        signal_text = str(sig.get("signal_text", sig.get("title", "")))
+        platform_count = int(sig.get("platform_count", sig.get("source_count", 0)))
+        heat_score = int(sig.get("heat_score", 0))
+        label = str(sig.get("label", sig.get("signal_type", "Signal")))
         # Signal type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
-                     sig["label"], font_size=12, bold=True,
+                     label, font_size=12, bold=True,
                      color=sig_color)
-        # Title + count
-        _add_textbox(slide, Cm(10), Cm(y), Cm(18), Cm(0.8),
-                     f"{sig['title']}  ({sig['source_count']} sources)",
+        # signal_text + required fallback fields
+        _add_textbox(slide, Cm(10), Cm(y), Cm(20), Cm(0.8),
+                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score}",
                      font_size=11, color=TEXT_WHITE)
         # Heat badge
-        _add_textbox(slide, Cm(28), Cm(y), Cm(4), Cm(0.8),
-                     sig["heat"].upper(), font_size=10, bold=True,
+        _add_textbox(slide, Cm(30), Cm(y), Cm(2), Cm(0.8),
+                     heat_word.upper(), font_size=10, bold=True,
                      color=sig_color)
         y += 1.2
 
@@ -505,6 +540,32 @@ def _slide_corp_watch(prs: Presentation, cards: list[EduNewsCard]) -> None:
     _add_textbox(slide, Cm(2), Cm(3.0), Cm(30), Cm(1),
                  f"Total Mentions: {corp['total_mentions']}",
                  font_size=14, color=TEXT_WHITE)
+
+    # v5.1 no-event fallback
+    if corp.get("updates", corp["total_mentions"]) == 0:
+        fail_bits = []
+        for item in corp.get("top_fail_reasons", []):
+            reason = str(item.get("reason", "unknown"))
+            count = int(item.get("count", 0))
+            fail_bits.append(f"{reason} ({count})")
+        fail_text = ", ".join(fail_bits) if fail_bits else "-"
+
+        _add_textbox(slide, Cm(2), Cm(4.5), Cm(30), Cm(1),
+                     "Source Scan Stats", font_size=16, bold=True,
+                     color=HIGHLIGHT_YELLOW)
+        _add_multiline_textbox(
+            slide, Cm(3), Cm(5.7), Cm(28), Cm(8),
+            [
+                f"sources_total: {corp.get('sources_total', 0)}",
+                f"success_count: {corp.get('success_count', 0)}",
+                f"fail_count: {corp.get('fail_count', 0)}",
+                f"top_fail_reasons: {fail_text}",
+            ],
+            font_size=12,
+            color=TEXT_WHITE,
+            line_spacing=1.5,
+        )
+        return
 
     y = 4.5
 
@@ -662,12 +723,15 @@ def generate_executive_ppt(
     report_time: str,
     total_items: int,
     output_path: Path | None = None,
+    theme: str = "light",
 ) -> Path:
     log = get_logger()
     if output_path is None:
         project_root = Path(__file__).resolve().parent.parent
         output_path = project_root / "outputs" / "executive_report.pptx"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    _apply_theme(theme)
 
     prs = Presentation()
     prs.slide_width = SLIDE_WIDTH
