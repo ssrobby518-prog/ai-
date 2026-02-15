@@ -578,7 +578,7 @@ def _slide_corp_watch(
             reason = str(item.get("reason", "unknown"))
             count = int(item.get("count", 0))
             fail_bits.append(f"{reason} ({count})")
-        fail_text = ", ".join(fail_bits) if fail_bits else "-"
+        fail_text = ", ".join(fail_bits) if fail_bits else "none"
 
         _add_textbox(slide, Cm(2), Cm(4.5), Cm(30), Cm(1),
                      "Source Scan Stats", font_size=16, bold=True,
@@ -586,7 +586,7 @@ def _slide_corp_watch(
         _add_multiline_textbox(
             slide, Cm(3), Cm(5.7), Cm(28), Cm(8),
             [
-                f"status: {corp.get('status_message', '-')}",
+                f"status: {corp.get('status_message', 'none')}",
                 f"sources_total: {corp.get('sources_total', 0)}",
                 f"success_count: {corp.get('success_count', 0)}",
                 f"fail_count: {corp.get('fail_count', 0)}",

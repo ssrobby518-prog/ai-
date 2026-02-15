@@ -1,4 +1,4 @@
-# generate_reports.ps1 — One-click executive report generation
+# generate_reports.ps1 ??One-click executive report generation
 # Usage:
 #   Desktop shortcut (via open_ppt.ps1):
 #     powershell -ExecutionPolicy Bypass -File scripts\generate_reports.ps1 -OpenPpt
@@ -49,7 +49,7 @@ if ($NoOpenPpt) {
 } else {
     $isInteractive = [Environment]::UserInteractive -and ($Host.Name -match 'ConsoleHost|Visual Studio Code Host|Windows Terminal')
     $shouldOpen = $isInteractive
-    $openReason = "No switch — UserInteractive=$([Environment]::UserInteractive), Host=$($Host.Name), isInteractive=$isInteractive"
+    $openReason = "No switch ??UserInteractive=$([Environment]::UserInteractive), Host=$($Host.Name), isInteractive=$isInteractive"
 }
 Write-Host "  shouldOpen       : $shouldOpen  ($openReason)" -ForegroundColor $(if ($shouldOpen) { "Green" } else { "DarkGray" })
 Write-Host "-------------------`n" -ForegroundColor DarkGray
@@ -181,201 +181,38 @@ if (-not $shouldOpen) {
     exit 0
 }
 
-# --- Snapshot office processes BEFORE open ---
-$procsBefore = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
-Write-Host "`n  Office PIDs before open: [$($procsBefore -join ', ')]" -ForegroundColor DarkGray
-
-# --- Copy to unique _open_*.pptx (avoid lock from previous opened file) ---
-$pptxSrc = Join-Path $projectRoot "outputs\executive_report.pptx"
-$openStamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
-$pptxOpenPath = Join-Path $projectRoot "outputs\executive_report_open_$openStamp.pptx"
-
-try {
-    Copy-Item $pptxSrc $pptxOpenPath -Force
-    $pptxAbs = (Resolve-Path $pptxOpenPath).Path
-} catch {
-    Write-Host "  WARN: Could not create unique open-copy, fallback to source PPT." -ForegroundColor Yellow
-    Write-Host "        $($_.Exception.Message)" -ForegroundColor Yellow
-    $pptxAbs = (Resolve-Path $pptxSrc).Path
-}
-
-$pptxSize = (Get-Item $pptxAbs).Length
-
-Write-Host "`n--- Open PPT ---" -ForegroundColor Cyan
-Write-Host "  Target file  : $pptxAbs" -ForegroundColor Green
-Write-Host "  Resolve-Path : OK" -ForegroundColor Green
-Write-Host "  File size    : $pptxSize bytes" -ForegroundColor Green
-Write-Host "  shouldOpen   : $shouldOpen  ($openReason)" -ForegroundColor Green
-
-# --- Open chain: cmd start (primary) → Start-Process (fallback) ---
-$opened = $false
-
-# Primary: cmd /c start (most reliable in desktop GUI session)
-Write-Host "`n  [1/2] cmd /c start..." -ForegroundColor Yellow
-try {
-    Start-Process cmd.exe -ArgumentList "/c", "start", "`"`"", "`"$pptxAbs`"" -ErrorAction Stop
-    Write-Host "  [1/2] cmd /c start succeeded." -ForegroundColor Green
-    $opened = $true
-} catch {
-    Write-Host "  [1/2] cmd /c start FAILED" -ForegroundColor Red
-    Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
-    Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
-}
-
-# Fallback: Start-Process directly on the file (shell execute)
-if (-not $opened) {
-    Write-Host "`n  [2/2] Start-Process on file..." -ForegroundColor Yellow
-    try {
-        Start-Process -FilePath $pptxAbs -ErrorAction Stop
-        Write-Host "  [2/2] Start-Process succeeded." -ForegroundColor Green
-        $opened = $true
-    } catch {
-        Write-Host "  [2/2] Start-Process FAILED" -ForegroundColor Red
-        Write-Host "    Exception : $($_.Exception.GetType().FullName)" -ForegroundColor Red
-        Write-Host "    Message   : $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "    HResult   : $($_.Exception.HResult)" -ForegroundColor Red
-    }
-}
-
-if (-not $opened) {
-    Write-Error "Both open methods failed. File is at: $pptxAbs"
+$pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
+if (-not (Test-Path $pptxPath)) {
+    Write-Host "ERROR: PPT file not found for auto-open: $pptxPath" -ForegroundColor Red
     exit 1
 }
 
-# ---------------------------------------------------------------------------
-# Post-verification: process diff + Win32 window foreground
-# ---------------------------------------------------------------------------
-
-# Load Win32 APIs for window enumeration and foreground
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Collections.Generic;
-
-public class Win32Window {
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-
-    public const int SW_RESTORE = 9;
-
-    public static List<KeyValuePair<IntPtr, string>> GetVisibleWindows() {
-        var result = new List<KeyValuePair<IntPtr, string>>();
-        EnumWindows((hWnd, lParam) => {
-            if (IsWindowVisible(hWnd)) {
-                int len = GetWindowTextLength(hWnd);
-                if (len > 0) {
-                    var sb = new StringBuilder(len + 1);
-                    GetWindowText(hWnd, sb, sb.Capacity);
-                    result.Add(new KeyValuePair<IntPtr, string>(hWnd, sb.ToString()));
-                }
-            }
-            return true;
-        }, IntPtr.Zero);
-        return result;
-    }
-
-    public static bool BringToFront(IntPtr hWnd) {
-        ShowWindow(hWnd, SW_RESTORE);
-        return SetForegroundWindow(hWnd);
-    }
+$pptxAbs = (Resolve-Path $pptxPath).Path
+$pptxSize = (Get-Item $pptxAbs).Length
+if ($pptxSize -le 0) {
+    Write-Host "ERROR: PPT file is empty, skip auto-open: $pptxAbs" -ForegroundColor Red
+    exit 1
 }
-"@
 
-Write-Host "`n--- Post-verification (two-phase window search) ---" -ForegroundColor Cyan
+Write-Host "`n--- Open PPT ---" -ForegroundColor Cyan
+Write-Host "  Target file  : $pptxAbs" -ForegroundColor Green
+Write-Host "  File size    : $pptxSize bytes" -ForegroundColor Green
 
-$targetWindow = $null
-$maxWait = 10
-$elapsed = 0
-
-# Phase 1: search by filename pattern in window title
-$phase1Patterns = @("executive_report_open", "\.pptx")
-Write-Host "  Phase 1: Searching window title for filename pattern (max ${maxWait}s)..." -ForegroundColor DarkGray
-
-while ($elapsed -lt $maxWait) {
-    Start-Sleep -Seconds 1
-    $elapsed++
-
-    $windows = [Win32Window]::GetVisibleWindows()
-    foreach ($w in $windows) {
-        foreach ($pat in $phase1Patterns) {
-            if ($w.Value -match $pat) {
-                $targetWindow = $w
-                break
-            }
-        }
-        if ($targetWindow) { break }
-    }
-    if ($targetWindow) { break }
-
-    # Log new PIDs as they appear
-    $procsAfter = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
-    $newPids = $procsAfter | Where-Object { $_ -notin $procsBefore }
-    if ($newPids -and $elapsed -ge 2) {
-        Write-Host "  New office PIDs detected: [$($newPids -join ', ')] (window not yet titled)" -ForegroundColor DarkGray
+$opened = $false
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+    try {
+        Start-Process explorer.exe -ArgumentList "`"$pptxAbs`"" -ErrorAction Stop
+        Write-Host "  Open attempt ${attempt}/5 succeeded." -ForegroundColor Green
+        $opened = $true
+        break
+    } catch {
+        Write-Host "  Open attempt ${attempt}/5 failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Start-Sleep -Seconds 1
     }
 }
 
-# Phase 2 fallback: if Phase 1 missed, search by new Office PID windows
-if (-not $targetWindow) {
-    Write-Host "  Phase 1 miss. Phase 2: Searching by new Office PID windows..." -ForegroundColor Yellow
-    $procsAfter = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
-    $newPids = $procsAfter | Where-Object { $_ -notin $procsBefore }
-
-    if ($newPids) {
-        Write-Host "  New Office PIDs: [$($newPids -join ', ')]" -ForegroundColor DarkGray
-        # Enumerate all visible windows and match office-like titles
-        $officePattern = "office|ppt|powerpoint|presentation|wps|report|簡報"
-        $windows = [Win32Window]::GetVisibleWindows()
-        Write-Host "  Visible windows matching office keywords:" -ForegroundColor DarkGray
-        foreach ($w in $windows) {
-            if ($w.Value -match $officePattern) {
-                Write-Host "    hWnd=$($w.Key) Title='$($w.Value)'" -ForegroundColor DarkGray
-                if (-not $targetWindow) { $targetWindow = $w }
-            }
-        }
-    } else {
-        Write-Host "  ERROR: No office process detected after ${maxWait}s." -ForegroundColor Red
-        Write-Host "  Root cause: (d) No Office application installed or file association broken." -ForegroundColor Red
-        Write-Host "  File: $pptxAbs" -ForegroundColor Red
-        Write-Error "PPT did NOT open — no Office process found. File: $pptxAbs"
-        exit 1
-    }
-}
-
-if ($targetWindow) {
-    Write-Host "  Window FOUND at ${elapsed}s: '$($targetWindow.Value)'" -ForegroundColor Green
-    Write-Host "  Handle: $($targetWindow.Key)" -ForegroundColor DarkGray
-
-    # Force to foreground
-    $fgResult = [Win32Window]::BringToFront($targetWindow.Key)
-    Write-Host "  SetForegroundWindow: $fgResult" -ForegroundColor $(if ($fgResult) { "Green" } else { "Yellow" })
-
-    # Verify it's now foreground
-    $fgNow = [Win32Window]::GetForegroundWindow()
-    if ($fgNow -eq $targetWindow.Key) {
-        Write-Host "  CONFIRMED: PPT is foreground window." -ForegroundColor Green
-    } else {
-        Write-Host "  NOTE: PPT opened but may not be topmost (another window has focus)." -ForegroundColor Yellow
-    }
-} else {
-    # PIDs exist but no window found — root cause (c)
-    Write-Host "  ERROR: Office process started but no presentation window visible after ${maxWait}s." -ForegroundColor Red
-    Write-Host "  Root cause: (c) Office launched but window not visible/in background." -ForegroundColor Red
-    Write-Host "  Dumping all visible windows for diagnosis:" -ForegroundColor Yellow
-    $allWin = [Win32Window]::GetVisibleWindows()
-    foreach ($w in $allWin) {
-        Write-Host "    hWnd=$($w.Key) Title='$($w.Value)'" -ForegroundColor DarkGray
-    }
-    Write-Error "PPT window not visible after open. Manual mode requires visible window."
+if (-not $opened) {
+    Write-Host "ERROR: Failed to auto-open PPT after 5 retries: $pptxAbs" -ForegroundColor Red
     exit 1
 }
 

@@ -60,6 +60,8 @@ ALLOW_LANG: list[str] = [lang.strip() for lang in os.getenv("ALLOW_LANG", "zh,en
 KEYWORD_FILTER: list[str] = [k.strip() for k in os.getenv("KEYWORD_FILTER", "").split(",") if k.strip()]
 MIN_BODY_LENGTH: int = _env_int("MIN_BODY_LENGTH", 120)
 BATCH_SIZE: int = _env_int("BATCH_SIZE", 20)
+CONTENT_GATE_MIN_KEEP_ITEMS: int = _env_int("CONTENT_GATE_MIN_KEEP_ITEMS", 12)
+CONTENT_GATE_MIN_KEEP_SIGNALS: int = _env_int("CONTENT_GATE_MIN_KEEP_SIGNALS", 9)
 
 # ---------------------------------------------------------------------------
 # Quality Gates

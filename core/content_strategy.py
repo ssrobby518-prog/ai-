@@ -1996,7 +1996,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         fallback_score = int(fallback_scores.get(fallback_name, 50))
         fallback_heat = "warm" if fallback_score >= 50 else "cool"
         fallback_text = _smart_truncate(
-            sanitize(f"Fallback monitoring signal: {fallback_name}"),
+            sanitize(f"Monitoring signal: {fallback_name}"),
             30,
         )
         fallback_snippet = _smart_truncate(
@@ -2088,6 +2088,414 @@ def build_corp_watch_summary(
         {"reason": reason, "count": count}
         for reason, count in fail_counter.most_common(3)
     ]
+
+    metrics_dict = metrics or {}
+    total_mentions = len(tier_a_results) + len(tier_b_results)
+    mentions_count = total_mentions
+
+    if impact_values:
+        impact_score_avg = round(sum(impact_values) / len(impact_values), 2)
+    else:
+        impact_score_avg = 0.0
+
+    if mentions_count == 0:
+        trend_direction = "STABLE"
+    elif impact_score_avg >= 3.8 or mentions_count >= 3:
+        trend_direction = "UP"
+    elif impact_score_avg <= 2.0:
+        trend_direction = "DOWN"
+    else:
+        trend_direction = "STABLE"
+
+    sources_total = int(
+        metrics_dict.get(
+            "sources_total",
+            len(source_names) if source_names else len(cards),
+        )
+    )
+    success_count = int(
+        metrics_dict.get(
+            "sources_success",
+            sum(1 for c in cards if bool(getattr(c, "is_valid_news", False))),
+        )
+    )
+    fail_count = int(
+        metrics_dict.get(
+            "sources_failed",
+            sum(1 for c in cards if not bool(getattr(c, "is_valid_news", False))),
+        )
+    )
+
+    status_message = (
+        "No major updates detected — monitoring continues."
+        if mentions_count == 0
+        else f"{mentions_count} tracked companies with notable updates."
+    )
+
+    return {
+        "tier_a": tier_a_results[:7],
+        "tier_b": tier_b_results[:5],
+        "total_mentions": total_mentions,
+        "mentions_count": mentions_count,
+        "impact_score_avg": impact_score_avg,
+        "trend_direction": trend_direction,
+        "status_message": status_message,
+        "updates": total_mentions,
+        "sources_total": sources_total,
+        "success_count": success_count,
+        "fail_count": fail_count,
+        "top_fail_reasons": top_fail_reasons,
+    }
+
+# ---------------------------------------------------------------------------
+# v5.2.1 overrides (append-only hotfix layer)
+# ---------------------------------------------------------------------------
+
+# Keep the monitored corp list explicit and complete.
+CORP_TIER_A = [
+    "OpenAI",
+    "Google",
+    "Microsoft",
+    "Amazon",
+    "Meta",
+    "Apple",
+    "NVIDIA",
+]
+CORP_TIER_B = [
+    "Alibaba",
+    "Tencent",
+    "ByteDance",
+    "Baidu",
+    "Huawei",
+]
+_ALL_CORPS = CORP_TIER_A + CORP_TIER_B
+
+_FALLBACK_SIGNAL_POOL = [
+    "TOOL_ADOPTION",
+    "USER_PAIN",
+    "WORKFLOW_CHANGE",
+    "COST_PRESSURE",
+    "COMPETITION_SIGNAL",
+]
+
+_SIGNAL_LABELS = {
+    "TOOL_ADOPTION": "Tool Adoption",
+    "USER_PAIN": "User Pain",
+    "WORKFLOW_CHANGE": "Workflow Change",
+    "COST_PRESSURE": "Cost Pressure",
+    "COMPETITION_SIGNAL": "Competition Signal",
+}
+
+_V521_EXTRA_SIGNAL_KEYWORDS = {
+    "COST_PRESSURE": [
+        "cost", "pricing", "margin", "budget", "token price", "spend", "expense",
+    ],
+    "COMPETITION_SIGNAL": [
+        "rival", "competition", "race", "market share", "challenger", "benchmark",
+    ],
+}
+
+
+def _v521_strip_signal_placeholders(text: str) -> str:
+    cleaned = text or ""
+    cleaned = re.sub(r"(?i)fallback monitoring signal", "", cleaned)
+    cleaned = re.sub(r"(?i)last\s+\w+\s+was\.{3,}", "", cleaned)
+    return cleaned.strip()
+
+
+def _v521_resolve_signal_type(combined: str) -> str:
+    best_type = "TOOL_ADOPTION"
+    best_hits = 0
+
+    for sig_type, keywords in _SIGNAL_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw.lower() in combined)
+        if hits > best_hits:
+            best_hits = hits
+            best_type = sig_type
+
+    for sig_type, keywords in _V521_EXTRA_SIGNAL_KEYWORDS.items():
+        hits = sum(1 for kw in keywords if kw.lower() in combined)
+        if hits > best_hits:
+            best_hits = hits
+            best_type = sig_type
+
+    return best_type
+
+
+def _v521_heat_from_avg_score(avg_score: float) -> tuple[str, int]:
+    heat_score = int(max(30, min(100, round(avg_score * 12))))
+    if heat_score >= 75:
+        return "hot", heat_score
+    if heat_score >= 50:
+        return "warm", heat_score
+    return "cool", heat_score
+
+
+def _v521_build_signal_entry(signal_name: str, bucket_cards: list[EduNewsCard]) -> dict:
+    source_names = {
+        str(getattr(c, "source_name", "") or "").strip().lower()
+        for c in bucket_cards
+        if str(getattr(c, "source_name", "") or "").strip()
+    }
+    platform_count = len(source_names) if source_names else len(bucket_cards)
+    platform_count = max(platform_count, 1)
+
+    avg_score = (
+        sum(float(getattr(c, "final_score", 0.0) or 0.0) for c in bucket_cards) / len(bucket_cards)
+        if bucket_cards else 3.0
+    )
+    heat, heat_score = _v521_heat_from_avg_score(avg_score)
+
+    first = bucket_cards[0] if bucket_cards else None
+    signal_text_raw = (
+        (first.title_plain if first else "")
+        or (first.what_happened if first else "")
+        or _SIGNAL_LABELS.get(signal_name, signal_name)
+    )
+    signal_text = _smart_truncate(
+        sanitize(_v521_strip_signal_placeholders(signal_text_raw)),
+        30,
+    )
+    if not signal_text:
+        signal_text = _SIGNAL_LABELS.get(signal_name, signal_name)
+
+    snippet_raw = (
+        (first.what_happened if first else "")
+        or (first.why_important if first else "")
+        or signal_text
+    )
+    example_snippet = _smart_truncate(
+        sanitize(_v521_strip_signal_placeholders(snippet_raw)),
+        120,
+    )
+    if not example_snippet:
+        example_snippet = _smart_truncate(
+            f"Tracking {_SIGNAL_LABELS.get(signal_name, signal_name)} from validated sources.",
+            120,
+        )
+
+    return {
+        "signal_name": signal_name,
+        "signal_type": signal_name,
+        "label": _SIGNAL_LABELS.get(signal_name, signal_name),
+        "title": signal_text,
+        "source_count": platform_count,
+        "heat": heat,
+        "signal_text": signal_text,
+        "platform_count": platform_count,
+        "heat_score": heat_score,
+        "example_snippet": example_snippet,
+    }
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Derive market signals from card content.
+
+    Event path keeps prior behavior; no-event path always returns Top 3
+    concrete signals with non-zero platform_count and usable snippets.
+    """
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    if event_cards:
+        type_buckets: dict[str, list[EduNewsCard]] = {
+            "TOOL_ADOPTION": [],
+            "USER_PAIN": [],
+            "WORKFLOW_CHANGE": [],
+        }
+        for card in event_cards:
+            combined = (
+                f"{card.title_plain or ''} {card.what_happened or ''} "
+                f"{card.why_important or ''}"
+            ).lower()
+            best_type = "TOOL_ADOPTION"
+            best_hits = 0
+            for sig_type in ("TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"):
+                keywords = _SIGNAL_KEYWORDS.get(sig_type, [])
+                hits = sum(1 for kw in keywords if kw.lower() in combined)
+                if hits > best_hits:
+                    best_hits = hits
+                    best_type = sig_type
+            type_buckets[best_type].append(card)
+
+        results = [
+            _v521_build_signal_entry(sig_type, bucket_cards)
+            for sig_type, bucket_cards in type_buckets.items()
+            if bucket_cards
+        ]
+        results.sort(
+            key=lambda x: (
+                int(x.get("platform_count", 0)),
+                int(x.get("heat_score", 0)),
+            ),
+            reverse=True,
+        )
+        return results
+
+    valid_cards = [c for c in cards if c.is_valid_news]
+    try:
+        from config import settings as _settings
+
+        min_keep_signals = int(getattr(_settings, "CONTENT_GATE_MIN_KEEP_SIGNALS", 9) or 9)
+    except Exception:
+        min_keep_signals = 9
+
+    signal_source_cards = valid_cards[: max(1, min_keep_signals)]
+
+    buckets: dict[str, list[EduNewsCard]] = {
+        name: [] for name in _FALLBACK_SIGNAL_POOL
+    }
+    for card in signal_source_cards:
+        combined = (
+            f"{card.title_plain or ''} {card.what_happened or ''} "
+            f"{card.why_important or ''}"
+        ).lower()
+        sig_type = _v521_resolve_signal_type(combined)
+        if sig_type not in buckets:
+            sig_type = "TOOL_ADOPTION"
+        buckets[sig_type].append(card)
+
+    results: list[dict] = []
+    for sig_name, bucket_cards in buckets.items():
+        if not bucket_cards:
+            continue
+        entry = _v521_build_signal_entry(sig_name, bucket_cards)
+        entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
+        entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
+        entry["source_count"] = entry["platform_count"]
+        results.append(entry)
+
+    results.sort(
+        key=lambda x: (
+            int(x.get("platform_count", 0)),
+            int(x.get("heat_score", 0)),
+        ),
+        reverse=True,
+    )
+
+    used_names = {str(r.get("signal_name", "")) for r in results}
+    template_cards = signal_source_cards if signal_source_cards else valid_cards
+
+    for idx, fallback_name in enumerate(_FALLBACK_SIGNAL_POOL):
+        if len(results) >= 3:
+            break
+        if fallback_name in used_names:
+            continue
+
+        if template_cards:
+            entry = _v521_build_signal_entry(
+                fallback_name,
+                [template_cards[idx % len(template_cards)]],
+            )
+            entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
+            entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
+            entry["source_count"] = entry["platform_count"]
+            results.append(entry)
+            continue
+
+        fallback_score = max(30, 45 - idx * 3)
+        fallback_heat = "warm" if fallback_score >= 50 else "cool"
+        fallback_text = _SIGNAL_LABELS.get(fallback_name, fallback_name)
+        results.append(
+            {
+                "signal_name": fallback_name,
+                "signal_type": fallback_name,
+                "label": fallback_text,
+                "title": fallback_text,
+                "source_count": 1,
+                "heat": fallback_heat,
+                "signal_text": fallback_text,
+                "platform_count": 1,
+                "heat_score": fallback_score,
+                "example_snippet": _smart_truncate(
+                    f"Monitoring {fallback_text} from source coverage baselines.",
+                    120,
+                ),
+            }
+        )
+
+    return results[:3]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Scan cards for mentions of major tech companies (Tier A + Tier B)."""
+    tier_a_results: list[dict] = []
+    tier_b_results: list[dict] = []
+
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    seen_corps: set[str] = set()
+    impact_values: list[int] = []
+
+    for card in event_cards:
+        combined = f"{card.title_plain or ''} {card.what_happened or ''}"
+
+        for corp in CORP_TIER_A:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                impact_values.append(int(impact["impact"]))
+                dc = build_decision_card(card)
+                tier_a_results.append(
+                    {
+                        "name": corp,
+                        "event_title": _smart_truncate(
+                            sanitize(card.title_plain or ""),
+                            30,
+                        ),
+                        "impact_label": impact["label"],
+                        "action": dc["actions"][0] if dc["actions"] else "Monitor follow-up",
+                    }
+                )
+
+        for corp in CORP_TIER_B:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                impact_values.append(int(impact["impact"]))
+                dc = build_decision_card(card)
+                tier_b_results.append(
+                    {
+                        "name": corp,
+                        "event_title": _smart_truncate(
+                            sanitize(card.title_plain or ""),
+                            30,
+                        ),
+                        "impact_label": impact["label"],
+                        "action": dc["actions"][0] if dc["actions"] else "Monitor follow-up",
+                    }
+                )
+
+    source_names = {
+        str(getattr(c, "source_name", "") or "").strip()
+        for c in cards
+        if str(getattr(c, "source_name", "") or "").strip()
+    }
+
+    fail_counter: Counter[str] = Counter()
+    for c in cards:
+        if bool(getattr(c, "is_valid_news", False)):
+            continue
+        invalid_cause = str(getattr(c, "invalid_cause", "") or "")
+        invalid_reason = str(getattr(c, "invalid_reason", "") or "")
+        reason = sanitize((invalid_cause or invalid_reason or "unknown").strip())
+        if reason:
+            fail_counter[reason] += 1
+
+    top_fail_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in fail_counter.most_common(3)
+    ]
+    if not top_fail_reasons:
+        top_fail_reasons = [{"reason": "none", "count": 0}]
 
     metrics_dict = metrics or {}
     total_mentions = len(tier_a_results) + len(tier_b_results)

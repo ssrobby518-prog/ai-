@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import feedparser
 import requests
 from config import settings
-from core.content_gate import is_valid_article
+from core.content_gate import apply_adaptive_content_gate
 from langdetect import LangDetectException, detect
 from rapidfuzz import fuzz
 from schemas.models import RawItem
@@ -218,6 +218,7 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     log = get_logger()
     cutoff = datetime.now(UTC) - timedelta(hours=settings.NEWER_THAN_HOURS)
     result: list[RawItem] = []
+    gate_candidates: list[RawItem] = []
     summary = FilterSummary(input_count=len(items))
 
     for item in items:
@@ -250,17 +251,35 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
             summary.dropped_by_reason["body_too_short"] = summary.dropped_by_reason.get("body_too_short", 0) + 1
             continue
 
-        # Pre-LLM content gate: reject residual fragments / index-like pages
-        is_valid, rejected_reason = is_valid_article(item.body)
-        if not is_valid and rejected_reason:
-            summary.dropped_by_reason[rejected_reason] = summary.dropped_by_reason.get(rejected_reason, 0) + 1
-            continue
+        gate_candidates.append(item)
 
-        result.append(item)
+    # Adaptive Pre-LLM content gate (hard reject first, then threshold relaxation).
+    kept_items, _rejected_map, gate_stats = apply_adaptive_content_gate(
+        gate_candidates,
+        min_keep_items=settings.CONTENT_GATE_MIN_KEEP_ITEMS,
+    )
+    result.extend(kept_items)
+
+    for reason, count in gate_stats.rejected_by_reason.items():
+        summary.dropped_by_reason[reason] = summary.dropped_by_reason.get(reason, 0) + count
 
     summary.kept_count = len(result)
     dropped_total = summary.input_count - summary.kept_count
     log.info("Filters: %d -> %d items", len(items), len(result))
+    top_reasons = sorted(
+        gate_stats.rejected_by_reason.items(),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )[:5]
+    log.info(
+        "CONTENT_GATE_STATS total=%d kept=%d level=%d threshold=(min_len=%d,min_sentences=%d) rejected_top=%s",
+        gate_stats.total,
+        gate_stats.kept,
+        gate_stats.level_used,
+        gate_stats.level_config[0],
+        gate_stats.level_config[1],
+        top_reasons,
+    )
     log.info(
         "FILTER_SUMMARY kept=%d dropped_total=%d reasons=%s",
         summary.kept_count,

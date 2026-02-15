@@ -57,6 +57,10 @@ def test_no_event_signal_summary_top3() -> None:
         assert "heat_score" in sig
         assert "example_snippet" in sig
         assert len(sig["example_snippet"]) <= 120
+        assert int(sig["platform_count"]) >= 1
+        assert int(sig["heat_score"]) >= 30
+        assert "fallback monitoring signal" not in str(sig["signal_text"]).lower()
+        assert "fallback monitoring signal" not in str(sig["example_snippet"]).lower()
 
 
 def test_no_event_corp_watch_includes_scan_stats() -> None:
@@ -70,6 +74,8 @@ def test_no_event_corp_watch_includes_scan_stats() -> None:
     assert "fail_count" in corp
     assert "top_fail_reasons" in corp
     assert corp["sources_total"] >= 1
+    assert corp["top_fail_reasons"]
+    assert str(corp["top_fail_reasons"][0].get("reason", "")).strip()
 
 
 def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
@@ -94,3 +100,4 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
     assert "Corp Watch" in text
     assert "sources_total" in text
     assert "monitoring continues" in text.lower()
+    assert "fallback monitoring signal" not in text.lower()
