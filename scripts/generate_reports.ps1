@@ -9,7 +9,8 @@
 
 param(
     [switch] $NoOpenPpt,
-    [switch] $OpenPpt
+    [switch] $OpenPpt,
+    [switch] $SmokeTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,22 +60,86 @@ Write-Host "-------------------`n" -ForegroundColor DarkGray
 $projectRoot = Split-Path $PSScriptRoot -Parent
 Set-Location $projectRoot
 
-# Prefer venv python if available
+# Prefer repo-local Python environments to avoid desktop shortcut interpreter drift.
 $venvPython = Join-Path $projectRoot "venv\Scripts\python.exe"
-if (Test-Path $venvPython) { $py = $venvPython } else { $py = "python" }
+$dotVenvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+if (Test-Path $venvPython) {
+    $py = $venvPython
+} elseif (Test-Path $dotVenvPython) {
+    $py = $dotVenvPython
+} else {
+    Write-Host "ERROR: No repo-local Python found (expected venv\\Scripts\\python.exe or .venv\\Scripts\\python.exe)." -ForegroundColor Red
+    Write-Host "       Desktop mode requires a stable local interpreter to generate PPT." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Using Python interpreter: $py" -ForegroundColor DarkGray
+
+# Validate required report deps before execution.
+& $py -c "import pptx, docx" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Required packages missing in selected Python (python-pptx / python-docx)." -ForegroundColor Red
+    Write-Host "       Interpreter: $py" -ForegroundColor Red
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # Run pipeline
 # ---------------------------------------------------------------------------
-Write-Host "Running analysis pipeline..." -ForegroundColor Yellow
-& $py scripts/run_once.py
-$exitCode = $LASTEXITCODE
+if ($SmokeTest) {
+    Write-Host "Running desktop-entry smoke mode (offline, no network fetch)..." -ForegroundColor Yellow
+    @'
+from datetime import datetime
+from pathlib import Path
 
-if ($exitCode -ne 0) {
-    Write-Host "Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
-    exit 1
+from core.ppt_generator import generate_executive_ppt
+from schemas.education_models import EduNewsCard, SystemHealthReport
+
+card = EduNewsCard(
+    item_id="desktop-smoke-001",
+    is_valid_news=True,
+    title_plain="Desktop smoke signal",
+    what_happened="Smoke mode generated an executive presentation artifact.",
+    why_important="Validates desktop entry path can produce PPTX.",
+    source_name="smoke",
+    source_url="https://example.com/smoke",
+    final_score=8.0,
+)
+health = SystemHealthReport(success_rate=100.0, p50_latency=0.1, p95_latency=0.2)
+out = Path("outputs") / "executive_report.pptx"
+out.parent.mkdir(parents=True, exist_ok=True)
+generate_executive_ppt(
+    cards=[card],
+    health=health,
+    report_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    total_items=1,
+    output_path=out,
+)
+docx = Path("outputs") / "executive_report.docx"
+notion = Path("outputs") / "notion_page.md"
+xmind = Path("outputs") / "mindmap.xmind"
+docx.write_text("smoke-docx-placeholder", encoding="utf-8")
+notion.write_text("# smoke notion", encoding="utf-8")
+xmind.write_text("smoke xmind", encoding="utf-8")
+print(f"SMOKE_PPTX={out.resolve()}")
+'@ | & $py -
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        Write-Host "Smoke mode failed (exit code: $exitCode)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Smoke mode completed successfully." -ForegroundColor Green
+} else {
+    Write-Host "Running analysis pipeline..." -ForegroundColor Yellow
+    & $py scripts/run_once.py
+    $exitCode = $LASTEXITCODE
+
+    if ($exitCode -ne 0) {
+        Write-Host "Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "Pipeline completed successfully." -ForegroundColor Green
 }
-Write-Host "Pipeline completed successfully." -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Verify all 4 output files exist and show sizes
@@ -106,6 +171,7 @@ if (-not $allExist) {
 }
 
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
+Write-Host "PPT generated successfully: $(Join-Path $projectRoot 'outputs\\executive_report.pptx')" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Open PPT (only when shouldOpen = True)
@@ -119,11 +185,20 @@ if (-not $shouldOpen) {
 $procsBefore = @(Get-Process | Where-Object { $_.ProcessName -match "wps|wpp|et|powerpnt|POWERPNT|soffice" } | ForEach-Object { $_.Id })
 Write-Host "`n  Office PIDs before open: [$($procsBefore -join ', ')]" -ForegroundColor DarkGray
 
-# --- Copy to _open.pptx (dodge file lock from previous run) ---
+# --- Copy to unique _open_*.pptx (avoid lock from previous opened file) ---
 $pptxSrc = Join-Path $projectRoot "outputs\executive_report.pptx"
-$pptxOpenPath = Join-Path $projectRoot "outputs\executive_report_open.pptx"
-Copy-Item $pptxSrc $pptxOpenPath -Force
-$pptxAbs = (Resolve-Path $pptxOpenPath).Path
+$openStamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
+$pptxOpenPath = Join-Path $projectRoot "outputs\executive_report_open_$openStamp.pptx"
+
+try {
+    Copy-Item $pptxSrc $pptxOpenPath -Force
+    $pptxAbs = (Resolve-Path $pptxOpenPath).Path
+} catch {
+    Write-Host "  WARN: Could not create unique open-copy, fallback to source PPT." -ForegroundColor Yellow
+    Write-Host "        $($_.Exception.Message)" -ForegroundColor Yellow
+    $pptxAbs = (Resolve-Path $pptxSrc).Path
+}
+
 $pptxSize = (Get-Item $pptxAbs).Length
 
 Write-Host "`n--- Open PPT ---" -ForegroundColor Cyan

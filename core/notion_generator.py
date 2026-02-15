@@ -8,10 +8,33 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from schemas.education_models import EduNewsCard, SystemHealthReport
 from utils.logger import get_logger
+
+_BANNED_OUTPUT_TERMS = (
+    "AI Intel",
+    "Z1",
+    "Z2",
+    "Z3",
+    "Z4",
+    "Z5",
+    "pipeline",
+    "ETL",
+    "verify_run",
+    "ingestion",
+    "ai_core",
+)
+
+
+def _strip_banned_terms(text: str) -> str:
+    cleaned = text
+    for term in _BANNED_OUTPUT_TERMS:
+        cleaned = re.sub(re.escape(term), "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned
 
 
 def generate_notion_page(
@@ -170,7 +193,7 @@ def generate_notion_page(
         "",
     ])
 
-    content = "\n".join(lines)
+    content = _strip_banned_terms("\n".join(lines))
     output_path.write_text(content, encoding="utf-8")
     log.info("Notion page generated: %s", output_path)
     return output_path
