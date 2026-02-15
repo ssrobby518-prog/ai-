@@ -73,9 +73,13 @@ class MetricsCollector:
         self.deduped_total: int = 0
         self.enriched_total: int = 0
         self.gate_pass_total: int = 0
+        self.hard_pass_total: int = 0
+        self.soft_pass_total: int = 0
         self.gate_reject_total: int = 0
+        self.rejected_total: int = 0
         self.after_filter_total: int = 0
         self.rejected_reason_top: list[tuple[str, int]] = []
+        self.density_score_top5: list[list[str | int]] = []
         self.density_total_in: int = 0
         self.density_passed: int = 0
         self.density_rejected: int = 0
@@ -122,9 +126,13 @@ class MetricsCollector:
             "deduped_total": self.deduped_total,
             "enriched_total": self.enriched_total,
             "gate_pass_total": self.gate_pass_total,
+            "hard_pass_total": self.hard_pass_total,
+            "soft_pass_total": self.soft_pass_total,
             "gate_reject_total": self.gate_reject_total,
+            "rejected_total": self.rejected_total,
             "after_filter_total": self.after_filter_total,
             "rejected_reason_top": self.rejected_reason_top,
+            "density_score_top5": self.density_score_top5,
             "density_total_in": self.density_total_in,
             "density_passed": self.density_passed,
             "density_rejected": self.density_rejected,

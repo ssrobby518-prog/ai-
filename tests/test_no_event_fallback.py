@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from unittest.mock import patch
 
 from pptx import Presentation
@@ -70,6 +71,7 @@ def test_no_event_signal_summary_top3() -> None:
         assert "smoke" not in str(sig["signal_text"]).lower()
         assert "smoke" not in str(sig["example_snippet"]).lower()
         assert "source=unknown" not in str(sig["example_snippet"]).lower()
+        assert re.search(r"[\u4e00-\u9fff]", str(sig.get("signal_text", "")))
 
 
 def test_no_event_corp_watch_includes_scan_stats() -> None:
@@ -114,11 +116,18 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
         )
 
     prs = Presentation(str(out))
-    assert len(prs.slides) >= 7
+    assert len(prs.slides) == 12
 
     text = _all_text(prs)
     assert "Signal Thermometer" in text
     assert "Corp Watch" in text
+    assert "Structured Summary" in text
+    assert "Key Takeaways" in text
+    assert "Overview" in text
+    assert "Event Ranking" in text
+    assert "Recommended Moves" in text
+    assert "Decision Matrix" in text
+    assert "待決事項與 Owner" in text
     assert "sources_total" in text
     assert "fetched_total" in text
     assert "gate_pass_total" in text

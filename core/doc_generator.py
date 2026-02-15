@@ -25,6 +25,7 @@ from core.content_strategy import (
     build_corp_watch_summary,
     build_decision_card,
     build_executive_summary,
+    get_event_cards_for_deck,
     build_signal_summary,
     build_structured_executive_summary,
     build_term_explainer,
@@ -204,9 +205,14 @@ def _build_key_takeaways(doc: Document, cards: list[EduNewsCard],
     _add_divider(doc)
 
 
-def _build_overview_table(doc: Document, cards: list[EduNewsCard]) -> None:
+def _build_overview_table(
+    doc: Document,
+    cards: list[EduNewsCard],
+    event_cards: list[EduNewsCard] | None = None,
+) -> None:
     _add_heading(doc, "今日總覽", level=1)
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    if event_cards is None:
+        event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     non_event = [c for c in cards if c.is_valid_news and is_non_event_or_index(c)]
     invalid_count = len(cards) - len(event_cards) - len(non_event)
     p = doc.add_paragraph(
@@ -495,9 +501,8 @@ def _build_corp_watch(
     _add_divider(doc)
 
 
-def _build_event_ranking(doc: Document, cards: list[EduNewsCard]) -> None:
+def _build_event_ranking(doc: Document, event_cards: list[EduNewsCard]) -> None:
     """Event Ranking — impact-scored table, matching PPT."""
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     if not event_cards:
         return
 
@@ -546,9 +551,8 @@ def _build_recommended_moves(doc: Document, cards: list[EduNewsCard]) -> None:
     _add_divider(doc)
 
 
-def _build_decision_matrix(doc: Document, cards: list[EduNewsCard]) -> None:
+def _build_decision_matrix(doc: Document, event_cards: list[EduNewsCard]) -> None:
     """Decision Matrix table — 6 columns, same as PPT."""
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     if not event_cards:
         return
     _add_heading(doc, "決策摘要表  Decision Matrix", level=1)
@@ -567,12 +571,11 @@ def _build_decision_matrix(doc: Document, cards: list[EduNewsCard]) -> None:
     doc.add_paragraph("")
 
 
-def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:
+def _build_conclusion_section(doc: Document, event_cards: list[EduNewsCard]) -> None:
     doc.add_page_break()
     _add_heading(doc, "待決事項與 Owner", level=1)
 
     items: list[str] = []
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     for i, c in enumerate(event_cards[:5], 1):
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
@@ -626,17 +629,18 @@ def generate_executive_docx(
     # 4. Corp Watch (v5)
     _build_corp_watch(doc, cards, metrics=metrics)
 
+    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+
     # 5. Key Takeaways
-    _build_key_takeaways(doc, cards, total_items, metrics=metrics)
+    _build_key_takeaways(doc, cards, total_items, metrics=metrics, event_cards=event_cards)
 
     # 6. Overview Table
-    _build_overview_table(doc, cards)
+    _build_overview_table(doc, cards, event_cards=event_cards)
 
     # 7. Event Ranking (v5)
-    _build_event_ranking(doc, cards)
+    _build_event_ranking(doc, event_cards)
 
     # 8. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     for i, card in enumerate(event_cards, 1):
         _build_brief_card_section(doc, card, i)
 
@@ -644,10 +648,10 @@ def generate_executive_docx(
     _build_recommended_moves(doc, cards)
 
     # 10. Decision Matrix
-    _build_decision_matrix(doc, cards)
+    _build_decision_matrix(doc, event_cards)
 
     # 11. Pending Decisions
-    _build_conclusion_section(doc, cards)
+    _build_conclusion_section(doc, event_cards)
 
     doc.save(str(output_path))
     log.info("Executive DOCX generated: %s", output_path)
@@ -690,13 +694,18 @@ def _build_key_takeaways(
     cards: list[EduNewsCard],
     total_items: int,
     metrics: dict | None = None,
+    event_cards: list[EduNewsCard] | None = None,
 ) -> None:
     """Key takeaways with stats-backed no-event fallback."""
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
-    lines = [f"Total scanned: {total_items} | Event candidates: {len(event_cards)}"]
+    if event_cards is None:
+        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+    lines = [f"本次掃描總量：{total_items}；事件候選：{len(event_cards)}。"]
     for c in event_cards[:3]:
         dc = build_decision_card(c)
-        lines.append(f"- {sanitize(c.title_plain[:40])} - {dc['event']}")
+        if bool(getattr(c, "low_confidence", False)):
+            lines.append(f"低信心候選：{sanitize(c.title_plain[:40])}；重點：{dc['event']}。")
+        else:
+            lines.append(f"{sanitize(c.title_plain[:40])}；重點：{dc['event']}。")
     if not event_cards:
         fetched_total = int((metrics or {}).get("fetched_total", total_items))
         gate_pass_total = int((metrics or {}).get("gate_pass_total", sum(1 for c in cards if c.is_valid_news)))
@@ -704,9 +713,9 @@ def _build_key_takeaways(
         after_filter_total = int((metrics or {}).get("after_filter_total", gate_pass_total))
         lines.extend(
             [
-                f"Scan overview: fetched_total={fetched_total}, gate_pass_total={gate_pass_total}.",
-                f"Coverage: sources_total={sources_total}, after_filter_total={after_filter_total}.",
-                "No event candidate crossed action threshold; continue monitoring with source-level diagnostics.",
+                f"掃描概況：fetched_total={fetched_total}、gate_pass_total={gate_pass_total}。",
+                f"來源覆蓋：sources_total={sources_total}、after_filter_total={after_filter_total}。",
+                "今日未形成高信心事件，先以來源級統計維持決策資訊量。",
             ]
         )
     _add_callout(doc, "Key Takeaways", lines)

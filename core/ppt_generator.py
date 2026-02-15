@@ -23,6 +23,7 @@ from core.content_strategy import (
     build_ceo_brief_blocks,
     build_corp_watch_summary,
     build_decision_card,
+    get_event_cards_for_deck,
     build_signal_summary,
     build_structured_executive_summary,
     compute_market_heat,
@@ -338,8 +339,7 @@ def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
     )
 
 
-def _slide_overview_table(prs: Presentation, cards: list[EduNewsCard]) -> None:
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+def _slide_overview_table(prs: Presentation, event_cards: list[EduNewsCard]) -> None:
     if not event_cards:
         return
     headers = ["#", "標題", "類別", "評分"]
@@ -655,9 +655,59 @@ def _slide_corp_watch(
                      color=SUBTLE_GRAY)
 
 
-def _slide_event_ranking(prs: Presentation, cards: list[EduNewsCard]) -> None:
+def _slide_scan_diagnostics(
+    prs: Presentation,
+    cards: list[EduNewsCard],
+    metrics: dict | None,
+    event_cards: list[EduNewsCard],
+) -> None:
+    """Fixed diagnostics slide to keep base deck flow complete on low-news days."""
+    m = metrics or {}
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Scan Diagnostics", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    fetched_total = int(m.get("fetched_total", len(cards)))
+    hard_pass_total = int(m.get("hard_pass_total", 0))
+    soft_pass_total = int(m.get("soft_pass_total", 0))
+    rejected_total = int(m.get("rejected_total", m.get("gate_reject_total", 0)))
+    sources_total = int(m.get("sources_total", 0))
+    success_count = int(m.get("sources_success", 0))
+    fail_count = int(m.get("sources_failed", 0))
+
+    lines = [
+        f"fetched_total={fetched_total}",
+        f"hard_pass_total={hard_pass_total}",
+        f"soft_pass_total={soft_pass_total}",
+        f"rejected_total={rejected_total}",
+        f"sources_total={sources_total}",
+        f"success_count={success_count}",
+        f"fail_count={fail_count}",
+        f"event_candidates={len(event_cards)}",
+    ]
+    _add_multiline_textbox(
+        slide, Cm(3), Cm(3.5), Cm(28), Cm(10),
+        lines, font_size=16, color=TEXT_WHITE, line_spacing=1.4,
+    )
+
+    top_density = list(m.get("density_score_top5", []))[:3]
+    if top_density:
+        preview = []
+        for row in top_density:
+            title = str(row[0]) if isinstance(row, (list, tuple)) and len(row) > 0 else "candidate"
+            score = int(row[2]) if isinstance(row, (list, tuple)) and len(row) > 2 else 0
+            preview.append(f"{safe_text(title, 30)} ({score})")
+        _add_textbox(slide, Cm(3), Cm(14.5), Cm(28), Cm(2.5),
+                     f"density_score_top5: {' | '.join(preview)}",
+                     font_size=12, color=SUBTLE_GRAY)
+
+
+def _slide_event_ranking(prs: Presentation, event_cards: list[EduNewsCard]) -> None:
     """Event Ranking — impact-scored event list with color-coded badges."""
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     if not event_cards:
         return
 
@@ -728,7 +778,7 @@ def _slide_recommended_moves(prs: Presentation, cards: list[EduNewsCard]) -> Non
         y += 2.0
 
 
-def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> None:
+def _slide_pending_decisions(prs: Presentation, event_cards: list[EduNewsCard]) -> None:
     """Last slide: pending decisions & owners."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
@@ -738,7 +788,6 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
     _add_divider(slide, Cm(2), Cm(3.8), Cm(4), color=ACCENT)
 
     items: list[str] = []
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     for i, c in enumerate(event_cards[:5], 1):
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
@@ -792,17 +841,17 @@ def generate_executive_ppt(
     # 4. Corp Watch (v5)
     _slide_corp_watch(prs, cards, metrics=metrics)
 
+    # Event pool: keep at least one low-confidence event to avoid empty deck.
+    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+
     # 5. Key Takeaways
-    _slide_key_takeaways(prs, cards, total_items, metrics=metrics)
+    _slide_key_takeaways(prs, cards, total_items, metrics=metrics, event_cards=event_cards)
 
     # 6. Overview Table
-    _slide_overview_table(prs, cards)
+    _slide_overview_table(prs, event_cards)
 
     # 7. Event Ranking (v5)
-    _slide_event_ranking(prs, cards)
-
-    # Filter: only event cards for the CEO deck
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    _slide_event_ranking(prs, event_cards)
 
     # 8. Per-event: brief_page1 + brief_page2
     for i, card in enumerate(event_cards, 1):
@@ -813,26 +862,25 @@ def generate_executive_ppt(
     _slide_recommended_moves(prs, cards)
 
     # 10. Decision Matrix (6 columns)
-    if event_cards:
-        decision_rows = []
-        for i, c in enumerate(event_cards[:8], 1):
-            dc = build_decision_card(c)
-            decision_rows.append([
-                str(i),
-                safe_text(dc["event"], 18),
-                safe_text(dc["effects"][0], 25) if dc["effects"] else "缺口",
-                safe_text(dc["risks"][0], 25) if dc["risks"] else "缺口",
-                safe_text(dc["actions"][0], 30) if dc["actions"] else "待確認",
-                dc["owner"],
-            ])
-        _add_table_slide(
-            prs, "決策摘要表  Decision Matrix",
-            ["#", "事件", "影響", "風險", "建議行動", "要問誰"],
-            decision_rows,
-        )
+    decision_rows = []
+    for i, c in enumerate(event_cards[:8], 1):
+        dc = build_decision_card(c)
+        decision_rows.append([
+            str(i),
+            safe_text(dc["event"], 18),
+            safe_text(dc["effects"][0], 25) if dc["effects"] else "缺口",
+            safe_text(dc["risks"][0], 25) if dc["risks"] else "缺口",
+            safe_text(dc["actions"][0], 30) if dc["actions"] else "待確認",
+            dc["owner"],
+        ])
+    _add_table_slide(
+        prs, "決策摘要表  Decision Matrix",
+        ["#", "事件", "影響", "風險", "建議行動", "要問誰"],
+        decision_rows,
+    )
 
     # 11. Pending Decisions
-    _slide_pending_decisions(prs, cards)
+    _slide_pending_decisions(prs, event_cards)
 
     prs.save(str(output_path))
     log.info("Executive PPTX generated: %s", output_path)
@@ -889,6 +937,7 @@ def _slide_key_takeaways(
     cards: list[EduNewsCard],
     total_items: int,
     metrics: dict | None = None,
+    event_cards: list[EduNewsCard] | None = None,
 ) -> None:
     """Key takeaways with stats-backed no-event fallback."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -898,12 +947,16 @@ def _slide_key_takeaways(
                  color=HIGHLIGHT_YELLOW)
     _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
 
-    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
-    takeaways: list[str] = [f"Total scanned: {total_items} | Event candidates: {len(event_cards)}"]
+    if event_cards is None:
+        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+    takeaways: list[str] = [f"本次掃描總量：{total_items}；事件候選：{len(event_cards)}。"]
 
     for c in event_cards[:3]:
         dc = build_decision_card(c)
-        takeaways.append(f"{safe_text(c.title_plain, 35)} - {dc['event']}")
+        if bool(getattr(c, "low_confidence", False)):
+            takeaways.append(f"低信心候選：{safe_text(c.title_plain, 35)}；重點：{dc['event']}。")
+        else:
+            takeaways.append(f"{safe_text(c.title_plain, 35)}；重點：{dc['event']}。")
 
     if not event_cards:
         fetched_total = int((metrics or {}).get("fetched_total", total_items))
@@ -912,9 +965,9 @@ def _slide_key_takeaways(
         after_filter_total = int((metrics or {}).get("after_filter_total", gate_pass_total))
         takeaways.extend(
             [
-                f"Scan overview: fetched_total={fetched_total}, gate_pass_total={gate_pass_total}.",
-                f"Coverage: sources_total={sources_total}, after_filter_total={after_filter_total}.",
-                "No event candidate crossed action threshold; continue monitoring with source-level diagnostics.",
+                f"掃描概況：fetched_total={fetched_total}、gate_pass_total={gate_pass_total}。",
+                f"來源覆蓋：sources_total={sources_total}、after_filter_total={after_filter_total}。",
+                "今日未形成高信心事件，先以來源級統計維持決策資訊量。",
             ]
         )
 

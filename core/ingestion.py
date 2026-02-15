@@ -278,12 +278,15 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     dropped_total = summary.input_count - summary.kept_count
     summary.gate_stats = {
         "total": gate_stats.total,
-        "gate_pass_total": gate_stats.kept,
+        "hard_pass_total": gate_stats.hard_pass_total,
         "soft_pass_total": gate_stats.soft_pass_total,
+        "gate_pass_total": gate_stats.kept,
         "passed_strict": gate_stats.passed_strict,
         "passed_relaxed": gate_stats.passed_relaxed,
+        "passed_density_soft": gate_stats.soft_density_pass,
         "gate_reject_total": gate_stats.rejected_total,
         "rejected_total": gate_stats.rejected_total,
+        "density_score_top5": gate_stats.density_score_top5,
         "rejected_reason_top": gate_stats.rejected_reason_top,
         "after_filter_total": len(result),
     }
@@ -291,9 +294,16 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     log.info(
         "ContentGate strict_pass=%d relaxed_pass=%d rejected=%d reasons_top=%s",
         gate_stats.passed_strict,
-        gate_stats.passed_relaxed,
+        gate_stats.passed_relaxed + gate_stats.soft_density_pass,
         gate_stats.rejected_total,
         gate_stats.rejected_reason_top,
+    )
+    log.info(
+        "ContentGate hard_pass=%d soft_pass=%d rejected=%d density_top5=%s",
+        gate_stats.hard_pass_total,
+        gate_stats.soft_pass_total,
+        gate_stats.rejected_total,
+        gate_stats.density_score_top5,
     )
     log.info(
         "FILTER_SUMMARY kept=%d dropped_total=%d reasons=%s",

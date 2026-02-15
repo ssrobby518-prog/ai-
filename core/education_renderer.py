@@ -1304,8 +1304,46 @@ def _build_cards_and_health(
         total_items = total_items or len(cards)
 
     else:
-        log.warning("Z5: 沒有可用的輸入資料，生成空白報告")
-        total_items = 0
+        log.warning("Z5: 無結構化輸入，使用診斷保底卡片避免輸出空白。")
+        fetched_total = int((metrics or {}).get("fetched_total", 0))
+        hard_pass_total = int((metrics or {}).get("hard_pass_total", 0))
+        soft_pass_total = int((metrics or {}).get("soft_pass_total", 0))
+        gate_pass_total = int((metrics or {}).get("gate_pass_total", 0))
+        sources_total = int((metrics or {}).get("sources_total", 0))
+        density_top5 = list((metrics or {}).get("density_score_top5", []))
+
+        fallback_rows = density_top5[:3] if density_top5 else [("今日掃描未形成高信心事件", "", 0)]
+        for idx, row in enumerate(fallback_rows, 1):
+            title = str(row[0] if len(row) > 0 else "今日掃描未形成高信心事件").strip() or "今日掃描未形成高信心事件"
+            src_url = str(row[1] if len(row) > 1 else "").strip()
+            score = int(row[2] if len(row) > 2 else 0)
+            card = EduNewsCard(
+                item_id=f"fallback-{idx}",
+                is_valid_news=True,
+                title_plain=f"低信心事件候選：{title[:40]}",
+                what_happened=(
+                    f"本次無有效新聞；本次掃描統計：fetched_total={fetched_total}、hard_pass_total={hard_pass_total}、"
+                    f"soft_pass_total={soft_pass_total}、gate_pass_total={gate_pass_total}、sources_total={sources_total}。"
+                ),
+                why_important=(
+                    f"此候選來自密度分數保底機制，density_score={score}。"
+                    "建議先列入 WATCH，等待後續來源補強。"
+                ),
+                source_name="platform",
+                source_url=src_url if src_url.startswith("http") else "",
+                category="tech",
+                final_score=max(3.0, min(10.0, round(score / 10.0, 2))),
+            )
+            try:
+                setattr(card, "low_confidence", True)
+                setattr(card, "confidence", "low")
+                setattr(card, "density_score", score)
+                setattr(card, "density_tier", "B")
+            except Exception:
+                pass
+            cards.append(card)
+
+        total_items = max(total_items, len(cards))
 
     if max_items > 0 and len(cards) > max_items:
         cards = cards[:max_items]
@@ -1338,7 +1376,25 @@ def render_education_report(
         deep_analysis_text=deep_analysis_text, max_items=max_items,
     )
 
-    notion_md = _render_notion_md(cards, health, now, total_items, metrics or {}, filter_summary=filter_summary)
+    # Preserve legacy empty-filter observability view when caller explicitly passes kept_count=0.
+    force_empty_filter_view = (
+        results is None
+        and report is None
+        and not deep_analysis_text
+        and isinstance(filter_summary, dict)
+        and int(filter_summary.get("kept_count", 0)) == 0
+    )
+    notion_cards = [] if force_empty_filter_view else cards
+    notion_total = 0 if force_empty_filter_view else total_items
+
+    notion_md = _render_notion_md(
+        notion_cards,
+        health,
+        now,
+        notion_total,
+        metrics or {},
+        filter_summary=filter_summary,
+    )
     ppt_md = _render_ppt_md(cards, health, now, total_items)
     xmind_md = _render_xmind_md(cards, health, now, total_items)
 

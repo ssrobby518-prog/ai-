@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 from typing import Any
 
@@ -40,6 +40,24 @@ _FRAGMENT_REGEXES = (
     re.compile(r"\b(?:this|that|it)\s+\w+\s+(?:was|is|are)\s*$", re.IGNORECASE),
 )
 
+_DENSITY_NUMERIC_RE = re.compile(
+    r"(?:\b20\d{2}\b)|(?:\bv?\d+(?:\.\d+)?(?:\.\d+)?(?:%|x|ms|gb|mb|k|m|b)?\b)|(?:[$¥€]\s*\d+)",
+    re.IGNORECASE,
+)
+_DENSITY_ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z0-9\-_]{2,}\b")
+_DENSITY_MODEL_HINTS = (
+    "gpt",
+    "llama",
+    "qwen",
+    "deepseek",
+    "cuda",
+    "h100",
+    "nvidia",
+    "openai",
+    "claude",
+    "gemini",
+)
+
 
 @dataclass(frozen=True)
 class AdaptiveGateStats:
@@ -51,15 +69,21 @@ class AdaptiveGateStats:
     rejected_reason_top: list[tuple[str, int]]
     level_used: int
     level_config: tuple[int, int]
+    soft_density_pass: int = 0
+    density_score_top5: list[tuple[str, str, int]] = field(default_factory=list)  # (title, url, score)
 
     @property
     def kept(self) -> int:
-        return self.passed_strict + self.passed_relaxed
+        return self.passed_strict + self.passed_relaxed + self.soft_density_pass
 
     @property
     def soft_pass_total(self) -> int:
-        # "soft pass" is the relaxed-level pass count.
-        return self.passed_relaxed
+        # Soft pass includes relaxed threshold + density fallback.
+        return self.passed_relaxed + self.soft_density_pass
+
+    @property
+    def hard_pass_total(self) -> int:
+        return self.passed_strict
 
 
 def _normalize(text: str) -> str:
@@ -69,6 +93,25 @@ def _normalize(text: str) -> str:
 def _count_sentences(text: str) -> int:
     parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text) if p.strip()]
     return len(parts)
+
+
+def density_score(text: str) -> int:
+    """Score content density (0~100) for soft-pass fallback routing."""
+    content = _normalize(text)
+    if not content:
+        return 0
+
+    lowered = content.lower()
+    numeric_hits = len(_DENSITY_NUMERIC_RE.findall(content))
+    entity_hits = len(_DENSITY_ENTITY_RE.findall(content))
+    model_hint_hits = sum(1 for kw in _DENSITY_MODEL_HINTS if kw in lowered)
+    sentence_count = _count_sentences(content)
+
+    score = 0
+    score += min(40, numeric_hits * 12)
+    score += min(35, (entity_hits + model_hint_hits) * 8)
+    score += min(25, max(sentence_count - 1, 0) * 7)
+    return max(0, min(100, int(score)))
 
 
 def _hard_reject_reason(content: str) -> str | None:
@@ -140,6 +183,30 @@ def _clear_rejected_reason(item: Any) -> None:
         pass
 
 
+def _set_gate_meta(
+    item: Any,
+    *,
+    stage: str,
+    level: str,
+    density: int,
+    low_confidence: bool,
+) -> None:
+    try:
+        setattr(item, "gate_stage", stage)
+        setattr(item, "gate_level", level)
+        setattr(item, "density_score", int(density))
+        setattr(item, "is_soft_pass", stage == "SOFT_PASS")
+        setattr(item, "low_confidence", bool(low_confidence))
+    except Exception:
+        pass
+
+
+def _item_title_url(item: Any) -> tuple[str, str]:
+    title = str(getattr(item, "title", "") or getattr(item, "item_id", "") or "").strip()
+    url = str(getattr(item, "url", "") or "").strip()
+    return title, url
+
+
 def apply_adaptive_content_gate(
     items: list[Any],
     *,
@@ -168,17 +235,29 @@ def apply_adaptive_content_gate(
             rejected_reason_top=[],
             level_used=1,
             level_config=strict_level,
+            soft_density_pass=0,
+            density_score_top5=[],
         )
         return [], {}, stats
 
     hard_rejected: dict[int, str] = {}
     candidates: list[int] = []
+    density_rankings: list[tuple[str, str, int]] = []
     for idx, item in enumerate(items):
         body = _normalize(getattr(item, "body", ""))
+        d_score = density_score(body)
+        title, url = _item_title_url(item)
+        density_rankings.append((title, url, d_score))
         hard_reason = _hard_reject_reason(body)
+        fragment = _is_fragment_placeholder(body)
         if hard_reason:
             hard_rejected[idx] = hard_reason
             _set_rejected_reason(item, hard_reason)
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
+        elif fragment:
+            hard_rejected[idx] = "fragment_placeholder"
+            _set_rejected_reason(item, "fragment_placeholder")
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
         else:
             candidates.append(idx)
 
@@ -197,11 +276,19 @@ def apply_adaptive_content_gate(
         if ok:
             strict_pass_idx.append(idx)
             _clear_rejected_reason(item)
+            _set_gate_meta(
+                item,
+                stage="HARD_PASS",
+                level="strict",
+                density=density_score(getattr(item, "body", "")),
+                low_confidence=False,
+            )
         else:
             strict_reject_idx.append(idx)
             strict_rejected_reasons[idx] = reason or "rejected_by_gate"
 
     relaxed_pass_idx: list[int] = []
+    density_soft_pass_idx: list[int] = []
     final_soft_rejected: dict[int, str]
     level_used = 1
     level_config = strict_level
@@ -224,14 +311,35 @@ def apply_adaptive_content_gate(
             if ok:
                 relaxed_pass_idx.append(idx)
                 _clear_rejected_reason(item)
+                _set_gate_meta(
+                    item,
+                    stage="SOFT_PASS",
+                    level="relaxed",
+                    density=density_score(getattr(item, "body", "")),
+                    low_confidence=True,
+                )
             else:
-                relaxed_reason = reason or "rejected_by_gate"
+                d_score = density_score(getattr(item, "body", ""))
+                if reason in {"content_too_short", "insufficient_sentences"} and d_score >= 35:
+                    density_soft_pass_idx.append(idx)
+                    _clear_rejected_reason(item)
+                    _set_gate_meta(
+                        item,
+                        stage="SOFT_PASS",
+                        level="density",
+                        density=d_score,
+                        low_confidence=True,
+                    )
+                    continue
+
+                relaxed_reason = reason or "low_density_score"
                 relaxed_rejected[idx] = relaxed_reason
                 _set_rejected_reason(item, relaxed_reason)
+                _set_gate_meta(item, stage="REJECT", level="soft", density=d_score, low_confidence=False)
 
         final_soft_rejected = relaxed_rejected
 
-    kept_idx = strict_pass_idx + relaxed_pass_idx
+    kept_idx = strict_pass_idx + relaxed_pass_idx + density_soft_pass_idx
     kept_items = [items[idx] for idx in kept_idx]
 
     rejected_map = dict(hard_rejected)
@@ -259,5 +367,7 @@ def apply_adaptive_content_gate(
         rejected_reason_top=rejected_reason_top,
         level_used=level_used,
         level_config=level_config,
+        soft_density_pass=len(density_soft_pass_idx),
+        density_score_top5=sorted(density_rankings, key=lambda t: t[2], reverse=True)[:5],
     )
     return kept_items, rejected_map, stats

@@ -75,6 +75,39 @@ def _build_quality_cards(all_results: list) -> list[EduNewsCard]:
     return cards
 
 
+def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNewsCard]:
+    """Build low-confidence cards from post-gate RawItems when AI results are empty."""
+    cards: list[EduNewsCard] = []
+    for item in filtered_items:
+        title = str(getattr(item, "title", "") or "").strip() or "來源訊號"
+        body = str(getattr(item, "body", "") or "").strip()
+        summary = body[:260] if body else "來源內容有限，先保留為低信心觀測訊號。"
+        source_name = str(getattr(item, "source_name", "") or "").strip() or "platform"
+        source_url = str(getattr(item, "url", "") or "").strip()
+        density = float(getattr(item, "density_score", 0) or 0)
+        score = max(3.0, min(10.0, round(density / 10.0, 2)))
+        card = EduNewsCard(
+            item_id=str(getattr(item, "item_id", "") or ""),
+            is_valid_news=True,
+            title_plain=title,
+            what_happened=summary,
+            why_important=f"來源：{source_name}。此卡片為低信心事件候選，用於避免報告空白。",
+            source_name=source_name,
+            source_url=source_url if source_url.startswith("http") else "",
+            category=str(getattr(item, "source_category", "") or "tech"),
+            final_score=score,
+        )
+        try:
+            setattr(card, "low_confidence", True)
+            setattr(card, "confidence", "low")
+            setattr(card, "density_score", int(density))
+            setattr(card, "density_tier", "B")
+        except Exception:
+            pass
+        cards.append(card)
+    return cards
+
+
 def run_pipeline() -> None:
     """Execute the full pipeline once."""
     log = setup_logger(settings.LOG_PATH)
@@ -126,15 +159,22 @@ def run_pipeline() -> None:
     filtered, filter_summary = filter_items(deduped)
     gate_stats = dict(filter_summary.gate_stats or {})
     collector.gate_pass_total = int(gate_stats.get("gate_pass_total", filter_summary.kept_count))
+    collector.hard_pass_total = int(gate_stats.get("hard_pass_total", gate_stats.get("passed_strict", 0)))
+    collector.soft_pass_total = int(gate_stats.get("soft_pass_total", gate_stats.get("passed_relaxed", 0)))
     collector.gate_reject_total = int(gate_stats.get("gate_reject_total", 0))
+    collector.rejected_total = int(gate_stats.get("rejected_total", collector.gate_reject_total))
     collector.after_filter_total = len(filtered)
     collector.rejected_reason_top = list(gate_stats.get("rejected_reason_top", []))
+    collector.density_score_top5 = list(gate_stats.get("density_score_top5", []))
     log.info(
-        "INGEST_COUNTS gate_pass_total=%d gate_reject_total=%d after_filter_total=%d rejected_reason_top=%s",
+        "INGEST_COUNTS hard_pass_total=%d soft_pass_total=%d gate_pass_total=%d gate_reject_total=%d after_filter_total=%d rejected_reason_top=%s density_score_top5=%s",
+        collector.hard_pass_total,
+        collector.soft_pass_total,
         collector.gate_pass_total,
         collector.gate_reject_total,
         collector.after_filter_total,
         collector.rejected_reason_top,
+        collector.density_score_top5,
     )
 
     # Build filter_summary dict for Z5
@@ -199,6 +239,8 @@ def run_pipeline() -> None:
         log.info("Z4: Deep analysis disabled")
 
     quality_cards = _build_quality_cards(all_results)
+    if not quality_cards and filtered:
+        quality_cards = _build_soft_quality_cards_from_filtered(filtered)
     density_candidates = [c for c in quality_cards if c.is_valid_news]
     event_candidates = [c for c in density_candidates if not is_non_event_or_index(c)]
 
@@ -271,7 +313,7 @@ def run_pipeline() -> None:
             z5_report = z4_report
             # 模式 B fallback：讀取文本
             z5_text = None
-            if z5_report is None:
+            if z5_report is None and all_results:
                 da_path = Path(settings.DEEP_ANALYSIS_OUTPUT_PATH)
                 if da_path.exists():
                     z5_text = da_path.read_text(encoding="utf-8")
