@@ -115,12 +115,6 @@ generate_executive_ppt(
     total_items=1,
     output_path=out,
 )
-docx = Path("outputs") / "executive_report.docx"
-notion = Path("outputs") / "notion_page.md"
-xmind = Path("outputs") / "mindmap.xmind"
-docx.write_text("smoke-docx-placeholder", encoding="utf-8")
-notion.write_text("# smoke notion", encoding="utf-8")
-xmind.write_text("smoke xmind", encoding="utf-8")
 print(f"SMOKE_PPTX={out.resolve()}")
 '@ | & $py -
     $exitCode = $LASTEXITCODE
@@ -146,12 +140,18 @@ print(f"SMOKE_PPTX={out.resolve()}")
 # ---------------------------------------------------------------------------
 Write-Host "`n=== Output Files ===" -ForegroundColor Cyan
 
-$files = @(
-    "outputs\executive_report.docx",
-    "outputs\executive_report.pptx",
-    "outputs\notion_page.md",
-    "outputs\mindmap.xmind"
-)
+if ($SmokeTest) {
+    $files = @(
+        "outputs\executive_report.pptx"
+    )
+} else {
+    $files = @(
+        "outputs\executive_report.docx",
+        "outputs\executive_report.pptx",
+        "outputs\notion_page.md",
+        "outputs\mindmap.xmind"
+    )
+}
 
 $allExist = $true
 foreach ($f in $files) {
