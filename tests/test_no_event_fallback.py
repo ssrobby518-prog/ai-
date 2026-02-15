@@ -57,10 +57,14 @@ def test_no_event_signal_summary_top3() -> None:
         assert "heat_score" in sig
         assert "example_snippet" in sig
         assert len(sig["example_snippet"]) <= 120
+        assert len(str(sig["example_snippet"]).strip()) >= 30
         assert int(sig["platform_count"]) >= 1
         assert int(sig["heat_score"]) >= 30
+        assert str(sig.get("source_name", "")).strip()
         assert "fallback monitoring signal" not in str(sig["signal_text"]).lower()
         assert "fallback monitoring signal" not in str(sig["example_snippet"]).lower()
+        assert "smoke" not in str(sig["signal_text"]).lower()
+        assert "smoke" not in str(sig["example_snippet"]).lower()
 
 
 def test_no_event_corp_watch_includes_scan_stats() -> None:
@@ -73,8 +77,10 @@ def test_no_event_corp_watch_includes_scan_stats() -> None:
     assert "success_count" in corp
     assert "fail_count" in corp
     assert "top_fail_reasons" in corp
+    assert "top_sources" in corp
     assert corp["sources_total"] >= 1
     assert corp["top_fail_reasons"]
+    assert corp["top_sources"]
     assert str(corp["top_fail_reasons"][0].get("reason", "")).strip()
 
 
@@ -90,6 +96,12 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
             report_time="2026-02-15 09:00",
             total_items=len(cards),
             output_path=out,
+            metrics={
+                "fetched_total": 14,
+                "gate_pass_total": 5,
+                "after_filter_total": 5,
+                "sources_total": 3,
+            },
         )
 
     prs = Presentation(str(out))
@@ -99,8 +111,12 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
     assert "Signal Thermometer" in text
     assert "Corp Watch" in text
     assert "sources_total" in text
+    assert "fetched_total" in text
+    assert "gate_pass_total" in text
     assert "monitoring continues" in text.lower()
     assert "fallback monitoring signal" not in text.lower()
+    assert "desktop smoke signal" not in text.lower()
+    assert "signals_insufficient=true" not in text.lower()
 
 
 def test_empty_passed_signals_mark_insufficient() -> None:
@@ -110,3 +126,26 @@ def test_empty_passed_signals_mark_insufficient() -> None:
         assert sig.get("signals_insufficient") is True
         assert int(sig.get("passed_total_count", -1)) == 0
         assert str(sig.get("signal_text", "")).strip()
+
+
+def test_no_event_summary_is_stats(tmp_path: Path) -> None:
+    cards = _no_event_cards()
+    with patch("core.ppt_generator.get_news_image", return_value=None):
+        out = generate_executive_ppt(
+            cards=cards,
+            health=SystemHealthReport(success_rate=0.0, p50_latency=0.0, p95_latency=0.0),
+            report_time="2026-02-15 09:00",
+            total_items=len(cards),
+            output_path=tmp_path / "no_event_summary_stats.pptx",
+            metrics={
+                "fetched_total": 20,
+                "gate_pass_total": 7,
+                "after_filter_total": 7,
+                "sources_total": 4,
+            },
+        )
+    prs = Presentation(str(out))
+    text = _all_text(prs).lower()
+    assert "fetched_total" in text
+    assert "gate_pass_total" in text
+    assert "sources_total" in text

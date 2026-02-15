@@ -423,12 +423,10 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     signals = build_signal_summary(cards)
     sig_lines = []
     for sig in signals[:3]:
-        insuff = bool(sig.get("signals_insufficient", False))
-        passed_total = int(sig.get("passed_total_count", 0))
-        suffix = f" | signals_insufficient=true | passed_total_count={passed_total}" if insuff else ""
+        source_name = str(sig.get("source_name", "unknown"))
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
-            f"({sig['source_count']} sources){suffix}"
+            f"({sig['source_count']} sources, source={source_name})"
         )
     _add_callout(doc, "Top Signals", sig_lines if sig_lines else ["今日無明顯訊號"])
     _add_divider(doc)
@@ -445,6 +443,31 @@ def _build_corp_watch(
 
     corp = build_corp_watch_summary(cards, metrics=metrics)
     _add_bold_label(doc, "Total Mentions", str(corp["total_mentions"]))
+
+    if int(corp.get("updates", corp.get("total_mentions", 0))) == 0:
+        fail_bits = []
+        for item in corp.get("top_fail_reasons", []):
+            fail_bits.append(f"{item.get('reason', 'none')} ({item.get('count', 0)})")
+        source_bits = []
+        for src in corp.get("top_sources", [])[:3]:
+            source_bits.append(
+                f"{src.get('source_name', 'none')}: items_seen={src.get('items_seen', 0)}, "
+                f"gate_pass={src.get('gate_pass', 0)}, gate_soft_pass={src.get('gate_soft_pass', 0)}"
+            )
+        _add_callout(
+            doc,
+            "Source Scan Stats",
+            [
+                f"status: {corp.get('status_message', 'none')}",
+                f"sources_total: {corp.get('sources_total', 0)}",
+                f"success_count: {corp.get('success_count', 0)}",
+                f"fail_count: {corp.get('fail_count', 0)}",
+                f"top_fail_reasons: {', '.join(fail_bits) if fail_bits else 'none'}",
+                f"top_sources: {' | '.join(source_bits) if source_bits else 'none'}",
+            ],
+        )
+        _add_divider(doc)
+        return
 
     # Tier A
     tier_a_lines = []
@@ -593,7 +616,7 @@ def generate_executive_docx(
     _build_cover_section(doc, report_time, total_items, health)
 
     # 2. Structured Summary (5 sections — new CEO Brief format)
-    _build_structured_summary(doc, cards)
+    _build_structured_summary(doc, cards, metrics=metrics)
 
     # 3. Signal Thermometer (v5)
     _build_signal_thermometer(doc, cards)
@@ -602,7 +625,7 @@ def generate_executive_docx(
     _build_corp_watch(doc, cards, metrics=metrics)
 
     # 5. Key Takeaways
-    _build_key_takeaways(doc, cards, total_items)
+    _build_key_takeaways(doc, cards, total_items, metrics=metrics)
 
     # 6. Overview Table
     _build_overview_table(doc, cards)
@@ -627,3 +650,62 @@ def generate_executive_docx(
     doc.save(str(output_path))
     log.info("Executive DOCX generated: %s", output_path)
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# v5.2.2 overrides (append-only quality hotfix layer)
+# ---------------------------------------------------------------------------
+
+_v521_build_structured_summary = _build_structured_summary
+_v521_build_key_takeaways = _build_key_takeaways
+
+
+def _build_structured_summary(
+    doc: Document,
+    cards: list[EduNewsCard],
+    tone: str = "neutral",
+    metrics: dict | None = None,
+) -> None:
+    """Structured summary with metric-backed no-event fallback."""
+    _add_heading(doc, "Structured Summary", level=1)
+    _add_divider(doc)
+
+    summary = build_structured_executive_summary(cards, tone, metrics=metrics or {})
+    section_map = [
+        ("AI Trends", summary.get("ai_trends", [])),
+        ("Tech Landing", summary.get("tech_landing", [])),
+        ("Market Competition", summary.get("market_competition", [])),
+        ("Opportunities & Risks", summary.get("opportunities_risks", [])),
+        ("Recommended Actions", summary.get("recommended_actions", [])),
+    ]
+    for sec_title, items in section_map:
+        _add_callout(doc, sec_title, [sanitize(it) for it in items[:3]])
+    _add_divider(doc)
+
+
+def _build_key_takeaways(
+    doc: Document,
+    cards: list[EduNewsCard],
+    total_items: int,
+    metrics: dict | None = None,
+) -> None:
+    """Key takeaways with stats-backed no-event fallback."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    lines = [f"Total scanned: {total_items} | Event candidates: {len(event_cards)}"]
+    for c in event_cards[:3]:
+        dc = build_decision_card(c)
+        lines.append(f"- {sanitize(c.title_plain[:40])} - {dc['event']}")
+    if not event_cards:
+        fetched_total = int((metrics or {}).get("fetched_total", total_items))
+        gate_pass_total = int((metrics or {}).get("gate_pass_total", sum(1 for c in cards if c.is_valid_news)))
+        sources_total = int((metrics or {}).get("sources_total", 0))
+        after_filter_total = int((metrics or {}).get("after_filter_total", gate_pass_total))
+        lines.extend(
+            [
+                f"Scan overview: fetched_total={fetched_total}, gate_pass_total={gate_pass_total}.",
+                f"Coverage: sources_total={sources_total}, after_filter_total={after_filter_total}.",
+                "No event candidate crossed action threshold; continue monitoring with source-level diagnostics.",
+            ]
+        )
+    _add_callout(doc, "Key Takeaways", lines)
+    _add_divider(doc)

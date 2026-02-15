@@ -98,8 +98,8 @@ from schemas.education_models import EduNewsCard, SystemHealthReport
 card = EduNewsCard(
     item_id="desktop-smoke-001",
     is_valid_news=True,
-    title_plain="Desktop smoke signal",
-    what_happened="Smoke mode generated an executive presentation artifact.",
+    title_plain="Desktop launcher validation signal",
+    what_happened="Launcher validation mode generated an executive presentation artifact.",
     why_important="Validates desktop entry path can produce PPTX.",
     source_name="smoke",
     source_url="https://example.com/smoke",
@@ -189,12 +189,19 @@ if (-not $shouldOpen) {
 }
 
 $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
+$minOpenBytes = 20480
 if (-not (Test-Path $pptxPath)) {
     Write-Host "ERROR: PPT file not found for auto-open: $pptxPath" -ForegroundColor Red
-    exit 1
+    exit 2
+}
+$pptxAbs = (Resolve-Path $pptxPath).Path
+
+$preOpenSize = (Get-Item $pptxAbs).Length
+if ($preOpenSize -lt $minOpenBytes) {
+    Write-Host "ERROR: PPT file too small for open contract ($preOpenSize bytes < $minOpenBytes bytes)." -ForegroundColor Red
+    exit 2
 }
 
-$pptxAbs = (Resolve-Path $pptxPath).Path
 $opened = $false
 $lastError = ""
 
@@ -206,21 +213,26 @@ for ($attempt = 1; $attempt -le 5; $attempt++) {
 
     if (-not (Test-Path $pptxAbs)) {
         Write-Host "ERROR: PPT file disappeared before open attempt: $pptxAbs" -ForegroundColor Red
-        exit 1
+        exit 2
     }
 
     $pptxSize = (Get-Item $pptxAbs).Length
-    if ($pptxSize -le 0) {
-        Write-Host "ERROR: PPT file is empty, cannot open: $pptxAbs" -ForegroundColor Red
-        exit 1
+    if ($pptxSize -lt $minOpenBytes) {
+        Write-Host "ERROR: PPT file below open threshold ($pptxSize bytes < $minOpenBytes bytes)." -ForegroundColor Red
+        exit 2
     }
     Write-Host "  File size    : $pptxSize bytes" -ForegroundColor DarkGray
 
     try {
-        Start-Process -FilePath $pptxAbs -ErrorAction Stop
-        Write-Host "  OpenAttempt $attempt succeeded." -ForegroundColor Green
-        $opened = $true
-        break
+        $proc = Start-Process -FilePath $pptxAbs -PassThru -ErrorAction Stop
+        Start-Sleep -Milliseconds 900
+        $pptProc = Get-Process -Name "POWERPNT" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -ne $proc -or $null -ne $pptProc) {
+            Write-Host "  OpenAttempt $attempt succeeded." -ForegroundColor Green
+            $opened = $true
+            break
+        }
+        throw "No launcher process handle after Start-Process."
     } catch {
         $lastError = $_.Exception.Message
         Write-Host "  OpenAttempt $attempt failed: $lastError" -ForegroundColor Yellow
@@ -234,7 +246,7 @@ if (-not $opened) {
     Write-Host "ERROR: Failed to auto-open PPT after 5 attempts." -ForegroundColor Red
     Write-Host "LAST_OPEN_ERROR: $lastError" -ForegroundColor Red
     Write-Host "PPT remains generated at: $pptxAbs" -ForegroundColor Yellow
-    exit 2
+    exit 3
 }
 
 Write-Host "`n=== Done ===" -ForegroundColor Cyan

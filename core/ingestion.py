@@ -278,10 +278,14 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     dropped_total = summary.input_count - summary.kept_count
     summary.gate_stats = {
         "total": gate_stats.total,
+        "gate_pass_total": gate_stats.kept,
+        "soft_pass_total": gate_stats.soft_pass_total,
         "passed_strict": gate_stats.passed_strict,
         "passed_relaxed": gate_stats.passed_relaxed,
+        "gate_reject_total": gate_stats.rejected_total,
         "rejected_total": gate_stats.rejected_total,
         "rejected_reason_top": gate_stats.rejected_reason_top,
+        "after_filter_total": len(result),
     }
     log.info("Filters: %d -> %d items", len(items), len(result))
     log.info(

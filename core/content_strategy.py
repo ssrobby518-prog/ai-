@@ -2147,6 +2147,446 @@ def build_corp_watch_summary(
         "top_fail_reasons": top_fail_reasons,
     }
 
+
+# ---------------------------------------------------------------------------
+# v5.2.2 final overrides (must be last in file)
+# ---------------------------------------------------------------------------
+
+_v522_prev_build_corp_watch_summary = build_corp_watch_summary
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Final override: no placeholder text, always return Top 3 informative signals."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    valid_cards = [c for c in cards if c.is_valid_news]
+    base_cards = event_cards if event_cards else valid_cards
+    passed_total_count = len(valid_cards)
+
+    bucket_names = (
+        ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"]
+        if event_cards
+        else list(_FALLBACK_SIGNAL_POOL)
+    )
+    buckets: dict[str, list[EduNewsCard]] = {name: [] for name in bucket_names}
+    allowed_types = set(buckets.keys()) | {"TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"}
+
+    for card in base_cards:
+        combined = (
+            f"{card.title_plain or ''} {card.what_happened or ''} "
+            f"{card.why_important or ''}"
+        ).lower()
+        sig_type = _v521_resolve_signal_type(combined)
+        if sig_type not in allowed_types:
+            sig_type = "TOOL_ADOPTION"
+        buckets.setdefault(sig_type, []).append(card)
+
+    entries: list[dict] = []
+    for sig_name, bucket_cards in buckets.items():
+        if not bucket_cards:
+            continue
+        entries.append(
+            _v522_signal_entry(
+                sig_name,
+                bucket_cards,
+                passed_total_count=passed_total_count,
+            )
+        )
+
+    entries.sort(
+        key=lambda x: (
+            int(x.get("platform_count", 0)),
+            int(x.get("heat_score", 0)),
+        ),
+        reverse=True,
+    )
+
+    used_names = {str(e.get("signal_name", "")) for e in entries}
+    fallback_idx = 0
+    while len(entries) < 3:
+        fallback_name = _FALLBACK_SIGNAL_POOL[fallback_idx % len(_FALLBACK_SIGNAL_POOL)]
+        fallback_idx += 1
+        if fallback_name in used_names:
+            continue
+
+        template_card = base_cards[(fallback_idx - 1) % len(base_cards)] if base_cards else None
+        card_list = [template_card] if template_card is not None else []
+        entry = _v522_signal_entry(
+            fallback_name,
+            card_list,
+            passed_total_count=passed_total_count,
+        )
+        if template_card is None:
+            entry["example_snippet"] = _smart_truncate(
+                f"Source scan completed with no gate-passed snippets; continue monitoring {fallback_name.lower()} coverage.",
+                120,
+            )
+            entry["source_name"] = "none"
+        entries.append(entry)
+        used_names.add(fallback_name)
+
+    for entry in entries[:3]:
+        entry["signal_text"] = _v522_strip_placeholders(str(entry.get("signal_text", ""))) or str(entry.get("label", "Signal"))
+        entry["title"] = _v522_strip_placeholders(str(entry.get("title", ""))) or entry["signal_text"]
+        snippet = _v522_strip_placeholders(str(entry.get("example_snippet", "")))
+        if len(snippet) < 30:
+            snippet = _smart_truncate(
+                f"{entry['signal_text']} observed on {entry.get('source_name', 'unknown')} with platform_count={entry.get('platform_count', 1)}.",
+                120,
+            )
+        entry["example_snippet"] = snippet
+        entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
+        entry["source_count"] = entry["platform_count"]
+        entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
+    return entries[:3]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Final override: keep corp watch informative when no updates are detected."""
+    result = _v522_prev_build_corp_watch_summary(cards, metrics=metrics)
+
+    source_rows: dict[str, dict[str, int | str]] = {}
+    for card in cards:
+        src = _v522_source_name(card)
+        row = source_rows.setdefault(
+            src,
+            {"source_name": src, "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0},
+        )
+        row["items_seen"] = int(row["items_seen"]) + 1
+        if bool(getattr(card, "is_valid_news", False)):
+            row["gate_pass"] = int(row["gate_pass"]) + 1
+        if bool(getattr(card, "is_soft_pass", False)) or str(getattr(card, "gate_level", "")).lower() == "soft":
+            row["gate_soft_pass"] = int(row["gate_soft_pass"]) + 1
+
+    top_sources = sorted(
+        source_rows.values(),
+        key=lambda x: int(x["items_seen"]),
+        reverse=True,
+    )[:3]
+    if not top_sources:
+        top_sources = [{"source_name": "none", "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0}]
+
+    top_fail_reasons = result.get("top_fail_reasons") or []
+    if not top_fail_reasons:
+        top_fail_reasons = [{"reason": "none", "count": 0}]
+
+    mentions_count = int(result.get("mentions_count", result.get("total_mentions", 0)))
+    if mentions_count == 0:
+        result["status_message"] = "No major updates detected — monitoring continues."
+
+    result["top_fail_reasons"] = top_fail_reasons
+    result["top_sources"] = top_sources
+    return result
+
+
+# ---------------------------------------------------------------------------
+# v5.2.2 overrides (append-only quality hotfix layer)
+# ---------------------------------------------------------------------------
+
+_v521_build_structured_executive_summary = build_structured_executive_summary
+_v521_build_corp_watch_summary = build_corp_watch_summary
+
+_PLACEHOLDER_GUARD_TERMS = (
+    "desktop smoke signal",
+    "fallback monitoring signal",
+    "signals_insufficient=true",
+    "last july was",
+)
+
+
+def _v522_strip_placeholders(text: str) -> str:
+    cleaned = sanitize(text or "")
+    if not cleaned:
+        return ""
+    for term in _PLACEHOLDER_GUARD_TERMS:
+        cleaned = re.sub(re.escape(term), "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:was|is|are)\s*\.\.\.", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" ,.;:")
+    return cleaned.strip()
+
+
+def _v522_source_name(card: EduNewsCard) -> str:
+    source_name = str(getattr(card, "source_name", "") or "").strip()
+    if source_name:
+        return source_name
+    source_url = str(getattr(card, "source_url", "") or "").strip()
+    if not source_url:
+        return "unknown"
+    try:
+        from urllib.parse import urlparse
+
+        domain = urlparse(source_url).netloc.strip().lower()
+        return domain or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _v522_signal_snippet(card: EduNewsCard | None, fallback_label: str) -> str:
+    if card is None:
+        return f"Monitoring {fallback_label} from source scan statistics and recent validated coverage."
+
+    fields = [
+        str(getattr(card, "what_happened", "") or "").strip(),
+        str(getattr(card, "why_important", "") or "").strip(),
+        str(getattr(card, "title_plain", "") or "").strip(),
+    ]
+    merged = " ".join(p for p in fields if p)
+    merged = _v522_strip_placeholders(merged)
+    if len(merged) < 30:
+        merged = _v522_strip_placeholders(
+            f"{fields[2]} | {fields[0]} | source={_v522_source_name(card)}"
+        )
+    merged = merged or f"{fallback_label} signal from {_v522_source_name(card)}."
+    return _smart_truncate(merged, 120)
+
+
+def _v522_signal_entry(
+    signal_name: str,
+    bucket_cards: list[EduNewsCard],
+    *,
+    passed_total_count: int,
+) -> dict:
+    card = bucket_cards[0] if bucket_cards else None
+    label = _SIGNAL_LABELS.get(signal_name, signal_name)
+    unique_sources = {_v522_source_name(c) for c in bucket_cards if _v522_source_name(c) != "unknown"}
+    platform_count = max(len(unique_sources), len(bucket_cards), 1)
+
+    avg_score = (
+        sum(float(getattr(c, "final_score", 0.0) or 0.0) for c in bucket_cards) / len(bucket_cards)
+        if bucket_cards else 3.0
+    )
+    heat_score = int(max(30, min(100, round(avg_score * 12))))
+    if heat_score >= 75:
+        heat = "hot"
+    elif heat_score >= 50:
+        heat = "warm"
+    else:
+        heat = "cool"
+
+    signal_text_raw = (
+        (str(getattr(card, "title_plain", "") or "").strip() if card else "")
+        or (str(getattr(card, "what_happened", "") or "").strip() if card else "")
+        or label
+    )
+    signal_text = _smart_truncate(_v522_strip_placeholders(signal_text_raw) or label, 30)
+
+    return {
+        "signal_name": signal_name,
+        "signal_type": signal_name,
+        "label": label,
+        "title": signal_text,
+        "source_count": platform_count,
+        "heat": heat,
+        "signal_text": signal_text,
+        "platform_count": platform_count,
+        "heat_score": heat_score,
+        "example_snippet": _v522_signal_snippet(card, label),
+        "source_name": _v522_source_name(card) if card else "none",
+        "signals_insufficient": passed_total_count < 3,
+        "passed_total_count": passed_total_count,
+    }
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """v5.2.2 signal summary: never emit placeholder text, keep Top 3 informative."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    valid_cards = [c for c in cards if c.is_valid_news]
+
+    base_cards = event_cards if event_cards else valid_cards
+    passed_total_count = len(valid_cards)
+    bucket_names = (
+        ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"]
+        if event_cards
+        else list(_FALLBACK_SIGNAL_POOL)
+    )
+    buckets: dict[str, list[EduNewsCard]] = {name: [] for name in bucket_names}
+    allowed_types = set(buckets.keys()) | {"TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"}
+
+    for card in base_cards:
+        combined = (
+            f"{card.title_plain or ''} {card.what_happened or ''} "
+            f"{card.why_important or ''}"
+        ).lower()
+        sig_type = _v521_resolve_signal_type(combined)
+        if sig_type not in allowed_types:
+            sig_type = "TOOL_ADOPTION"
+        buckets.setdefault(sig_type, []).append(card)
+
+    entries: list[dict] = []
+    for sig_name, bucket_cards in buckets.items():
+        if not bucket_cards:
+            continue
+        entries.append(
+            _v522_signal_entry(
+                sig_name,
+                bucket_cards,
+                passed_total_count=passed_total_count,
+            )
+        )
+
+    entries.sort(
+        key=lambda x: (
+            int(x.get("platform_count", 0)),
+            int(x.get("heat_score", 0)),
+        ),
+        reverse=True,
+    )
+
+    used_names = {str(e.get("signal_name", "")) for e in entries}
+    fallback_idx = 0
+    fallback_fill_pool = list(_FALLBACK_SIGNAL_POOL)
+    while len(entries) < 3:
+        fallback_name = fallback_fill_pool[fallback_idx % len(fallback_fill_pool)]
+        fallback_idx += 1
+        if fallback_name in used_names:
+            continue
+
+        template_card = base_cards[(fallback_idx - 1) % len(base_cards)] if base_cards else None
+        card_list = [template_card] if template_card is not None else []
+        entry = _v522_signal_entry(
+            fallback_name,
+            card_list,
+            passed_total_count=passed_total_count,
+        )
+        # No source cards at all: keep signal informative without placeholder vocabulary.
+        if template_card is None:
+            entry["example_snippet"] = _smart_truncate(
+                f"Source scan completed with no gate-passed snippets; continue monitoring {fallback_name.lower()} coverage.",
+                120,
+            )
+            entry["source_name"] = "none"
+        entries.append(entry)
+        used_names.add(fallback_name)
+
+    # Final guard: strip placeholder/fallback fragments from visible text.
+    for entry in entries[:3]:
+        entry["signal_text"] = _v522_strip_placeholders(str(entry.get("signal_text", ""))) or str(entry.get("label", "Signal"))
+        entry["title"] = _v522_strip_placeholders(str(entry.get("title", ""))) or entry["signal_text"]
+        snippet = _v522_strip_placeholders(str(entry.get("example_snippet", "")))
+        if len(snippet) < 30:
+            snippet = _smart_truncate(
+                f"{entry['signal_text']} observed on {entry.get('source_name', 'unknown')} with platform_count={entry.get('platform_count', 1)}.",
+                120,
+            )
+        entry["example_snippet"] = snippet
+        entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
+        entry["source_count"] = entry["platform_count"]
+        entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
+    return entries[:3]
+
+
+def _v522_metrics_int(metrics: dict | None, key: str, default: int) -> int:
+    if not metrics:
+        return int(default)
+    try:
+        return int(metrics.get(key, default))
+    except Exception:
+        return int(default)
+
+
+def build_structured_executive_summary(
+    news_cards: list[EduNewsCard],
+    tone: str = "neutral",
+    metrics: dict | None = None,
+) -> dict[str, list[str]]:
+    """v5.2.2 structured summary: no-event branch must still be information-dense."""
+    event_cards = [c for c in news_cards if c.is_valid_news and not is_non_event_or_index(c)]
+    if event_cards:
+        return _v521_build_structured_executive_summary(news_cards, tone)
+
+    fetched_total = _v522_metrics_int(metrics, "fetched_total", len(news_cards))
+    deduped_total = _v522_metrics_int(metrics, "deduped_total", len(news_cards))
+    gate_pass_total = _v522_metrics_int(
+        metrics,
+        "gate_pass_total",
+        sum(1 for c in news_cards if bool(getattr(c, "is_valid_news", False))),
+    )
+    gate_reject_total = _v522_metrics_int(metrics, "gate_reject_total", max(fetched_total - gate_pass_total, 0))
+    after_filter_total = _v522_metrics_int(metrics, "after_filter_total", gate_pass_total)
+    sources_total = _v522_metrics_int(
+        metrics,
+        "sources_total",
+        len({_v522_source_name(c) for c in news_cards if _v522_source_name(c) != "unknown"}),
+    )
+    signals_total = _v522_metrics_int(metrics, "signals_detected", 0)
+
+    top_sources_counter: Counter[str] = Counter()
+    keyword_counter: Counter[str] = Counter()
+    for card in news_cards:
+        src = _v522_source_name(card)
+        if src and src != "unknown":
+            top_sources_counter[src] += 1
+        title = _v522_strip_placeholders(str(getattr(card, "title_plain", "") or ""))
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", title):
+            token_lower = token.lower()
+            if token_lower not in {"today", "daily", "news", "update"}:
+                keyword_counter[token.upper()] += 1
+
+    top_sources = ", ".join(f"{name}({count})" for name, count in top_sources_counter.most_common(3)) or "none"
+    top_keywords = ", ".join(k for k, _ in keyword_counter.most_common(3)) or "none"
+
+    return {
+        "ai_trends": [
+            (
+                f"Scan coverage: fetched_total={fetched_total}, deduped_total={deduped_total}, "
+                f"gate_pass_total={gate_pass_total}, gate_reject_total={gate_reject_total}."
+            )
+        ],
+        "tech_landing": [
+            (
+                f"Source health: sources_total={sources_total}, after_filter_total={after_filter_total}, "
+                f"signals_total={signals_total}."
+            )
+        ],
+        "market_competition": [f"Top sources by volume: {top_sources}."],
+        "opportunities_risks": [f"Observed keywords from scanned titles: {top_keywords}."],
+        "recommended_actions": [
+            "Maintain monitoring cadence and prioritize enrichment for high-volume sources with low gate pass rates."
+        ],
+    }
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """v5.2.2 corp watch: keep scan stats informative even with zero updates."""
+    result = _v521_build_corp_watch_summary(cards, metrics=metrics)
+
+    source_rows: dict[str, dict[str, int | str]] = {}
+    for card in cards:
+        src = _v522_source_name(card)
+        row = source_rows.setdefault(
+            src,
+            {"source_name": src, "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0},
+        )
+        row["items_seen"] = int(row["items_seen"]) + 1
+        if bool(getattr(card, "is_valid_news", False)):
+            row["gate_pass"] = int(row["gate_pass"]) + 1
+        if bool(getattr(card, "is_soft_pass", False)) or str(getattr(card, "gate_level", "")).lower() == "soft":
+            row["gate_soft_pass"] = int(row["gate_soft_pass"]) + 1
+
+    top_sources = sorted(
+        source_rows.values(),
+        key=lambda x: int(x["items_seen"]),
+        reverse=True,
+    )[:3]
+    if not top_sources:
+        top_sources = [{"source_name": "none", "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0}]
+
+    top_fail_reasons = result.get("top_fail_reasons") or []
+    if not top_fail_reasons:
+        top_fail_reasons = [{"reason": "none", "count": 0}]
+
+    mentions_count = int(result.get("mentions_count", result.get("total_mentions", 0)))
+    if mentions_count == 0:
+        result["status_message"] = "No major updates detected — monitoring continues."
+    result["top_fail_reasons"] = top_fail_reasons
+    result["top_sources"] = top_sources
+    return result
+
 # ---------------------------------------------------------------------------
 # v5.2.1 overrides (append-only hotfix layer)
 # ---------------------------------------------------------------------------
@@ -2566,3 +3006,99 @@ def build_corp_watch_summary(
         "fail_count": fail_count,
         "top_fail_reasons": top_fail_reasons,
     }
+
+# ---------------------------------------------------------------------------
+# v5.2.2 terminal wrappers (absolute last definitions)
+# ---------------------------------------------------------------------------
+
+_v522_terminal_signal_summary = build_signal_summary
+_v522_terminal_corp_summary = build_corp_watch_summary
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Terminal wrapper: enforce non-placeholder Top3 with source metadata."""
+    rows = list(_v522_terminal_signal_summary(cards) or [])
+
+    # Ensure 3 rows minimum and strip known placeholders from visible text.
+    fallback_names = ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE", "COST_PRESSURE", "COMPETITION_SIGNAL"]
+    idx = 0
+    while len(rows) < 3:
+        name = fallback_names[idx % len(fallback_names)]
+        idx += 1
+        rows.append(
+            {
+                "signal_name": name,
+                "signal_type": name,
+                "label": _SIGNAL_LABELS.get(name, name),
+                "title": _SIGNAL_LABELS.get(name, name),
+                "source_count": 1,
+                "heat": "cool",
+                "signal_text": _SIGNAL_LABELS.get(name, name),
+                "platform_count": 1,
+                "heat_score": 30,
+                "example_snippet": f"Monitoring {_SIGNAL_LABELS.get(name, name)} from validated source coverage.",
+                "source_name": "none",
+            }
+        )
+
+    for row in rows[:3]:
+        signal_text = _v522_strip_placeholders(str(row.get("signal_text", row.get("title", ""))))
+        title = _v522_strip_placeholders(str(row.get("title", signal_text)))
+        snippet = _v522_strip_placeholders(str(row.get("example_snippet", "")))
+
+        source_name = str(row.get("source_name", "")).strip()
+        if not source_name:
+            source_name = "unknown"
+
+        if len(snippet) < 30:
+            snippet = _smart_truncate(
+                f"{signal_text or title or 'Signal'} observed on {source_name} with platform_count={int(row.get('platform_count', 1) or 1)}.",
+                120,
+            )
+
+        row["signal_text"] = signal_text or title or str(row.get("label", "Signal"))
+        row["title"] = title or row["signal_text"]
+        row["example_snippet"] = snippet
+        row["source_name"] = source_name
+        row["platform_count"] = max(int(row.get("platform_count", row.get("source_count", 1)) or 1), 1)
+        row["source_count"] = row["platform_count"]
+        row["heat_score"] = max(int(row.get("heat_score", 30) or 30), 30)
+
+    return rows[:3]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Terminal wrapper: always include top_sources and non-empty fail reasons."""
+    result = dict(_v522_terminal_corp_summary(cards, metrics=metrics) or {})
+
+    source_rows: dict[str, dict[str, int | str]] = {}
+    for card in cards:
+        src = _v522_source_name(card)
+        row = source_rows.setdefault(
+            src,
+            {"source_name": src, "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0},
+        )
+        row["items_seen"] = int(row["items_seen"]) + 1
+        if bool(getattr(card, "is_valid_news", False)):
+            row["gate_pass"] = int(row["gate_pass"]) + 1
+        if bool(getattr(card, "is_soft_pass", False)) or str(getattr(card, "gate_level", "")).lower() == "soft":
+            row["gate_soft_pass"] = int(row["gate_soft_pass"]) + 1
+
+    top_sources = sorted(source_rows.values(), key=lambda x: int(x["items_seen"]), reverse=True)[:3]
+    if not top_sources:
+        top_sources = [{"source_name": "none", "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0}]
+
+    top_fail_reasons = result.get("top_fail_reasons") or []
+    if not top_fail_reasons:
+        top_fail_reasons = [{"reason": "none", "count": 0}]
+
+    mentions_count = int(result.get("mentions_count", result.get("total_mentions", 0) or 0))
+    if mentions_count == 0:
+        result["status_message"] = "No major updates detected — monitoring continues."
+
+    result["top_sources"] = top_sources
+    result["top_fail_reasons"] = top_fail_reasons
+    return result

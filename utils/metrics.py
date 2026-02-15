@@ -68,6 +68,14 @@ class MetricsCollector:
         self.sources_total: int = 0
         self.sources_success: int = 0
         self.sources_failed: int = 0
+        self.fetched_total: int = 0
+        self.normalized_total: int = 0
+        self.deduped_total: int = 0
+        self.enriched_total: int = 0
+        self.gate_pass_total: int = 0
+        self.gate_reject_total: int = 0
+        self.after_filter_total: int = 0
+        self.rejected_reason_top: list[tuple[str, int]] = []
         self.events_detected: int = 0
         self.signals_detected: int = 0
         self.corp_updates_detected: int = 0
@@ -104,6 +112,14 @@ class MetricsCollector:
             "sources_total": self.sources_total,
             "sources_success": self.sources_success,
             "sources_failed": self.sources_failed,
+            "fetched_total": self.fetched_total,
+            "normalized_total": self.normalized_total,
+            "deduped_total": self.deduped_total,
+            "enriched_total": self.enriched_total,
+            "gate_pass_total": self.gate_pass_total,
+            "gate_reject_total": self.gate_reject_total,
+            "after_filter_total": self.after_filter_total,
+            "rejected_reason_top": self.rejected_reason_top,
             "events_detected": self.events_detected,
             "signals_detected": self.signals_detected,
             "corp_updates_detected": self.corp_updates_detected,

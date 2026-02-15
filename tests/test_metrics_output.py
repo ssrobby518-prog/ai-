@@ -52,6 +52,14 @@ class TestMetricsCollector:
         collector.sources_total = 9
         collector.sources_success = 7
         collector.sources_failed = 2
+        collector.fetched_total = 30
+        collector.normalized_total = 30
+        collector.deduped_total = 24
+        collector.enriched_total = 30
+        collector.gate_pass_total = 18
+        collector.gate_reject_total = 6
+        collector.after_filter_total = 18
+        collector.rejected_reason_top = [("content_too_short", 4), ("fragment_placeholder", 2)]
         collector.events_detected = 4
         collector.signals_detected = 3
         collector.corp_updates_detected = 2
@@ -73,6 +81,14 @@ class TestMetricsCollector:
             "sources_total",
             "sources_success",
             "sources_failed",
+            "fetched_total",
+            "normalized_total",
+            "deduped_total",
+            "enriched_total",
+            "gate_pass_total",
+            "gate_reject_total",
+            "after_filter_total",
+            "rejected_reason_top",
             "events_detected",
             "signals_detected",
             "corp_updates_detected",
@@ -95,6 +111,14 @@ class TestMetricsCollector:
         assert data["sources_total"] == 9
         assert data["sources_success"] == 7
         assert data["sources_failed"] == 2
+        assert data["fetched_total"] == 30
+        assert data["normalized_total"] == 30
+        assert data["deduped_total"] == 24
+        assert data["enriched_total"] == 30
+        assert data["gate_pass_total"] == 18
+        assert data["gate_reject_total"] == 6
+        assert data["after_filter_total"] == 18
+        assert data["rejected_reason_top"] == [["content_too_short", 4], ["fragment_placeholder", 2]]
         assert data["events_detected"] == 4
         assert data["signals_detected"] == 3
         assert data["corp_updates_detected"] == 2

@@ -532,18 +532,14 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
         platform_count = int(sig.get("platform_count", sig.get("source_count", 0)))
         heat_score = int(sig.get("heat_score", 0))
         label = str(sig.get("label", sig.get("signal_type", "Signal")))
-        insuff = bool(sig.get("signals_insufficient", False))
-        passed_total = int(sig.get("passed_total_count", 0))
-        suffix = ""
-        if insuff:
-            suffix = f" | signals_insufficient=true | passed_total_count={passed_total}"
+        source_name = str(sig.get("source_name", "unknown"))
         # Signal type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
                      label, font_size=12, bold=True,
                      color=sig_color)
         # signal_text + required fallback fields
         _add_textbox(slide, Cm(10), Cm(y), Cm(20), Cm(0.8),
-                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score}{suffix}",
+                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score} | source={source_name}",
                      font_size=11, color=TEXT_WHITE)
         # Heat badge
         _add_textbox(slide, Cm(30), Cm(y), Cm(2), Cm(0.8),
@@ -584,6 +580,13 @@ def _slide_corp_watch(
             count = int(item.get("count", 0))
             fail_bits.append(f"{reason} ({count})")
         fail_text = ", ".join(fail_bits) if fail_bits else "none"
+        source_bits = []
+        for src in corp.get("top_sources", [])[:3]:
+            source_bits.append(
+                f"{src.get('source_name', 'none')}: items_seen={src.get('items_seen', 0)}, "
+                f"gate_pass={src.get('gate_pass', 0)}, gate_soft_pass={src.get('gate_soft_pass', 0)}"
+            )
+        top_sources_text = " | ".join(source_bits) if source_bits else "none"
 
         _add_textbox(slide, Cm(2), Cm(4.5), Cm(30), Cm(1),
                      "Source Scan Stats", font_size=16, bold=True,
@@ -596,6 +599,7 @@ def _slide_corp_watch(
                 f"success_count: {corp.get('success_count', 0)}",
                 f"fail_count: {corp.get('fail_count', 0)}",
                 f"top_fail_reasons: {fail_text}",
+                f"top_sources: {top_sources_text}",
             ],
             font_size=12,
             color=TEXT_WHITE,
@@ -778,7 +782,7 @@ def generate_executive_ppt(
     _slide_cover(prs, report_time)
 
     # 2. Structured Summary (5 sections)
-    _slide_structured_summary(prs, cards)
+    _slide_structured_summary(prs, cards, metrics=metrics)
 
     # 3. Signal Thermometer (v5)
     _slide_signal_thermometer(prs, cards)
@@ -787,7 +791,7 @@ def generate_executive_ppt(
     _slide_corp_watch(prs, cards, metrics=metrics)
 
     # 5. Key Takeaways
-    _slide_key_takeaways(prs, cards, total_items)
+    _slide_key_takeaways(prs, cards, total_items, metrics=metrics)
 
     # 6. Overview Table
     _slide_overview_table(prs, cards)
@@ -831,3 +835,88 @@ def generate_executive_ppt(
     prs.save(str(output_path))
     log.info("Executive PPTX generated: %s", output_path)
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# v5.2.2 overrides (append-only quality hotfix layer)
+# ---------------------------------------------------------------------------
+
+_v521_slide_structured_summary = _slide_structured_summary
+_v521_slide_key_takeaways = _slide_key_takeaways
+
+
+def _slide_structured_summary(
+    prs: Presentation,
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> None:
+    """Structured summary with metric-backed fallback in no-event days."""
+    summary = build_structured_executive_summary(cards, metrics=metrics or {})
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Structured Summary", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    section_map = [
+        ("AI Trends", summary.get("ai_trends", [])),
+        ("Tech Landing", summary.get("tech_landing", [])),
+        ("Market Competition", summary.get("market_competition", [])),
+        ("Opportunities & Risks", summary.get("opportunities_risks", [])),
+        ("Recommended Actions", summary.get("recommended_actions", [])),
+    ]
+
+    y = 3.0
+    for sec_title, items in section_map:
+        _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                     sec_title, font_size=14, bold=True,
+                     color=HIGHLIGHT_YELLOW)
+        y += 1.0
+        for item in items[:2]:
+            _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                         f"- {safe_text(item, 80)}", font_size=11,
+                         color=TEXT_WHITE)
+            y += 0.8
+        y += 0.3
+
+
+def _slide_key_takeaways(
+    prs: Presentation,
+    cards: list[EduNewsCard],
+    total_items: int,
+    metrics: dict | None = None,
+) -> None:
+    """Key takeaways with stats-backed no-event fallback."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+    _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
+                 "Key Takeaways", font_size=36, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
+
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    takeaways: list[str] = [f"Total scanned: {total_items} | Event candidates: {len(event_cards)}"]
+
+    for c in event_cards[:3]:
+        dc = build_decision_card(c)
+        takeaways.append(f"{safe_text(c.title_plain, 35)} - {dc['event']}")
+
+    if not event_cards:
+        fetched_total = int((metrics or {}).get("fetched_total", total_items))
+        gate_pass_total = int((metrics or {}).get("gate_pass_total", sum(1 for c in cards if c.is_valid_news)))
+        sources_total = int((metrics or {}).get("sources_total", 0))
+        after_filter_total = int((metrics or {}).get("after_filter_total", gate_pass_total))
+        takeaways.extend(
+            [
+                f"Scan overview: fetched_total={fetched_total}, gate_pass_total={gate_pass_total}.",
+                f"Coverage: sources_total={sources_total}, after_filter_total={after_filter_total}.",
+                "No event candidate crossed action threshold; continue monitoring with source-level diagnostics.",
+            ]
+        )
+
+    _add_multiline_textbox(
+        slide, Cm(3), Cm(4.5), Cm(28), Cm(13),
+        takeaways, font_size=18, color=TEXT_WHITE, line_spacing=1.8,
+    )

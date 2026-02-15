@@ -99,6 +99,8 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
 
     banned_phrases = [
         "fallback monitoring signal",
+        "desktop smoke signal",
+        "signals_insufficient=true",
         "last july was",
         "was...",
         "is...",
@@ -109,6 +111,7 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
 
     fragment_patterns = [
         re.compile(r"last\\s+\\w+\\s+was", re.IGNORECASE),
+        re.compile(r"this\\s+\\w+\\s+was", re.IGNORECASE),
         re.compile(r"\\b(?:was|is|are)\\s*\\.\\.\\.", re.IGNORECASE),
         re.compile(r"\\b(?:this|that|it)\\s+\\w+\\s+(?:was|is|are)\\s*,\\s*$", re.IGNORECASE),
     ]

@@ -64,3 +64,33 @@ def test_filter_items_logs_content_gate_summary(caplog) -> None:
         filter_items([item])
 
     assert any("ContentGate strict_pass=" in rec.message for rec in caplog.records)
+
+
+def test_gate_not_starve_pipeline_soft_pass(monkeypatch) -> None:
+    body = (
+        "Short but coherent analysis summary with explicit implications for platform rollout. "
+        "The update includes customer impact, operational constraints, and mitigation options. "
+    ) * 5  # <1200 chars: strict fail, relaxed/soft pass.
+
+    item = RawItem(
+        item_id="gate-soft-pass-001",
+        title="Short coherent brief",
+        url="https://example.com/gate-soft-pass-001",
+        body=body,
+        published_at=datetime.now(UTC).isoformat(),
+        source_name="test",
+        source_category="tech",
+        lang="en",
+    )
+
+    monkeypatch.setattr("config.settings.CONTENT_GATE_STRICT_MIN_LEN", 1200)
+    monkeypatch.setattr("config.settings.CONTENT_GATE_STRICT_MIN_SENTENCES", 3)
+    monkeypatch.setattr("config.settings.CONTENT_GATE_RELAXED_MIN_LEN", 500)
+    monkeypatch.setattr("config.settings.CONTENT_GATE_RELAXED_MIN_SENTENCES", 2)
+    monkeypatch.setattr("config.settings.CONTENT_GATE_MIN_KEEP_ITEMS", 1)
+
+    kept, summary = filter_items([item])
+    assert len(kept) == 1
+    assert summary.kept_count >= 1
+    assert int(summary.gate_stats.get("soft_pass_total", 0)) >= 1
+    assert int(summary.gate_stats.get("after_filter_total", 0)) >= 1

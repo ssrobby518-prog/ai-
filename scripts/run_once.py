@@ -96,6 +96,16 @@ def run_pipeline() -> None:
     log.info("--- Z1: Ingestion & Preprocessing ---")
     raw_items = fetch_all_feeds()
     log.info("Fetched %d total raw items", len(raw_items))
+    collector.fetched_total = len(raw_items)
+    # fetch_all_feeds() already returns normalized + enrichment-applied items.
+    collector.normalized_total = len(raw_items)
+    collector.enriched_total = len(raw_items)
+    log.info(
+        "INGEST_COUNTS fetched_total=%d normalized_total=%d enriched_total=%d",
+        collector.fetched_total,
+        collector.normalized_total,
+        collector.enriched_total,
+    )
 
     if not raw_items:
         log.warning("No items fetched from any feed. Exiting.")
@@ -108,9 +118,23 @@ def run_pipeline() -> None:
     existing_ids = get_existing_item_ids(settings.DB_PATH)
     log.info("Existing items in DB: %d", len(existing_ids))
     deduped = dedup_items(raw_items, existing_ids)
+    collector.deduped_total = len(deduped)
+    log.info("INGEST_COUNTS deduped_total=%d", collector.deduped_total)
 
     # Filter
     filtered, filter_summary = filter_items(deduped)
+    gate_stats = dict(filter_summary.gate_stats or {})
+    collector.gate_pass_total = int(gate_stats.get("gate_pass_total", filter_summary.kept_count))
+    collector.gate_reject_total = int(gate_stats.get("gate_reject_total", 0))
+    collector.after_filter_total = len(filtered)
+    collector.rejected_reason_top = list(gate_stats.get("rejected_reason_top", []))
+    log.info(
+        "INGEST_COUNTS gate_pass_total=%d gate_reject_total=%d after_filter_total=%d rejected_reason_top=%s",
+        collector.gate_pass_total,
+        collector.gate_reject_total,
+        collector.after_filter_total,
+        collector.rejected_reason_top,
+    )
 
     # Build filter_summary dict for Z5
     filter_summary_dict: dict = {
@@ -185,6 +209,12 @@ def run_pipeline() -> None:
 
     corp_summary = build_corp_watch_summary(quality_cards, metrics=collector.to_dict())
     collector.corp_updates_detected = int(corp_summary.get("updates", 0))
+    log.info(
+        "STRATEGY_COUNTS event_candidates_total=%d signals_total=%d corp_mentions_total=%d",
+        collector.events_detected,
+        collector.signals_detected,
+        int(corp_summary.get("mentions_count", corp_summary.get("total_mentions", 0))),
+    )
 
     # Finalize metrics
     collector.stop()

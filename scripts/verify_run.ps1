@@ -1,10 +1,10 @@
-# verify_run.ps1 — Executive report end-to-end verification
+# verify_run.ps1 ??Executive report end-to-end verification
 # Purpose: run pipeline with calibration profile, verify FILTER_SUMMARY + executive output
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_run.ps1
 
 $ErrorActionPreference = "Stop"
 
-# UTF-8 console hardening — prevent garbled CJK output
+# UTF-8 console hardening ??prevent garbled CJK output
 chcp 65001 | Out-Null
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = "utf-8"
@@ -17,7 +17,7 @@ $integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
 if (Test-Path $integrityScript) {
     & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "  Text integrity check failed — fix issues before continuing." -ForegroundColor Red
+        Write-Host "  Text integrity check failed ??fix issues before continuing." -ForegroundColor Red
         exit 1
     }
 } else {
@@ -136,12 +136,20 @@ $execFiles = @(
     @{ Name="Notion"; Path="outputs\notion_page.md" },
     @{ Name="XMind"; Path="outputs\mindmap.xmind" }
 )
+$minSizes = @{
+    "DOCX" = 10240
+    "PPTX" = 20480
+}
 $binPass = $true
 
 foreach ($ef in $execFiles) {
     if (Test-Path $ef.Path) {
         $info = Get-Item $ef.Path
         Write-Host ("  {0}: {1} ({2} bytes, {3})" -f $ef.Name, $info.FullName, $info.Length, $info.LastWriteTime) -ForegroundColor Green
+        if ($minSizes.ContainsKey($ef.Name) -and $info.Length -lt $minSizes[$ef.Name]) {
+            Write-Host ("  FAIL: {0} too small ({1} bytes < {2} bytes threshold)" -f $ef.Name, $info.Length, $minSizes[$ef.Name]) -ForegroundColor Red
+            $binPass = $false
+        }
     } else {
         Write-Host "  FAIL: $($ef.Path) not found" -ForegroundColor Red
         $binPass = $false
@@ -154,10 +162,14 @@ if (-not $binPass) {
 }
 Write-Host "  Executive output check passed." -ForegroundColor Green
 
-# 9) Executive Output v3 guard — banned words + embedded images
+# 9) Executive Output v3 guard ??banned words + embedded images
 Write-Host "`n[9/9] Executive Output v3 guard..." -ForegroundColor Yellow
 
-$bannedWords = @("ai捕捉", "AI Intel", "Z1", "Z2", "Z3", "Z4", "Z5", "pipeline", "ETL", "verify_run", "ingestion", "ai_core")
+$bannedWords = @(
+    "ai??", "AI Intel", "Z1", "Z2", "Z3", "Z4", "Z5",
+    "pipeline", "ETL", "verify_run", "ingestion", "ai_core",
+    "Last July was", "Desktop smoke signal", "signals_insufficient=true"
+)
 $v3Pass = $true
 
 # Check banned words in Notion page (plain text)
@@ -255,3 +267,4 @@ Write-Host "  Executive Output v3 guard passed." -ForegroundColor Green
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
+

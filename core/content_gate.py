@@ -56,6 +56,11 @@ class AdaptiveGateStats:
     def kept(self) -> int:
         return self.passed_strict + self.passed_relaxed
 
+    @property
+    def soft_pass_total(self) -> int:
+        # "soft pass" is the relaxed-level pass count.
+        return self.passed_relaxed
+
 
 def _normalize(text: str) -> str:
     return (text or "").strip()
