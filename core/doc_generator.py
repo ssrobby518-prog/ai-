@@ -431,12 +431,16 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     _add_divider(doc)
 
 
-def _build_corp_watch(doc: Document, cards: list[EduNewsCard]) -> None:
+def _build_corp_watch(
+    doc: Document,
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> None:
     """Corp Watch — Tier A + Tier B company monitoring, matching PPT."""
     _add_heading(doc, "Corp Watch", level=1)
     _add_divider(doc)
 
-    corp = build_corp_watch_summary(cards)
+    corp = build_corp_watch_summary(cards, metrics=metrics)
     _add_bold_label(doc, "Total Mentions", str(corp["total_mentions"]))
 
     # Tier A
@@ -569,6 +573,7 @@ def generate_executive_docx(
     report_time: str,
     total_items: int,
     output_path: Path | None = None,
+    metrics: dict | None = None,
 ) -> Path:
     log = get_logger()
     if output_path is None:
@@ -591,7 +596,7 @@ def generate_executive_docx(
     _build_signal_thermometer(doc, cards)
 
     # 4. Corp Watch (v5)
-    _build_corp_watch(doc, cards)
+    _build_corp_watch(doc, cards, metrics=metrics)
 
     # 5. Key Takeaways
     _build_key_takeaways(doc, cards, total_items)

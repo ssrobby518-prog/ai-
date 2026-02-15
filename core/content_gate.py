@@ -46,3 +46,4 @@ def is_valid_article(text: str) -> tuple[bool, str | None]:
             return False, f"rejected_keyword:{kw}"
 
     return True, None
+

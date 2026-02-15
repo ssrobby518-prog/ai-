@@ -1857,3 +1857,292 @@ def build_corp_watch_summary(cards: list[EduNewsCard]) -> dict:
         "fail_count": sum(1 for c in cards if not bool(getattr(c, "is_valid_news", False))),
         "top_fail_reasons": top_fail_reasons,
     }
+
+
+# ---------------------------------------------------------------------------
+# v5.2 overrides (minimal-intrusion patch layer)
+# ---------------------------------------------------------------------------
+
+# Corp watch target list update (v5.2)
+CORP_TIER_A = [
+    "OpenAI",
+    "Google",
+    "Microsoft",
+    "Amazon",
+    "Meta",
+    "Apple",
+    "NVIDIA",
+]
+CORP_TIER_B = [
+    "Alibaba",
+    "Tencent",
+    "ByteDance",
+    "Baidu",
+    "Huawei",
+]
+_ALL_CORPS = CORP_TIER_A + CORP_TIER_B
+
+_FALLBACK_SIGNAL_POOL = [
+    "TOOL_ADOPTION",
+    "USER_PAIN",
+    "WORKFLOW_CHANGE",
+    "COST_PRESSURE",
+    "COMPETITION_SIGNAL",
+]
+
+_SIGNAL_LABELS = {
+    "TOOL_ADOPTION": "Tool Adoption",
+    "USER_PAIN": "User Pain",
+    "WORKFLOW_CHANGE": "Workflow Change",
+    "COST_PRESSURE": "Cost Pressure",
+    "COMPETITION_SIGNAL": "Competition Signal",
+}
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Derive market signals from card content.
+
+    Always returns Top 3 entries. When real signals are insufficient,
+    backfills from a deterministic fallback pool.
+    """
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    type_buckets: dict[str, list[EduNewsCard]] = {
+        "TOOL_ADOPTION": [],
+        "USER_PAIN": [],
+        "WORKFLOW_CHANGE": [],
+    }
+
+    for card in event_cards:
+        combined = (
+            f"{card.title_plain or ''} {card.what_happened or ''} "
+            f"{card.why_important or ''}"
+        ).lower()
+
+        best_type = "TOOL_ADOPTION"
+        best_hits = 0
+        for sig_type, keywords in _SIGNAL_KEYWORDS.items():
+            hits = sum(1 for kw in keywords if kw.lower() in combined)
+            if hits > best_hits:
+                best_hits = hits
+                best_type = sig_type
+        type_buckets[best_type].append(card)
+
+    results: list[dict] = []
+
+    for sig_type, bucket_cards in type_buckets.items():
+        if not bucket_cards:
+            continue
+
+        avg_score = sum(c.final_score for c in bucket_cards) / len(bucket_cards)
+        heat_score = int(max(0, min(100, round(avg_score * 12))))
+        if heat_score >= 75:
+            heat = "hot"
+        elif heat_score >= 50:
+            heat = "warm"
+        else:
+            heat = "cool"
+
+        signal_text = _smart_truncate(sanitize(bucket_cards[0].title_plain or ""), 30)
+        source_names = {
+            str(getattr(c, "source_name", "") or "").strip().lower()
+            for c in bucket_cards
+            if str(getattr(c, "source_name", "") or "").strip()
+        }
+        platform_count = len(source_names) if source_names else len(bucket_cards)
+
+        first_snippet = bucket_cards[0].what_happened or bucket_cards[0].title_plain or ""
+        example_snippet = _smart_truncate(sanitize(first_snippet), 120)
+
+        results.append({
+            "signal_name": sig_type,
+            "signal_type": sig_type,
+            "label": _SIGNAL_LABELS.get(sig_type, sig_type),
+            "title": signal_text,
+            "source_count": platform_count,
+            "heat": heat,
+            "signal_text": signal_text,
+            "platform_count": platform_count,
+            "heat_score": heat_score,
+            "example_snippet": example_snippet,
+        })
+
+    results.sort(
+        key=lambda x: (
+            int(x.get("platform_count", 0)),
+            int(x.get("heat_score", 0)),
+        ),
+        reverse=True,
+    )
+
+    used_names = {str(r.get("signal_name", "")) for r in results}
+    fallback_scores = {
+        "TOOL_ADOPTION": 60,
+        "USER_PAIN": 58,
+        "WORKFLOW_CHANGE": 55,
+        "COST_PRESSURE": 50,
+        "COMPETITION_SIGNAL": 48,
+    }
+
+    for fallback_name in _FALLBACK_SIGNAL_POOL:
+        if len(results) >= 3:
+            break
+        if fallback_name in used_names:
+            continue
+
+        fallback_score = int(fallback_scores.get(fallback_name, 50))
+        fallback_heat = "warm" if fallback_score >= 50 else "cool"
+        fallback_text = _smart_truncate(
+            sanitize(f"Fallback monitoring signal: {fallback_name}"),
+            30,
+        )
+        fallback_snippet = _smart_truncate(
+            sanitize(f"Monitoring {fallback_name} due to limited event evidence."),
+            120,
+        )
+        results.append({
+            "signal_name": fallback_name,
+            "signal_type": fallback_name,
+            "label": _SIGNAL_LABELS.get(fallback_name, fallback_name),
+            "title": fallback_text,
+            "source_count": 0,
+            "heat": fallback_heat,
+            "signal_text": fallback_text,
+            "platform_count": 0,
+            "heat_score": fallback_score,
+            "example_snippet": fallback_snippet,
+        })
+
+    return results[:3]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Scan cards for mentions of major tech companies (Tier A + Tier B)."""
+    tier_a_results: list[dict] = []
+    tier_b_results: list[dict] = []
+
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    seen_corps: set[str] = set()
+    impact_values: list[int] = []
+
+    for card in event_cards:
+        combined = f"{card.title_plain or ''} {card.what_happened or ''}"
+
+        for corp in CORP_TIER_A:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                impact_values.append(int(impact["impact"]))
+                dc = build_decision_card(card)
+                tier_a_results.append({
+                    "name": corp,
+                    "event_title": _smart_truncate(
+                        sanitize(card.title_plain or ""), 30
+                    ),
+                    "impact_label": impact["label"],
+                    "action": dc["actions"][0] if dc["actions"] else "Monitor follow-up",
+                })
+
+        for corp in CORP_TIER_B:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                impact_values.append(int(impact["impact"]))
+                dc = build_decision_card(card)
+                tier_b_results.append({
+                    "name": corp,
+                    "event_title": _smart_truncate(
+                        sanitize(card.title_plain or ""), 30
+                    ),
+                    "impact_label": impact["label"],
+                    "action": dc["actions"][0] if dc["actions"] else "Monitor follow-up",
+                })
+
+    source_names = {
+        str(getattr(c, "source_name", "") or "").strip()
+        for c in cards
+        if str(getattr(c, "source_name", "") or "").strip()
+    }
+
+    fail_counter: Counter[str] = Counter()
+    for c in cards:
+        if bool(getattr(c, "is_valid_news", False)):
+            continue
+        invalid_cause = str(getattr(c, "invalid_cause", "") or "")
+        invalid_reason = str(getattr(c, "invalid_reason", "") or "")
+        reason = sanitize((invalid_cause or invalid_reason or "unknown").strip())
+        if reason:
+            fail_counter[reason] += 1
+
+    top_fail_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in fail_counter.most_common(3)
+    ]
+
+    metrics_dict = metrics or {}
+    total_mentions = len(tier_a_results) + len(tier_b_results)
+    mentions_count = total_mentions
+
+    if impact_values:
+        impact_score_avg = round(sum(impact_values) / len(impact_values), 2)
+    else:
+        impact_score_avg = 0.0
+
+    if mentions_count == 0:
+        trend_direction = "STABLE"
+    elif impact_score_avg >= 3.8 or mentions_count >= 3:
+        trend_direction = "UP"
+    elif impact_score_avg <= 2.0:
+        trend_direction = "DOWN"
+    else:
+        trend_direction = "STABLE"
+
+    sources_total = int(
+        metrics_dict.get(
+            "sources_total",
+            len(source_names) if source_names else len(cards),
+        )
+    )
+    success_count = int(
+        metrics_dict.get(
+            "sources_success",
+            sum(1 for c in cards if bool(getattr(c, "is_valid_news", False))),
+        )
+    )
+    fail_count = int(
+        metrics_dict.get(
+            "sources_failed",
+            sum(1 for c in cards if not bool(getattr(c, "is_valid_news", False))),
+        )
+    )
+
+    status_message = (
+        "No major updates detected — monitoring continues."
+        if mentions_count == 0
+        else f"{mentions_count} tracked companies with notable updates."
+    )
+
+    return {
+        "tier_a": tier_a_results[:7],
+        "tier_b": tier_b_results[:5],
+        "total_mentions": total_mentions,
+        "mentions_count": mentions_count,
+        "impact_score_avg": impact_score_avg,
+        "trend_direction": trend_direction,
+        "status_message": status_message,
+        "updates": total_mentions,
+        "sources_total": sources_total,
+        "success_count": success_count,
+        "fail_count": fail_count,
+        "top_fail_reasons": top_fail_reasons,
+    }

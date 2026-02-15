@@ -9,6 +9,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import settings
 from core.ai_core import process_batch
+from core.content_strategy import (
+    build_corp_watch_summary,
+    build_signal_summary,
+    is_non_event_or_index,
+)
 from core.deep_analyzer import analyze_batch
 from core.deep_delivery import write_deep_analysis
 from core.delivery import print_console_summary, push_to_feishu, push_to_notion, write_digest
@@ -22,6 +27,7 @@ from core.education_renderer import (
 from core.ingestion import batch_items, dedup_items, fetch_all_feeds, filter_items
 from core.notifications import send_all_notifications
 from core.storage import get_existing_item_ids, init_db, save_items, save_results
+from schemas.education_models import EduNewsCard
 from utils.entity_cleaner import clean_entities
 from utils.logger import setup_logger
 from utils.metrics import get_collector, reset_collector
@@ -42,6 +48,30 @@ def _apply_entity_cleaning(all_results: list) -> None:
         )
         a.entities = result.cleaned
         collector.record_entity_cleaning(before, len(result.cleaned))
+
+
+def _build_quality_cards(all_results: list) -> list[EduNewsCard]:
+    """Build lightweight EduNewsCard objects for v5.2 metrics aggregation."""
+    cards: list[EduNewsCard] = []
+    for r in all_results:
+        a = r.schema_a
+        b = r.schema_b
+        source_url = str(a.source_id or "")
+        cards.append(
+            EduNewsCard(
+                item_id=str(r.item_id),
+                is_valid_news=bool(getattr(r, "passed_gate", False)),
+                invalid_reason="" if bool(getattr(r, "passed_gate", False)) else "failed_gate",
+                title_plain=str(a.title_zh or ""),
+                what_happened=str(a.summary_zh or ""),
+                why_important=str(a.summary_zh or ""),
+                source_name=str(a.source_id or ""),
+                source_url=source_url if source_url.startswith("http") else "",
+                category=str(a.category or ""),
+                final_score=float(getattr(b, "final_score", 0.0) or 0.0),
+            )
+        )
+    return cards
 
 
 def run_pipeline() -> None:
@@ -142,6 +172,19 @@ def run_pipeline() -> None:
             log.info("Z4: No passed items, skipping deep analysis")
     else:
         log.info("Z4: Deep analysis disabled")
+
+    quality_cards = _build_quality_cards(all_results)
+    event_cards = [
+        c for c in quality_cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+    collector.events_detected = len(event_cards)
+
+    signal_summary = build_signal_summary(quality_cards)
+    collector.signals_detected = len(signal_summary)
+
+    corp_summary = build_corp_watch_summary(quality_cards, metrics=collector.to_dict())
+    collector.corp_updates_detected = int(corp_summary.get("updates", 0))
 
     # Finalize metrics
     collector.stop()

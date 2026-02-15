@@ -51,14 +51,20 @@ def test_no_event_signal_summary_top3() -> None:
     signals = build_signal_summary(_no_event_cards())
     assert len(signals) >= 3
     for sig in signals[:3]:
+        assert "signal_name" in sig
         assert "signal_text" in sig
         assert "platform_count" in sig
         assert "heat_score" in sig
+        assert "example_snippet" in sig
+        assert len(sig["example_snippet"]) <= 120
 
 
 def test_no_event_corp_watch_includes_scan_stats() -> None:
     corp = build_corp_watch_summary(_no_event_cards())
     assert corp.get("updates", -1) == 0
+    assert corp.get("mentions_count", -1) == 0
+    assert corp.get("trend_direction") == "STABLE"
+    assert corp.get("status_message") == "No major updates detected — monitoring continues."
     assert "sources_total" in corp
     assert "success_count" in corp
     assert "fail_count" in corp
@@ -87,3 +93,4 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
     assert "Signal Thermometer" in text
     assert "Corp Watch" in text
     assert "sources_total" in text
+    assert "monitoring continues" in text.lower()

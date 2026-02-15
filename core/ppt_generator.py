@@ -49,6 +49,7 @@ LIGHT_BG = RGBColor(0xFF, 0xFF, 0xFF)          # #FFFFFF
 LIGHT_TEXT = RGBColor(0x22, 0x28, 0x33)        # #222833
 LIGHT_MUTED = RGBColor(0x5E, 0x67, 0x73)       # #5E6773
 LIGHT_CARD = RGBColor(0xF2, 0xF4, 0xF8)        # #F2F4F8
+LIGHT_TABLE_HEADER_BG = RGBColor(0x2D, 0x36, 0x3F)  # high contrast on light theme
 
 HIGHLIGHT_YELLOW = RGBColor(0xFF, 0xD6, 0x00)  # #FFD600
 ACCENT = RGBColor(0xE6, 0x5A, 0x37)            # #E65A37
@@ -61,22 +62,35 @@ CARD_BG = DARK_CARD
 
 SLIDE_WIDTH = Cm(33.867)   # 16:9 default
 SLIDE_HEIGHT = Cm(19.05)
+MIN_FONT_SIZE_PT = 20
+MIN_LINE_SPACING = 1.15
+
+TABLE_HEADER_BG = DARK_CARD
+TABLE_HEADER_TEXT = DARK_TEXT
+
+
+def _coerce_font_size(font_size: int | float) -> int:
+    return max(int(font_size), MIN_FONT_SIZE_PT)
 
 
 def _apply_theme(theme: str) -> None:
     """Apply runtime palette for the current deck generation."""
-    global BG_DARK, TEXT_WHITE, SUBTLE_GRAY, CARD_BG
+    global BG_DARK, TEXT_WHITE, SUBTLE_GRAY, CARD_BG, TABLE_HEADER_BG, TABLE_HEADER_TEXT
     choice = (theme or "light").strip().lower()
     if choice == "light":
         BG_DARK = LIGHT_BG
         TEXT_WHITE = LIGHT_TEXT
         SUBTLE_GRAY = LIGHT_MUTED
         CARD_BG = LIGHT_CARD
+        TABLE_HEADER_BG = LIGHT_TABLE_HEADER_BG
+        TABLE_HEADER_TEXT = RGBColor(0xFF, 0xFF, 0xFF)
     elif choice == "dark":
         BG_DARK = DARK_BG
         TEXT_WHITE = DARK_TEXT
         SUBTLE_GRAY = DARK_MUTED
         CARD_BG = DARK_CARD
+        TABLE_HEADER_BG = DARK_CARD
+        TABLE_HEADER_TEXT = DARK_TEXT
     else:
         raise ValueError(f"Unsupported theme: {theme}")
 
@@ -115,16 +129,18 @@ def _add_textbox(
 ) -> None:
     if color is None:
         color = TEXT_WHITE
+    text_size = _coerce_font_size(font_size)
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
     tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     p = tf.paragraphs[0]
     p.text = safe_text(text)
-    p.font.size = Pt(font_size)
+    p.font.size = Pt(text_size)
     p.font.color.rgb = color
     p.font.bold = bold
     p.alignment = alignment
+    p.line_spacing = MIN_LINE_SPACING
 
 
 def _add_multiline_textbox(
@@ -134,6 +150,8 @@ def _add_multiline_textbox(
 ) -> None:
     if color is None:
         color = TEXT_WHITE
+    text_size = _coerce_font_size(font_size)
+    spacing = max(float(line_spacing), MIN_LINE_SPACING)
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
@@ -141,11 +159,12 @@ def _add_multiline_textbox(
     for i, line in enumerate(lines):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.text = safe_text(line)
-        p.font.size = Pt(font_size)
+        p.font.size = Pt(text_size)
         p.font.color.rgb = color
         if bold_first and i == 0:
             p.font.bold = True
-        p.space_after = Pt(font_size * (line_spacing - 1))
+        p.line_spacing = spacing
+        p.space_after = Pt(text_size * (spacing - 1))
 
 
 def _add_highlight_textbox(
@@ -154,28 +173,30 @@ def _add_highlight_textbox(
     font_size: int = 18,
 ) -> None:
     """Add a textbox with keyword in yellow bold (HIGHLIGHT_YELLOW)."""
+    text_size = _coerce_font_size(font_size)
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
     tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
     p = tf.paragraphs[0]
+    p.line_spacing = MIN_LINE_SPACING
 
     if prefix:
         run_pre = p.add_run()
         run_pre.text = safe_text(prefix)
-        run_pre.font.size = Pt(font_size)
+        run_pre.font.size = Pt(text_size)
         run_pre.font.color.rgb = TEXT_WHITE
 
     run_hl = p.add_run()
     run_hl.text = safe_text(highlight)
-    run_hl.font.size = Pt(font_size)
+    run_hl.font.size = Pt(text_size)
     run_hl.font.color.rgb = HIGHLIGHT_YELLOW
     run_hl.font.bold = True
 
     if suffix:
         run_suf = p.add_run()
         run_suf.text = safe_text(suffix)
-        run_suf.font.size = Pt(font_size)
+        run_suf.font.size = Pt(text_size)
         run_suf.font.color.rgb = TEXT_WHITE
 
 
@@ -207,18 +228,20 @@ def _add_table_slide(prs: Presentation, title: str,
         cell = tbl.cell(0, ci)
         cell.text = safe_text(h)
         for p in cell.text_frame.paragraphs:
-            p.font.size = Pt(10)
+            p.font.size = Pt(_coerce_font_size(10))
             p.font.bold = True
-            p.font.color.rgb = TEXT_WHITE
+            p.font.color.rgb = TABLE_HEADER_TEXT
+            p.line_spacing = MIN_LINE_SPACING
         cell.fill.solid()
-        cell.fill.fore_color.rgb = CARD_BG
+        cell.fill.fore_color.rgb = TABLE_HEADER_BG
     for ri, row_data in enumerate(rows):
         for ci, val in enumerate(row_data):
             cell = tbl.cell(ri + 1, ci)
             cell.text = safe_text(val)
             for p in cell.text_frame.paragraphs:
-                p.font.size = Pt(9)
+                p.font.size = Pt(_coerce_font_size(9))
                 p.font.color.rgb = TEXT_WHITE
+                p.line_spacing = MIN_LINE_SPACING
             cell.fill.solid()
             cell.fill.fore_color.rgb = BG_DARK
 
@@ -393,7 +416,7 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         p = tf.paragraphs[0]
         run = p.add_run()
         run.text = safe_text(metaphor, 150)
-        run.font.size = Pt(12)
+        run.font.size = Pt(_coerce_font_size(12))
         run.font.color.rgb = SUBTLE_GRAY
         run.font.italic = True
 
@@ -524,9 +547,13 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
         y += 1.2
 
 
-def _slide_corp_watch(prs: Presentation, cards: list[EduNewsCard]) -> None:
+def _slide_corp_watch(
+    prs: Presentation,
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> None:
     """Corp Watch — Tier A + Tier B company monitoring."""
-    corp = build_corp_watch_summary(cards)
+    corp = build_corp_watch_summary(cards, metrics=metrics)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
 
@@ -540,6 +567,9 @@ def _slide_corp_watch(prs: Presentation, cards: list[EduNewsCard]) -> None:
     _add_textbox(slide, Cm(2), Cm(3.0), Cm(30), Cm(1),
                  f"Total Mentions: {corp['total_mentions']}",
                  font_size=14, color=TEXT_WHITE)
+    _add_textbox(slide, Cm(2), Cm(3.8), Cm(30), Cm(0.8),
+                 str(corp.get("status_message", "")),
+                 font_size=12, color=SUBTLE_GRAY)
 
     # v5.1 no-event fallback
     if corp.get("updates", corp["total_mentions"]) == 0:
@@ -556,6 +586,7 @@ def _slide_corp_watch(prs: Presentation, cards: list[EduNewsCard]) -> None:
         _add_multiline_textbox(
             slide, Cm(3), Cm(5.7), Cm(28), Cm(8),
             [
+                f"status: {corp.get('status_message', '-')}",
                 f"sources_total: {corp.get('sources_total', 0)}",
                 f"success_count: {corp.get('success_count', 0)}",
                 f"fail_count: {corp.get('fail_count', 0)}",
@@ -724,6 +755,7 @@ def generate_executive_ppt(
     total_items: int,
     output_path: Path | None = None,
     theme: str = "light",
+    metrics: dict | None = None,
 ) -> Path:
     log = get_logger()
     if output_path is None:
@@ -747,7 +779,7 @@ def generate_executive_ppt(
     _slide_signal_thermometer(prs, cards)
 
     # 4. Corp Watch (v5)
-    _slide_corp_watch(prs, cards)
+    _slide_corp_watch(prs, cards, metrics=metrics)
 
     # 5. Key Takeaways
     _slide_key_takeaways(prs, cards, total_items)

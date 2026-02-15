@@ -65,6 +65,12 @@ class MetricsCollector:
         self.total_items: int = 0
         self.passed_gate: int = 0
         self.total_runtime_seconds: float = 0.0
+        self.sources_total: int = 0
+        self.sources_success: int = 0
+        self.sources_failed: int = 0
+        self.events_detected: int = 0
+        self.signals_detected: int = 0
+        self.corp_updates_detected: int = 0
 
         # Enrichment
         self.enrich_stats = EnrichStats()
@@ -95,6 +101,12 @@ class MetricsCollector:
             "total_items": self.total_items,
             "passed_gate": self.passed_gate,
             "total_runtime_seconds": self.total_runtime_seconds,
+            "sources_total": self.sources_total,
+            "sources_success": self.sources_success,
+            "sources_failed": self.sources_failed,
+            "events_detected": self.events_detected,
+            "signals_detected": self.signals_detected,
+            "corp_updates_detected": self.corp_updates_detected,
             "enrich_attempted": self.enrich_stats.attempted,
             "enrich_success": self.enrich_stats.success,
             "enrich_fail": self.enrich_stats.fail,

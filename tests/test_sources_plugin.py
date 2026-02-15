@@ -19,7 +19,7 @@ def test_base_class_not_instantiable() -> None:
 
 
 def test_discover_sources_finds_builtin_plugins() -> None:
-    """discover_sources should find at least 3 built-in plugins."""
+    """discover_sources should find built-in RSS and mock social plugins."""
     from core.sources import discover_sources
 
     sources = discover_sources()
@@ -27,6 +27,12 @@ def test_discover_sources_finds_builtin_plugins() -> None:
     assert "HackerNews" in names
     assert "TechCrunch" in names
     assert "36kr" in names
+    assert "Reddit AI" in names
+    assert "Bilibili Tech" in names
+    assert "Xiaohongshu AI" in names
+    assert "CSDN" in names
+    assert "Dcard Tech" in names
+    assert "Instagram AI" in names
 
 
 def test_discover_sources_returns_newsource_instances() -> None:
@@ -104,3 +110,25 @@ def test_kr36_plugin_delegates_to_fetch_feed() -> None:
         mock_ff.assert_called_once()
         call_cfg = mock_ff.call_args[0][0]
         assert call_cfg["name"] == "36kr"
+
+
+@pytest.mark.parametrize(
+    ("module_path", "class_name"),
+    [
+        ("core.sources.reddit_ai", "RedditAISource"),
+        ("core.sources.bilibili_tech", "BilibiliTechSource"),
+        ("core.sources.xiaohongshu_ai", "XiaohongshuAISource"),
+        ("core.sources.csdn", "CSDNSource"),
+        ("core.sources.dcard_tech", "DcardTechSource"),
+        ("core.sources.instagram_ai", "InstagramAISource"),
+    ],
+)
+def test_new_source_plugins_are_importable(module_path: str, class_name: str) -> None:
+    module = __import__(module_path, fromlist=[class_name])
+    cls = getattr(module, class_name)
+    src = cls()
+    items = src.fetch()
+
+    assert isinstance(items, list)
+    assert items, f"{class_name} should return mock RawItem payloads"
+    assert all(isinstance(item, RawItem) for item in items)

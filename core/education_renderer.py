@@ -1430,13 +1430,17 @@ def generate_executive_reports(
 
     pptx_path = generate_executive_ppt(
         cards=cards, health=health, report_time=report_time,
-        total_items=total_items, output_path=outputs_dir / "executive_report.pptx",
+        total_items=total_items,
+        output_path=outputs_dir / "executive_report.pptx",
+        metrics=metrics or {},
     )
     log.info("Executive PPTX generated")
 
     docx_path = generate_executive_docx(
         cards=cards, health=health, report_time=report_time,
-        total_items=total_items, output_path=outputs_dir / "executive_report.docx",
+        total_items=total_items,
+        output_path=outputs_dir / "executive_report.docx",
+        metrics=metrics or {},
     )
     log.info("Executive DOCX generated")
 

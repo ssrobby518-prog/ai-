@@ -49,6 +49,12 @@ class TestMetricsCollector:
 
         collector.total_items = 20
         collector.passed_gate = 15
+        collector.sources_total = 9
+        collector.sources_success = 7
+        collector.sources_failed = 2
+        collector.events_detected = 4
+        collector.signals_detected = 3
+        collector.corp_updates_detected = 2
         collector.stop()
 
         # Write to tmp_path
@@ -64,6 +70,12 @@ class TestMetricsCollector:
             "total_items",
             "passed_gate",
             "total_runtime_seconds",
+            "sources_total",
+            "sources_success",
+            "sources_failed",
+            "events_detected",
+            "signals_detected",
+            "corp_updates_detected",
             "enrich_attempted",
             "enrich_success",
             "enrich_fail",
@@ -80,6 +92,12 @@ class TestMetricsCollector:
         # Verify values
         assert data["total_items"] == 20
         assert data["passed_gate"] == 15
+        assert data["sources_total"] == 9
+        assert data["sources_success"] == 7
+        assert data["sources_failed"] == 2
+        assert data["events_detected"] == 4
+        assert data["signals_detected"] == 3
+        assert data["corp_updates_detected"] == 2
         assert data["enrich_attempted"] == 3
         assert data["enrich_success"] == 2
         assert data["enrich_fail"] == 1

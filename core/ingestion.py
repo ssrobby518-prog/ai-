@@ -116,11 +116,37 @@ def fetch_all_feeds() -> list[RawItem]:
     from utils.article_fetch import enrich_items_async
     from utils.metrics import get_collector
 
-    all_items: list[RawItem] = []
+    rss_items: list[RawItem] = []
+    rss_success = 0
+    rss_failed = 0
     for feed_cfg in settings.RSS_FEEDS:
-        all_items.extend(fetch_feed(feed_cfg))
+        items = fetch_feed(feed_cfg)
+        rss_items.extend(items)
+        if items:
+            rss_success += 1
+        else:
+            rss_failed += 1
+
+    plugin_items: list[RawItem] = []
+    plugin_stats = {
+        "sources_total": 0,
+        "sources_success": 0,
+        "sources_failed": 0,
+    }
+    try:
+        from core.sources import fetch_all_sources_with_stats
+
+        plugin_items, plugin_stats = fetch_all_sources_with_stats()
+    except Exception:
+        # Keep pipeline resilient if plugin loading fails.
+        plugin_items = []
+
+    all_items = rss_items + plugin_items
 
     collector = get_collector()
+    collector.sources_total = len(settings.RSS_FEEDS) + int(plugin_stats.get("sources_total", 0))
+    collector.sources_success = rss_success + int(plugin_stats.get("sources_success", 0))
+    collector.sources_failed = rss_failed + int(plugin_stats.get("sources_failed", 0))
     return enrich_items_async(all_items, stats=collector.enrich_stats)
 
 
