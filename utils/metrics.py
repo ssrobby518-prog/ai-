@@ -76,6 +76,11 @@ class MetricsCollector:
         self.gate_reject_total: int = 0
         self.after_filter_total: int = 0
         self.rejected_reason_top: list[tuple[str, int]] = []
+        self.density_total_in: int = 0
+        self.density_passed: int = 0
+        self.density_rejected: int = 0
+        self.density_avg_score: float = 0.0
+        self.density_rejected_reason_top: list[tuple[str, int]] = []
         self.events_detected: int = 0
         self.signals_detected: int = 0
         self.corp_updates_detected: int = 0
@@ -120,6 +125,11 @@ class MetricsCollector:
             "gate_reject_total": self.gate_reject_total,
             "after_filter_total": self.after_filter_total,
             "rejected_reason_top": self.rejected_reason_top,
+            "density_total_in": self.density_total_in,
+            "density_passed": self.density_passed,
+            "density_rejected": self.density_rejected,
+            "density_avg_score": self.density_avg_score,
+            "density_rejected_reason_top": self.density_rejected_reason_top,
             "events_detected": self.events_detected,
             "signals_detected": self.signals_detected,
             "corp_updates_detected": self.corp_updates_detected,

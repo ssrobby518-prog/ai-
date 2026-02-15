@@ -25,6 +25,7 @@ from core.education_renderer import (
     write_education_reports,
 )
 from core.ingestion import batch_items, dedup_items, fetch_all_feeds, filter_items
+from core.info_density import apply_density_gate
 from core.notifications import send_all_notifications
 from core.storage import get_existing_item_ids, init_db, save_items, save_results
 from schemas.education_models import EduNewsCard
@@ -198,11 +199,51 @@ def run_pipeline() -> None:
         log.info("Z4: Deep analysis disabled")
 
     quality_cards = _build_quality_cards(all_results)
-    event_cards = [
-        c for c in quality_cards
-        if c.is_valid_news and not is_non_event_or_index(c)
-    ]
-    collector.events_detected = len(event_cards)
+    density_candidates = [c for c in quality_cards if c.is_valid_news]
+    event_candidates = [c for c in density_candidates if not is_non_event_or_index(c)]
+
+    event_density_cards, _event_rejected, event_density_stats, _ = apply_density_gate(
+        event_candidates, "event"
+    )
+    _signal_density_cards, _signal_rejected, signal_density_stats, _ = apply_density_gate(
+        density_candidates, "signal"
+    )
+    _corp_density_cards, _corp_rejected, corp_density_stats, _ = apply_density_gate(
+        density_candidates, "corp"
+    )
+
+    collector.density_total_in = event_density_stats.total_in
+    collector.density_passed = event_density_stats.passed
+    collector.density_rejected = event_density_stats.rejected_total
+    collector.density_avg_score = event_density_stats.avg_score
+    collector.density_rejected_reason_top = list(event_density_stats.rejected_reason_top)
+
+    log.info(
+        "INFO_DENSITY[event] total_in=%d passed=%d rejected=%d avg_score=%.2f reasons_top=%s",
+        event_density_stats.total_in,
+        event_density_stats.passed,
+        event_density_stats.rejected_total,
+        event_density_stats.avg_score,
+        event_density_stats.rejected_reason_top,
+    )
+    log.info(
+        "INFO_DENSITY[signal] total_in=%d passed=%d rejected=%d avg_score=%.2f reasons_top=%s",
+        signal_density_stats.total_in,
+        signal_density_stats.passed,
+        signal_density_stats.rejected_total,
+        signal_density_stats.avg_score,
+        signal_density_stats.rejected_reason_top,
+    )
+    log.info(
+        "INFO_DENSITY[corp] total_in=%d passed=%d rejected=%d avg_score=%.2f reasons_top=%s",
+        corp_density_stats.total_in,
+        corp_density_stats.passed,
+        corp_density_stats.rejected_total,
+        corp_density_stats.avg_score,
+        corp_density_stats.rejected_reason_top,
+    )
+
+    collector.events_detected = len(event_density_cards)
 
     signal_summary = build_signal_summary(quality_cards)
     collector.signals_detected = len(signal_summary)

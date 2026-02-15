@@ -3102,3 +3102,280 @@ def build_corp_watch_summary(
     result["top_sources"] = top_sources
     result["top_fail_reasons"] = top_fail_reasons
     return result
+
+
+# ---------------------------------------------------------------------------
+# v5.2.3 terminal wrappers (info-density hard gate + non-empty fallbacks)
+# ---------------------------------------------------------------------------
+
+_v523_prev_build_signal_summary = build_signal_summary
+_v523_prev_build_corp_watch_summary = build_corp_watch_summary
+_v523_prev_build_structured_summary = build_structured_executive_summary
+_v523_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+
+
+def _v523_card_source(card: EduNewsCard) -> str:
+    source = str(getattr(card, "source_name", "") or "").strip()
+    if source:
+        return source
+    url = str(getattr(card, "source_url", "") or "").strip()
+    if not url:
+        return "unknown"
+    try:
+        from urllib.parse import urlparse
+
+        domain = urlparse(url).netloc.strip().lower()
+        return domain or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _v523_platform_stats(cards: list[EduNewsCard], passed_ids: set[str]) -> list[dict[str, int | str]]:
+    rows: dict[str, dict[str, int | str]] = {}
+    for card in cards:
+        src = _v523_card_source(card)
+        row = rows.setdefault(
+            src,
+            {"source_name": src, "items_seen": 0, "heat_sum": 0, "gate_pass": 0},
+        )
+        row["items_seen"] = int(row["items_seen"]) + 1
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        row["heat_sum"] = int(row["heat_sum"]) + int(max(score * 10, 0))
+        if str(getattr(card, "item_id", "")) in passed_ids:
+            row["gate_pass"] = int(row["gate_pass"]) + 1
+    return sorted(rows.values(), key=lambda x: (int(x["gate_pass"]), int(x["heat_sum"])), reverse=True)
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Final signal summary with info-density gate and numeric fallback content."""
+    from core.info_density import apply_density_gate, evaluate_text_density
+
+    base_rows = list(_v523_prev_build_signal_summary(cards) or [])
+    valid_cards = [c for c in cards if bool(getattr(c, "is_valid_news", False))]
+    density_passed, _rejected, density_stats, _ = apply_density_gate(valid_cards, "signal")
+    passed_ids = {str(getattr(c, "item_id", "")) for c in density_passed}
+    platform_stats = _v523_platform_stats(valid_cards, passed_ids)
+
+    rows: list[dict] = []
+    for idx, row in enumerate(base_rows):
+        current = dict(row)
+        current["source_name"] = str(current.get("source_name") or "").strip() or (
+            _v523_card_source(valid_cards[min(idx, len(valid_cards) - 1)]) if valid_cards else "none"
+        )
+        signal_text = _v522_strip_placeholders(str(current.get("signal_text", current.get("title", ""))))
+        title = _v522_strip_placeholders(str(current.get("title", signal_text)))
+        current["signal_text"] = signal_text or title or str(current.get("label", "Signal"))
+        current["title"] = title or current["signal_text"]
+        current["platform_count"] = max(int(current.get("platform_count", current.get("source_count", 1)) or 1), 1)
+        current["source_count"] = current["platform_count"]
+        current["heat_score"] = max(int(current.get("heat_score", 30) or 30), 30)
+
+        snippet = _v522_strip_placeholders(str(current.get("example_snippet", "")))
+        ok_snip, _reason_snip, snip_breakdown = evaluate_text_density(snippet, "signal")
+        if (not ok_snip) or (snip_breakdown.entity_hits < 1 and snip_breakdown.numeric_hits < 1):
+            if density_passed:
+                card = density_passed[idx % len(density_passed)]
+                snippet = _smart_truncate(
+                    _v522_strip_placeholders(
+                        f"{card.title_plain} | {card.what_happened} | source={_v523_card_source(card)} | score={float(card.final_score):.1f}"
+                    ),
+                    120,
+                )
+            elif platform_stats:
+                plat = platform_stats[idx % len(platform_stats)]
+                snippet = (
+                    f"{plat['source_name']}: heat_sum={plat['heat_sum']}, items={plat['items_seen']}, "
+                    f"gate_pass={plat['gate_pass']}."
+                )
+            else:
+                snippet = (
+                    f"Coverage stats: total_in={density_stats.total_in}, passed={density_stats.passed}, "
+                    f"avg_score={density_stats.avg_score}."
+                )
+        current["example_snippet"] = _smart_truncate(snippet, 120)
+        rows.append(current)
+
+    while len(rows) < 3 and platform_stats:
+        plat = platform_stats[len(rows) % len(platform_stats)]
+        items_seen = max(int(plat.get("items_seen", 0)), 1)
+        heat_sum = int(plat.get("heat_sum", 0))
+        heat_score = max(30, min(100, int(round(heat_sum / items_seen))))
+        source_name = str(plat.get("source_name", "unknown"))
+        rows.append(
+            {
+                "signal_name": f"PLATFORM_HEAT_{source_name.upper()}",
+                "signal_type": "PLATFORM_HEAT",
+                "label": "Platform Heat",
+                "title": f"{source_name} heat trend",
+                "source_count": items_seen,
+                "heat": "warm" if heat_score >= 50 else "cool",
+                "signal_text": f"{source_name} heat trend",
+                "platform_count": items_seen,
+                "heat_score": heat_score,
+                "example_snippet": _smart_truncate(
+                    f"{source_name}: heat_sum={heat_sum}, items={items_seen}, gate_pass={int(plat.get('gate_pass', 0))}.",
+                    120,
+                ),
+                "source_name": source_name,
+                "signals_insufficient": density_stats.passed < 3,
+                "passed_total_count": density_stats.passed,
+            }
+        )
+
+    fallback_names = ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE", "COST_PRESSURE", "COMPETITION_SIGNAL"]
+    idx = 0
+    while len(rows) < 3:
+        name = fallback_names[idx % len(fallback_names)]
+        idx += 1
+        rows.append(
+            {
+                "signal_name": name,
+                "signal_type": name,
+                "label": _SIGNAL_LABELS.get(name, name),
+                "title": _SIGNAL_LABELS.get(name, name),
+                "source_count": 1,
+                "heat": "cool",
+                "signal_text": _SIGNAL_LABELS.get(name, name),
+                "platform_count": 1,
+                "heat_score": 30,
+                "example_snippet": (
+                    f"Coverage stats: total_in={density_stats.total_in}, passed={density_stats.passed}, "
+                    f"avg_score={density_stats.avg_score}."
+                ),
+                "source_name": "none",
+                "signals_insufficient": density_stats.passed < 3,
+                "passed_total_count": density_stats.passed,
+            }
+        )
+
+    return rows[:3]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Final corp-watch summary with info-density gate and numeric-first fallback."""
+    from core.info_density import apply_density_gate
+
+    result = dict(_v523_prev_build_corp_watch_summary(cards, metrics=metrics) or {})
+    valid_cards = [c for c in cards if bool(getattr(c, "is_valid_news", False))]
+    corp_passed, _rejected, corp_stats, _ = apply_density_gate(valid_cards, "corp")
+    passed_ids = {str(getattr(c, "item_id", "")) for c in corp_passed}
+    top_sources = _v523_platform_stats(valid_cards, passed_ids)[:3]
+    if not top_sources:
+        top_sources = [{"source_name": "none", "items_seen": 0, "heat_sum": 0, "gate_pass": 0}]
+
+    top_fail_reasons = result.get("top_fail_reasons") or []
+    if not top_fail_reasons:
+        top_fail_reasons = [{"reason": "none", "count": 0}]
+
+    success_sources = [r for r in top_sources if int(r.get("gate_pass", 0)) > 0]
+    last_success_source = str(success_sources[0].get("source_name", "none")) if success_sources else "none"
+
+    sources_total = int(result.get("sources_total", len(top_sources)))
+    success_count = int(result.get("success_count", len(corp_passed)))
+    fail_count = int(result.get("fail_count", max(sources_total - success_count, 0)))
+
+    mentions_count = int(result.get("mentions_count", result.get("total_mentions", 0) or 0))
+    if mentions_count == 0:
+        result["status_message"] = (
+            f"Scan stats: sources_total={sources_total}, success_count={success_count}, "
+            f"fail_count={fail_count}; last_success_source={last_success_source}. Monitoring continues."
+        )
+
+    result["sources_total"] = sources_total
+    result["success_count"] = success_count
+    result["fail_count"] = fail_count
+    result["top_fail_reasons"] = top_fail_reasons
+    result["top_sources"] = [
+        {
+            "source_name": str(r.get("source_name", "none")),
+            "items_seen": int(r.get("items_seen", 0)),
+            "gate_pass": int(r.get("gate_pass", 0)),
+            "gate_soft_pass": int(r.get("gate_soft_pass", 0)) if "gate_soft_pass" in r else 0,
+        }
+        for r in top_sources
+    ]
+    result["last_success_source"] = last_success_source
+    result["density_avg_score"] = corp_stats.avg_score
+    return result
+
+
+def build_structured_executive_summary(
+    news_cards: list[EduNewsCard],
+    tone: str = "neutral",
+    metrics: dict | None = None,
+) -> dict[str, list[str]]:
+    """Final structured summary wrapper with density-aware no-event branch."""
+    from core.info_density import apply_density_gate
+
+    event_candidates = [c for c in news_cards if c.is_valid_news and not is_non_event_or_index(c)]
+    event_passed, _event_rejected, event_stats, _ = apply_density_gate(event_candidates, "event")
+    if event_passed:
+        return _v523_prev_build_structured_summary(news_cards, tone, metrics=metrics)
+
+    fetched_total = int((metrics or {}).get("fetched_total", len(news_cards)))
+    gate_pass_total = int((metrics or {}).get("gate_pass_total", sum(1 for c in news_cards if c.is_valid_news)))
+    sources_total = int((metrics or {}).get("sources_total", len({_v523_card_source(c) for c in news_cards})))
+    rejected_bits = ", ".join(f"{k}:{v}" for k, v in event_stats.rejected_reason_top) or "none"
+
+    return {
+        "ai_trends": [
+            (
+                f"Scan coverage: fetched_total={fetched_total}, gate_pass_total={gate_pass_total}, "
+                f"density_passed={event_stats.passed}, density_avg_score={event_stats.avg_score}."
+            )
+        ],
+        "tech_landing": [
+            (
+                f"Source coverage: sources_total={sources_total}, density_rejected={event_stats.rejected_total}, "
+                f"rejected_reason_top={rejected_bits}."
+            )
+        ],
+        "market_competition": [
+            "No event met the event-density gate today; platform-level signals remain available for monitoring."
+        ],
+        "opportunities_risks": [
+            "Risk posture: prioritize sources with repeated low-density rejects and improve enrichment quality."
+        ],
+        "recommended_actions": [
+            "Use signal/corp fallback numbers to guide WATCH/TEST decisions until higher-density events appear."
+        ],
+    }
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:
+    """Final slide-level density guard for WHY IT MATTERS content."""
+    from core.info_density import candidate_text_from_card, evaluate_text_density
+
+    brief = dict(_v523_prev_build_ceo_brief_blocks(card))
+    q3 = list(brief.get("q3_actions", []))
+    why_block = " ".join([str(brief.get("q1_meaning", "")), str(brief.get("q2_impact", ""))] + [str(v) for v in q3])
+    ok, _reason, breakdown = evaluate_text_density(why_block, "event")
+
+    if ok and breakdown.score >= 50 and not (breakdown.numeric_hits == 0 and breakdown.entity_hits < 2):
+        return brief
+
+    raw = candidate_text_from_card(card)
+    terms = list(dict.fromkeys(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9\-_]{2,}\b", raw)))
+    numbers = list(dict.fromkeys(re.findall(r"\b\d+(?:\.\d+)?(?:%|ms|gb|mb|k|m|b|x)?\b", raw, flags=re.IGNORECASE)))
+
+    key_terms = terms[:5] or ["coverage"]
+    number_bits = numbers[:5] or [f"{float(getattr(card, 'final_score', 0.0) or 0.0):.1f}"]
+    source_count = len(brief.get("sources", []))
+    if source_count == 0 and _v523_card_source(card) != "unknown":
+        source_count = 1
+
+    brief["q1_meaning"] = (
+        f"Evidence summary: sources={source_count}, density_score={breakdown.score}, "
+        f"entities={breakdown.entity_hits}, numbers={breakdown.numeric_hits}."
+    )
+    brief["q2_impact"] = f"Key terms: {', '.join(key_terms)} | Numbers: {', '.join(number_bits)}."
+    pivot = key_terms[0]
+    brief["q3_actions"] = [
+        f"WATCH {pivot}: validate source evidence and related numbers.",
+        f"TEST {pivot}: run small-scope checks against current workflow metrics.",
+        f"MOVE {pivot}: escalate only if next scan confirms sustained trend.",
+    ]
+    return brief

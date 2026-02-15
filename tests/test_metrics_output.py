@@ -60,6 +60,11 @@ class TestMetricsCollector:
         collector.gate_reject_total = 6
         collector.after_filter_total = 18
         collector.rejected_reason_top = [("content_too_short", 4), ("fragment_placeholder", 2)]
+        collector.density_total_in = 12
+        collector.density_passed = 5
+        collector.density_rejected = 7
+        collector.density_avg_score = 46.2
+        collector.density_rejected_reason_top = [("low_density_score", 4), ("missing_entities", 3)]
         collector.events_detected = 4
         collector.signals_detected = 3
         collector.corp_updates_detected = 2
@@ -89,6 +94,11 @@ class TestMetricsCollector:
             "gate_reject_total",
             "after_filter_total",
             "rejected_reason_top",
+            "density_total_in",
+            "density_passed",
+            "density_rejected",
+            "density_avg_score",
+            "density_rejected_reason_top",
             "events_detected",
             "signals_detected",
             "corp_updates_detected",
@@ -119,6 +129,11 @@ class TestMetricsCollector:
         assert data["gate_reject_total"] == 6
         assert data["after_filter_total"] == 18
         assert data["rejected_reason_top"] == [["content_too_short", 4], ["fragment_placeholder", 2]]
+        assert data["density_total_in"] == 12
+        assert data["density_passed"] == 5
+        assert data["density_rejected"] == 7
+        assert data["density_avg_score"] == 46.2
+        assert data["density_rejected_reason_top"] == [["low_density_score", 4], ["missing_entities", 3]]
         assert data["events_detected"] == 4
         assert data["signals_detected"] == 3
         assert data["corp_updates_detected"] == 2

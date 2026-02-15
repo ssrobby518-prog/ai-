@@ -102,6 +102,8 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
         "desktop smoke signal",
         "signals_insufficient=true",
         "last july was",
+        "stay tuned",
+        "this shows",
         "was...",
         "is...",
     ]
@@ -118,3 +120,10 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
     for pattern in fragment_patterns:
         assert pattern.search(ppt_text) is None
         assert pattern.search(doc_text) is None
+
+    # Density floor: enforce minimum numeric and proper-noun presence.
+    combined = f"{ppt_text}\n{doc_text}"
+    numeric_count = len(re.findall(r"\b\d+(?:\.\d+)?\b", combined))
+    proper_noun_count = len(set(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9\-_]{2,}\b", combined)))
+    assert numeric_count >= 8
+    assert proper_noun_count >= 10
