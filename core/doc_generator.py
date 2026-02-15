@@ -173,7 +173,7 @@ def _build_executive_summary(doc: Document, cards: list[EduNewsCard]) -> None:
     subtitle.runs[0].font.color.rgb = GRAY_COLOR
     _add_divider(doc)
 
-    summary_lines = build_executive_summary(cards)
+    summary_lines = build_executive_summary(cards, tone="neutral")
     for line in summary_lines:
         p = doc.add_paragraph(sanitize(line))
         p.paragraph_format.space_after = Pt(8)

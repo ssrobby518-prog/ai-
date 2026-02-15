@@ -878,14 +878,45 @@ def build_term_explainer_qa(card: EduNewsCard) -> list[str]:
 # Executive Summary — daily business narrative (3–5 sentences)
 # ---------------------------------------------------------------------------
 
+SUMMARY_TONE_LIBRARY: dict[str, dict[str, list[str]]] = {
+    "neutral": {
+        "risk_words": ["可能帶來風險", "需要持續觀察"],
+        "action_words": ["建議持續關注", "建議評估影響"],
+    },
+    "conservative": {
+        "risk_words": ["需審慎評估", "潛在不確定性升高"],
+        "action_words": ["建議暫緩", "建議保守應對"],
+    },
+    "aggressive": {
+        "risk_words": ["競爭壓力上升", "市場窗口正在形成"],
+        "action_words": ["應積極布局", "建議加速投入"],
+    },
+    "risk": {
+        "risk_words": ["風險正在累積", "需立即關注"],
+        "action_words": ["建議啟動應對", "需要快速決策"],
+    },
+}
 
-def build_executive_summary(news_cards: list[EduNewsCard]) -> list[str]:
+
+def build_executive_summary(
+    news_cards: list[EduNewsCard],
+    tone: str = "neutral",
+) -> list[str]:
     """Synthesize multiple news cards into a 3–5 sentence business narrative.
 
     This is NOT a bullet list — it reads like a daily CEO briefing paragraph.
     Sources: each card's why_it_matters, possible_impact, risks.
+
+    Args:
+        news_cards: list of EduNewsCard to summarize.
+        tone: one of "neutral", "conservative", "aggressive", "risk".
+
     Returns list of 3–5 complete Chinese sentences (no bullets).
     """
+    tone_dict = SUMMARY_TONE_LIBRARY.get(tone, SUMMARY_TONE_LIBRARY["neutral"])
+    risk_word = tone_dict["risk_words"][0]
+    action_word = tone_dict["action_words"][0]
+
     event_cards = [
         c for c in news_cards
         if c.is_valid_news and not is_non_event_or_index(c)
@@ -895,7 +926,7 @@ def build_executive_summary(news_cards: list[EduNewsCard]) -> list[str]:
         return [
             "今日掃描的資訊來源中，沒有需要管理層立即關注的重大事件。",
             "多數內容為產業索引頁或非單一事件報導，已自動排除。",
-            "建議維持目前監控頻率，明日再檢視是否有新動態浮現。",
+            f"{action_word}目前監控頻率，明日再檢視是否有新動態浮現。",
         ]
 
     # Collect raw material from all event cards
@@ -933,7 +964,7 @@ def build_executive_summary(news_cards: list[EduNewsCard]) -> list[str]:
     # Sentence 1: market overview (what happened today)
     cat_label = "、".join(categories[:3]) if categories else "科技"
     sentences.append(
-        f"今日共有 {n_events} 則值得關注的動態，"
+        f"今日共有 {n_events} 則值得關注的市場動態，"
         f"主要集中在{cat_label}領域。"
     )
 
@@ -947,26 +978,29 @@ def build_executive_summary(news_cards: list[EduNewsCard]) -> list[str]:
 
     # Sentence 3: broader impact
     if impact_fragments and len(sentences) < 4:
-        # Pick an impact fragment we haven't used
         used = set(sentences)
         for frag in impact_fragments:
-            candidate = f"從業務面來看，{_smart_truncate(frag, 100)}。"
+            candidate = f"從競爭與成本面來看，{_smart_truncate(frag, 100)}。"
             if candidate not in used:
                 sentences.append(candidate)
                 break
 
-    # Sentence 4: risk posture
+    # Sentence 4: risk posture (tone-aware)
     if risk_fragments:
         best_risk = _smart_truncate(risk_fragments[0], 100)
-        sentences.append(f"風險方面需留意：{best_risk}。")
+        sentences.append(f"風險方面，{risk_word}：{best_risk}。")
     else:
-        sentences.append("目前沒有需要立即決策的高風險事項。")
+        sentences.append(f"目前沒有需要立即決策的高風險事項，但{risk_word}。")
 
-    # Sentence 5: recommendation
+    # Sentence 5: recommendation (tone-aware)
     if n_events >= 3:
-        sentences.append("建議管理層本週內安排簡短討論，確認是否需要調整策略方向。")
+        sentences.append(
+            f"{action_word}，管理層本週內安排簡短討論，確認是否需要調整策略方向。"
+        )
     else:
-        sentences.append("建議持續關注相關發展，如有變化將在下次報告中更新。")
+        sentences.append(
+            f"{action_word}相關發展，如有變化將在下次報告中更新。"
+        )
 
     # Ensure 3–5 sentences
     return sentences[:5]

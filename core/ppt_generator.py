@@ -195,7 +195,7 @@ def _slide_executive_summary(prs: Presentation, cards: list[EduNewsCard]) -> Non
     _add_divider(slide, Cm(2), Cm(4.2), Cm(4), color=ACCENT)
 
     # Narrative body — each sentence as a separate paragraph, no bullets
-    summary_lines = build_executive_summary(cards)
+    summary_lines = build_executive_summary(cards, tone="neutral")
     txBox = slide.shapes.add_textbox(Cm(2.5), Cm(5.5), Cm(29), Cm(13))
     tf = txBox.text_frame
     tf.word_wrap = True
