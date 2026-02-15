@@ -196,8 +196,8 @@ class TestDocxGenerator:
         assert "Test News Title 1" in full_text
         assert "Test News Title 2" in full_text
 
-        # QA block
-        assert "Q" in full_text
+        # Structured content blocks
+        assert "已知事實" in full_text or "事件" in full_text
 
         # Pending decisions section
         assert "待決事項" in full_text or "Owner" in full_text

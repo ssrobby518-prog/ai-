@@ -21,7 +21,6 @@ from docx.shared import Cm, Pt, RGBColor
 from core.content_strategy import (
     build_ceo_article_blocks,
     build_decision_card,
-    build_executive_qa,
     build_term_explainer,
     is_non_event_or_index,
     sanitize,
@@ -139,6 +138,14 @@ def _make_simple_table(doc: Document, headers: list[str],
 
 def _build_cover_section(doc: Document, report_time: str, total_items: int,
                          health: SystemHealthReport) -> None:
+    # Cover banner image — ensures DOCX always has at least 1 image
+    try:
+        img_path = get_news_image("Daily Tech Intelligence Briefing", "科技")
+        if img_path.exists():
+            doc.add_picture(str(img_path), width=Cm(16))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    except Exception:
+        pass
     title = doc.add_heading("每日科技趨勢簡報", level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in title.runs:
@@ -235,44 +242,36 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     if impacts:
         _add_callout(doc, "可能影響", [f"• {sanitize(imp)}" for imp in impacts[:3]])
 
-    # 5. What to do
+    # 5. Risks
+    risks = article.get("risks", [])
+    if risks:
+        _add_callout(doc, "主要風險", [f"• {sanitize(r)}" for r in risks[:2]])
+
+    # 6. What to do
     actions = article.get("what_to_do", [])
     if actions:
         _add_callout(doc, "建議下一步", [f"• {sanitize(a)}" for a in actions[:2]])
 
-    # 6. Quote
+    # 7. Quote
     if article.get("quote"):
         _add_callout(doc, "關鍵引述", [article["quote"]])
 
-    # 7. Key terms — CEO-readable explanations
+    # 8. Key terms — Notion-style: term + what + CEO concern
     term_items = build_term_explainer(card)
     if term_items:
-        term_lines = [f"{it['term']}：{sanitize(it['explain'])}" for it in term_items]
+        term_lines = []
+        for it in term_items:
+            term_lines.append(f"{it['term']}：{sanitize(it['explain'])}")
+            if it.get("biz"):
+                term_lines.append(f"  {sanitize(it['biz'])}")
         _add_callout(doc, "重要名詞白話解釋", term_lines)
 
-    # 8. Source
+    # 9. Source
     if card.source_url and card.source_url.startswith("http"):
         p_src = doc.add_paragraph()
         run_src = p_src.add_run(f"原始來源：{card.source_url}")
         run_src.font.size = Pt(9)
         run_src.font.color.rgb = GRAY_COLOR
-
-    # Decision table (compact reference)
-    dc = build_decision_card(card)
-    table_rows = []
-    max_r = max(len(dc["effects"]), len(dc["risks"]), len(dc["actions"]), 1)
-    for i in range(max_r):
-        table_rows.append([
-            dc["effects"][i][:40] if i < len(dc["effects"]) else "—",
-            dc["risks"][i][:40] if i < len(dc["risks"]) else "—",
-            dc["actions"][i][:50] if i < len(dc["actions"]) else "—",
-            dc["owner"] if i == 0 else "",
-        ])
-    _make_simple_table(doc, ["影響面向", "風險程度", "建議行動", "要問誰"], table_rows)
-
-    # 總經理決策 QA
-    qa_lines = build_executive_qa(card, dc)
-    _add_callout(doc, "總經理決策 QA", qa_lines)
 
 
 def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:

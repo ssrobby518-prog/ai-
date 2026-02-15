@@ -159,15 +159,24 @@ def _add_table_slide(prs: Presentation, title: str,
 def _slide_cover(prs: Presentation, report_time: str) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
-    _add_divider(slide, Cm(0), Cm(0.5), SLIDE_WIDTH, color=ACCENT)
-    _add_textbox(slide, Cm(4), Cm(5.5), Cm(26), Cm(4),
+    # Cover banner image — ensures deck always has at least 1 image
+    try:
+        img_path = get_news_image("Daily Tech Intelligence Briefing", "科技")
+        if img_path and img_path.exists():
+            slide.shapes.add_picture(
+                str(img_path), Cm(0), Cm(0), SLIDE_WIDTH, Cm(7),
+            )
+    except Exception:
+        pass
+    _add_divider(slide, Cm(0), Cm(7.2), SLIDE_WIDTH, color=ACCENT)
+    _add_textbox(slide, Cm(4), Cm(8), Cm(26), Cm(3.5),
                  "每日科技趨勢簡報", font_size=44, bold=True,
                  color=DARK_TEXT, alignment=PP_ALIGN.CENTER)
-    _add_textbox(slide, Cm(4), Cm(10), Cm(26), Cm(2),
+    _add_textbox(slide, Cm(4), Cm(11.5), Cm(26), Cm(2),
                  "Daily Tech Intelligence Briefing", font_size=20,
                  color=MID_GRAY, alignment=PP_ALIGN.CENTER)
-    _add_divider(slide, Cm(15.5), Cm(12.5), Cm(3), color=ACCENT)
-    _add_textbox(slide, Cm(4), Cm(14), Cm(26), Cm(1.5),
+    _add_divider(slide, Cm(15.5), Cm(14), Cm(3), color=ACCENT)
+    _add_textbox(slide, Cm(4), Cm(15), Cm(26), Cm(1.5),
                  report_time, font_size=14, color=LIGHT_GRAY,
                  alignment=PP_ALIGN.CENTER)
 
@@ -267,7 +276,7 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
 
 def _slide_article_page1(prs: Presentation, card: EduNewsCard,
                          idx: int, article: dict) -> None:
-    """Article page 1: headline, image, structured CEO content blocks."""
+    """Article page 1: headline + banner + one_liner + facts + why + impact."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
 
@@ -277,93 +286,106 @@ def _slide_article_page1(prs: Presentation, card: EduNewsCard,
                  font_size=24, bold=True, color=DARK_TEXT)
     _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
 
-    # Hero image
+    # Hero image — full-width banner (not inset)
     text_top = Cm(2.6)
     try:
         img_path = get_news_image(card.title_plain, card.category)
         if img_path and img_path.exists():
             slide.shapes.add_picture(
-                str(img_path), Cm(1), Cm(2.6), Cm(31.8), Cm(6.5),
+                str(img_path), Cm(0), Cm(2.6), SLIDE_WIDTH, Cm(6),
             )
-            text_top = Cm(9.5)
+            text_top = Cm(9)
     except Exception:
         pass
 
-    # Article body — structured blocks
+    # Page 1 body: one_liner + facts + why_it_matters + possible_impact
     body: list[str] = []
 
     # Event one-liner
-    body.append(f"事件：{safe_text(article['one_liner'], 100)}")
+    body.append(f"事件：{safe_text(article['one_liner'], 80)}")
     body.append("")
 
     # Known facts (up to 3)
     body.append("已知事實：")
     for fact in article.get("known_facts", [])[:3]:
-        body.append(f"  • {safe_text(fact, 60)}")
+        body.append(f"  • {safe_text(fact, 55)}")
     body.append("")
 
     # Why it matters (up to 2)
     body.append("為什麼重要：")
     for why in article.get("why_it_matters", [])[:2]:
-        body.append(f"  • {safe_text(why, 60)}")
-    body.append("")
+        body.append(f"  • {safe_text(why, 55)}")
 
-    # Possible impact (up to 2)
-    impacts = article.get("possible_impact", [])[:2]
+    # Possible impact (up to 3)
+    impacts = article.get("possible_impact", [])[:3]
     if impacts:
+        body.append("")
         body.append("可能影響：")
         for imp in impacts:
-            body.append(f"  • {safe_text(imp, 60)}")
-        body.append("")
+            body.append(f"  • {safe_text(imp, 55)}")
 
-    # Actions (up to 2)
-    actions = article.get("what_to_do", [])
-    if actions:
-        body.append("建議下一步：")
-        for act in actions[:2]:
-            body.append(f"  • {safe_text(act, 70)}")
-
-    # Quote
-    if article.get("quote"):
-        body.append("")
-        body.append(f"▌ 「{safe_text(article['quote'], 120)}」")
-
-    _add_multiline_textbox(slide, Cm(2), text_top, Cm(30), Cm(18 - text_top.cm),
-                           body, font_size=12, color=DARK_TEXT,
-                           line_spacing=1.3)
+    remaining_h = 18.5 - text_top.cm
+    _add_multiline_textbox(slide, Cm(2), text_top, Cm(30), Cm(remaining_h),
+                           body, font_size=13, color=DARK_TEXT,
+                           line_spacing=1.25)
 
 
 def _slide_article_page2(prs: Presentation, card: EduNewsCard,
                          idx: int, article: dict) -> None:
-    """Article page 2: key terms with CEO-readable explanations + sources."""
-    term_items = build_term_explainer(card)
-    sources = article.get("sources", [])
-
-    if not term_items and not sources:
-        return
-
+    """Article page 2: risks + actions + key terms + quote + sources."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
 
     _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
-                 f"#{idx}  重要名詞白話解釋",
+                 f"#{idx}  風險・行動・名詞解釋",
                  font_size=22, bold=True, color=DARK_TEXT)
     _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
 
     lines: list[str] = []
-    for item in term_items:
-        lines.append(f"{item['term']}：{safe_text(item['explain'], 120)}")
+
+    # Risks
+    risks = article.get("risks", [])
+    if risks:
+        lines.append("主要風險：")
+        for r in risks[:2]:
+            lines.append(f"  • {safe_text(r, 55)}")
         lines.append("")
 
+    # Actions
+    actions = article.get("what_to_do", [])
+    if actions:
+        lines.append("建議下一步：")
+        for act in actions[:2]:
+            lines.append(f"  • {safe_text(act, 60)}")
+        lines.append("")
+
+    # Quote
+    if article.get("quote"):
+        lines.append(f"▌ 「{safe_text(article['quote'], 100)}」")
+        lines.append("")
+
+    # Key terms — Notion-style: term + what + CEO concern
+    term_items = build_term_explainer(card)
+    if term_items:
+        lines.append("——————")
+        lines.append("重要名詞白話解釋：")
+        for item in term_items:
+            lines.append(f"  {item['term']}：{safe_text(item['explain'], 80)}")
+            if item.get("biz"):
+                lines.append(f"    {safe_text(item['biz'], 80)}")
+        lines.append("")
+
+    # Sources
+    sources = article.get("sources", [])
     if sources:
         lines.append("——————")
-        lines.append("原始來源：")
-        for src in sources[:3]:
-            lines.append(safe_text(src, 100))
+        lines.append("來源：")
+        for src in sources[:2]:
+            lines.append(f"  {safe_text(src, 90)}")
 
-    _add_multiline_textbox(slide, Cm(2.5), Cm(3), Cm(29), Cm(15),
-                           lines, font_size=13, color=DARK_TEXT,
-                           line_spacing=1.4)
+    _add_multiline_textbox(slide, Cm(2.5), Cm(3), Cm(29), Cm(15.5),
+                           lines, font_size=12, color=DARK_TEXT,
+                           line_spacing=1.3)
 
 
 def _slides_news_card(prs: Presentation, card: EduNewsCard, idx: int) -> None:

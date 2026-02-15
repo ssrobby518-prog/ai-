@@ -162,7 +162,7 @@ class TestExecutiveDocx:
             output_path=out,
         )
         doc = Document(str(out))
-        assert len(doc.tables) >= 2  # overview table + at least 1 decision table
+        assert len(doc.tables) >= 1  # overview table
 
     def test_docx_no_banned_words(self, tmp_path):
         from core.doc_generator import generate_executive_docx

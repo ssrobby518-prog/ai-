@@ -211,40 +211,39 @@ if ($pptxText) {
     }
 }
 
-# Count event cards (cards that have images) — skip image check when pipeline had zero real items
+# Count event cards for context (event cards need per-card images; zero events still need banner)
 $eventCardCount = & $py -c "from docx import Document; doc = Document('outputs/executive_report.docx'); print(sum(1 for p in doc.paragraphs if p.text.lstrip().startswith(chr(31532))))" 2>$null
 $eventCards = if ($eventCardCount) { [int]$eventCardCount } else { 0 }
+Write-Host "  Event cards detected: $eventCards"
 
-# Check DOCX has embedded images (only when event cards exist)
+# DOCX must always have at least 1 embedded image (banner on cover or per-card images)
 $docxHasImage = & $py -c "
 import zipfile, sys
 with zipfile.ZipFile('outputs/executive_report.docx') as z:
     media = [n for n in z.namelist() if n.startswith('word/media/')]
     print(len(media))
 " 2>$null
-if ($eventCards -gt 0 -and [int]$docxHasImage -lt 1) {
+$docxImageCount = if ($docxHasImage) { [int]$docxHasImage } else { 0 }
+if ($docxImageCount -lt 1) {
     Write-Host "  FAIL: DOCX has no embedded images (word/media/ is empty)" -ForegroundColor Red
     $v3Pass = $false
-} elseif ($eventCards -eq 0) {
-    Write-Host "  DOCX images: skipped (no event cards in this run)" -ForegroundColor DarkYellow
 } else {
-    Write-Host "  DOCX embedded images: $docxHasImage file(s)" -ForegroundColor Green
+    Write-Host "  DOCX embedded images: $docxImageCount file(s)" -ForegroundColor Green
 }
 
-# Check PPTX has embedded images (only when event cards exist)
+# PPTX must always have at least 1 embedded image (banner on cover or per-card images)
 $pptxHasImage = & $py -c "
 import zipfile, sys
 with zipfile.ZipFile('outputs/executive_report.pptx') as z:
     media = [n for n in z.namelist() if n.startswith('ppt/media/')]
     print(len(media))
 " 2>$null
-if ($eventCards -gt 0 -and [int]$pptxHasImage -lt 1) {
+$pptxImageCount = if ($pptxHasImage) { [int]$pptxHasImage } else { 0 }
+if ($pptxImageCount -lt 1) {
     Write-Host "  FAIL: PPTX has no embedded images (ppt/media/ is empty)" -ForegroundColor Red
     $v3Pass = $false
-} elseif ($eventCards -eq 0) {
-    Write-Host "  PPTX images: skipped (no event cards in this run)" -ForegroundColor DarkYellow
 } else {
-    Write-Host "  PPTX embedded images: $pptxHasImage file(s)" -ForegroundColor Green
+    Write-Host "  PPTX embedded images: $pptxImageCount file(s)" -ForegroundColor Green
 }
 
 if (-not $v3Pass) {
