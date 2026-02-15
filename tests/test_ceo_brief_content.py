@@ -20,12 +20,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.content_strategy import (
+    build_ceo_actions,
     build_ceo_brief_blocks,
     build_ceo_metaphor,
     build_chart_spec,
+    build_corp_watch_summary,
     build_data_card,
+    build_signal_summary,
     build_structured_executive_summary,
     build_video_source,
+    compute_market_heat,
+    score_event_impact,
 )
 from schemas.education_models import EduNewsCard
 
@@ -260,3 +265,182 @@ class TestBuildStructuredExecutiveSummary:
         for key in SUMMARY_SECTION_KEYS:
             assert key in result
             assert len(result[key]) >= 1
+
+
+# ---------------------------------------------------------------------------
+# v5 — compute_market_heat
+# ---------------------------------------------------------------------------
+
+class TestComputeMarketHeat:
+    def test_returns_required_keys(self):
+        result = compute_market_heat([_make_card()])
+        assert "score" in result
+        assert "level" in result
+        assert "trend_word" in result
+
+    def test_score_0_to_100(self):
+        result = compute_market_heat([_make_card()])
+        assert 0 <= result["score"] <= 100
+
+    def test_valid_level(self):
+        result = compute_market_heat([_make_card()])
+        assert result["level"] in ("LOW", "MEDIUM", "HIGH", "VERY_HIGH")
+
+    def test_empty_cards_returns_low(self):
+        result = compute_market_heat([])
+        assert result["score"] == 0
+        assert result["level"] == "LOW"
+
+    def test_high_score_cards(self):
+        cards = [_make_card(item_id=f"h-{i}", final_score=9.5) for i in range(5)]
+        result = compute_market_heat(cards)
+        assert result["level"] in ("HIGH", "VERY_HIGH")
+
+
+# ---------------------------------------------------------------------------
+# v5 — score_event_impact
+# ---------------------------------------------------------------------------
+
+class TestScoreEventImpact:
+    def test_returns_required_keys(self):
+        result = score_event_impact(_make_card())
+        assert "impact" in result
+        assert "label" in result
+        assert "color_tag" in result
+
+    def test_impact_1_to_5(self):
+        result = score_event_impact(_make_card())
+        assert 1 <= result["impact"] <= 5
+
+    def test_valid_label(self):
+        result = score_event_impact(_make_card())
+        assert result["label"] in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "MINIMAL")
+
+    def test_valid_color(self):
+        result = score_event_impact(_make_card())
+        assert result["color_tag"] in ("red", "orange", "yellow", "gray")
+
+    def test_high_score_high_impact(self):
+        card = _make_card(final_score=9.5)
+        result = score_event_impact(card)
+        assert result["impact"] >= 4
+
+    def test_low_score_low_impact(self):
+        card = _make_card(
+            final_score=2.0,
+            fact_check_confirmed=[],
+            derivable_effects=[],
+            action_items=[],
+        )
+        result = score_event_impact(card)
+        assert result["impact"] <= 2
+
+
+# ---------------------------------------------------------------------------
+# v5 — build_ceo_actions
+# ---------------------------------------------------------------------------
+
+class TestBuildCeoActions:
+    def test_returns_list(self):
+        result = build_ceo_actions([_make_card()])
+        assert isinstance(result, list)
+        assert len(result) >= 1
+
+    def test_each_action_has_required_keys(self):
+        result = build_ceo_actions([_make_card()])
+        for act in result:
+            assert "action_type" in act
+            assert "title" in act
+            assert "detail" in act
+            assert "owner" in act
+            assert "color_tag" in act
+
+    def test_valid_action_types(self):
+        result = build_ceo_actions([_make_card()])
+        for act in result:
+            assert act["action_type"] in ("MOVE", "TEST", "WATCH")
+
+    def test_sorted_move_first(self):
+        cards = [
+            _make_card(item_id="low", final_score=3.0,
+                       fact_check_confirmed=[], derivable_effects=[],
+                       action_items=[]),
+            _make_card(item_id="high", final_score=9.5),
+        ]
+        result = build_ceo_actions(cards)
+        if len(result) >= 2:
+            order = {"MOVE": 0, "TEST": 1, "WATCH": 2}
+            for i in range(len(result) - 1):
+                assert order[result[i]["action_type"]] <= order[result[i+1]["action_type"]]
+
+    def test_empty_cards(self):
+        result = build_ceo_actions([])
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# v5 — build_signal_summary
+# ---------------------------------------------------------------------------
+
+class TestBuildSignalSummary:
+    def test_returns_list(self):
+        result = build_signal_summary([_make_card()])
+        assert isinstance(result, list)
+        assert len(result) >= 1
+
+    def test_each_signal_has_required_keys(self):
+        result = build_signal_summary([_make_card()])
+        for sig in result:
+            assert "signal_type" in sig
+            assert "label" in sig
+            assert "title" in sig
+            assert "source_count" in sig
+            assert "heat" in sig
+
+    def test_valid_signal_types(self):
+        result = build_signal_summary([_make_card()])
+        valid_types = {"TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE"}
+        for sig in result:
+            assert sig["signal_type"] in valid_types
+
+    def test_valid_heat(self):
+        result = build_signal_summary([_make_card()])
+        for sig in result:
+            assert sig["heat"] in ("hot", "warm", "cool")
+
+    def test_empty_cards_still_returns(self):
+        result = build_signal_summary([])
+        assert len(result) >= 1
+
+
+# ---------------------------------------------------------------------------
+# v5 — build_corp_watch_summary
+# ---------------------------------------------------------------------------
+
+class TestBuildCorpWatchSummary:
+    def test_returns_required_keys(self):
+        result = build_corp_watch_summary([_make_card()])
+        assert "tier_a" in result
+        assert "tier_b" in result
+        assert "total_mentions" in result
+
+    def test_nvidia_detected_tier_a(self):
+        card = _make_card(title_plain="Nvidia launches new GPU chip today")
+        result = build_corp_watch_summary([card])
+        names = [item["name"] for item in result["tier_a"]]
+        assert "NVIDIA" in names
+
+    def test_tier_a_item_structure(self):
+        card = _make_card(title_plain="Nvidia launches new GPU chip today")
+        result = build_corp_watch_summary([card])
+        for item in result["tier_a"]:
+            assert "name" in item
+            assert "event_title" in item
+            assert "impact_label" in item
+            assert "action" in item
+
+    def test_empty_cards(self):
+        result = build_corp_watch_summary([])
+        assert result["total_mentions"] == 0
+        assert result["tier_a"] == []
+        assert result["tier_b"] == []

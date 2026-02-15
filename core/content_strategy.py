@@ -1488,3 +1488,319 @@ def build_structured_executive_summary(
         "opportunities_risks": opportunities_risks[:3],
         "recommended_actions": recommended_actions[:3],
     }
+
+
+# ---------------------------------------------------------------------------
+# v5 — Corp Watch company tiers
+# ---------------------------------------------------------------------------
+
+CORP_TIER_A = [
+    "OpenAI", "Google", "Microsoft", "AWS", "Meta", "NVIDIA", "Apple",
+]
+CORP_TIER_B = [
+    "阿里", "字節", "騰訊", "百度", "華為", "Alibaba", "ByteDance",
+    "Tencent", "Baidu", "Huawei",
+]
+_ALL_CORPS = CORP_TIER_A + CORP_TIER_B
+
+# Signal type keywords (derived from card content)
+_SIGNAL_KEYWORDS = {
+    "TOOL_ADOPTION": [
+        "推出", "發布", "launch", "release", "開源", "open-source",
+        "SDK", "API", "工具", "tool", "platform", "平台",
+    ],
+    "USER_PAIN": [
+        "漏洞", "vulnerability", "資安", "安全", "breach", "hack",
+        "隱私", "privacy", "風險", "risk", "裁員", "layoff",
+        "關閉", "shutdown", "下架", "removed",
+    ],
+    "WORKFLOW_CHANGE": [
+        "收購", "acqui", "併購", "merg", "投資", "invest", "合作",
+        "partner", "整合", "integrat", "遷移", "migrat", "轉型",
+        "transform", "取代", "replac",
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
+# v5 — Market Heat Index
+# ---------------------------------------------------------------------------
+
+
+def compute_market_heat(cards: list[EduNewsCard]) -> dict:
+    """Compute a 0-100 market heat index from card scores and volume.
+
+    Returns dict:
+        score: int (0-100)
+        level: str ("LOW" / "MEDIUM" / "HIGH" / "VERY_HIGH")
+        trend_word: str (Chinese description)
+    """
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+    if not event_cards:
+        return {"score": 0, "level": "LOW", "trend_word": "市場平靜"}
+
+    # Base score: average final_score mapped to 0-100
+    avg_score = sum(c.final_score for c in event_cards) / len(event_cards)
+    base = min(avg_score * 10, 80)  # max 80 from avg score
+
+    # Volume bonus: more events = hotter market (up to +20)
+    volume_bonus = min(len(event_cards) * 4, 20)
+
+    raw = int(base + volume_bonus)
+    score = max(0, min(100, raw))
+
+    if score >= 75:
+        return {"score": score, "level": "VERY_HIGH", "trend_word": "市場極度活躍"}
+    elif score >= 50:
+        return {"score": score, "level": "HIGH", "trend_word": "市場活躍"}
+    elif score >= 25:
+        return {"score": score, "level": "MEDIUM", "trend_word": "市場溫和波動"}
+    else:
+        return {"score": score, "level": "LOW", "trend_word": "市場平靜"}
+
+
+# ---------------------------------------------------------------------------
+# v5 — Event Impact Score (1-5)
+# ---------------------------------------------------------------------------
+
+
+def score_event_impact(card: EduNewsCard) -> dict:
+    """Score an event 1-5 based on final_score + content richness.
+
+    Returns dict:
+        impact: int (1-5)
+        label: str (e.g. "HIGH")
+        color_tag: str ("red" / "orange" / "yellow" / "gray")
+    """
+    base = card.final_score or 0
+
+    # Content richness bonus
+    richness = 0
+    if card.fact_check_confirmed:
+        richness += len(card.fact_check_confirmed)
+    if card.derivable_effects:
+        richness += len(card.derivable_effects)
+    if card.action_items:
+        richness += len(card.action_items)
+
+    # Map to 1-5
+    raw = (base / 2.0) + min(richness * 0.3, 1.5)
+    impact = max(1, min(5, round(raw)))
+
+    labels = {5: "CRITICAL", 4: "HIGH", 3: "MEDIUM", 2: "LOW", 1: "MINIMAL"}
+    colors = {5: "red", 4: "orange", 3: "yellow", 2: "gray", 1: "gray"}
+    return {
+        "impact": impact,
+        "label": labels[impact],
+        "color_tag": colors[impact],
+    }
+
+
+# ---------------------------------------------------------------------------
+# v5 — CEO Action Engine (WATCH / TEST / MOVE)
+# ---------------------------------------------------------------------------
+
+_ACTION_MOVE_KEYWORDS = re.compile(
+    r"立即|緊急|urgent|immediately|ASAP|now|馬上|必須|critical|高風險",
+    re.IGNORECASE,
+)
+_ACTION_TEST_KEYWORDS = re.compile(
+    r"評估|測試|試用|pilot|POC|prototype|experiment|assess|explore|研究",
+    re.IGNORECASE,
+)
+
+
+def build_ceo_actions(cards: list[EduNewsCard]) -> list[dict]:
+    """Classify events into WATCH / TEST / MOVE actions for CEO.
+
+    Returns list of dicts:
+        action_type: "MOVE" / "TEST" / "WATCH"
+        title: str (event title, ≤25 chars)
+        detail: str (action description)
+        owner: str
+        color_tag: str ("red" / "yellow" / "gray")
+    """
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+    results: list[dict] = []
+
+    for card in event_cards[:8]:
+        dc = build_decision_card(card)
+        impact = score_event_impact(card)
+        combined = f"{card.what_happened or ''} {card.why_important or ''}"
+        for a in (card.action_items or []):
+            combined += f" {a}"
+
+        # Classify action type
+        if impact["impact"] >= 4 or _ACTION_MOVE_KEYWORDS.search(combined):
+            action_type = "MOVE"
+            color_tag = "red"
+        elif impact["impact"] >= 3 or _ACTION_TEST_KEYWORDS.search(combined):
+            action_type = "TEST"
+            color_tag = "yellow"
+        else:
+            action_type = "WATCH"
+            color_tag = "gray"
+
+        action_detail = dc["actions"][0] if dc["actions"] else "持續監控此事件發展"
+        results.append({
+            "action_type": action_type,
+            "title": _smart_truncate(sanitize(card.title_plain or ""), 25),
+            "detail": _clean_text(action_detail, 60),
+            "owner": dc["owner"],
+            "color_tag": color_tag,
+        })
+
+    # Sort: MOVE first, then TEST, then WATCH
+    order = {"MOVE": 0, "TEST": 1, "WATCH": 2}
+    results.sort(key=lambda x: order.get(x["action_type"], 3))
+    return results
+
+
+# ---------------------------------------------------------------------------
+# v5 — Signal Summary (derive signal types from card content)
+# ---------------------------------------------------------------------------
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Derive market signals from card content, classify by signal type.
+
+    Returns list of dicts:
+        signal_type: "TOOL_ADOPTION" / "USER_PAIN" / "WORKFLOW_CHANGE"
+        title: str
+        source_count: int (how many cards match)
+        heat: str ("hot" / "warm" / "cool")
+    """
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+    type_buckets: dict[str, list[EduNewsCard]] = {
+        "TOOL_ADOPTION": [],
+        "USER_PAIN": [],
+        "WORKFLOW_CHANGE": [],
+    }
+
+    for card in event_cards:
+        combined = (
+            f"{card.title_plain or ''} {card.what_happened or ''} "
+            f"{card.why_important or ''}"
+        ).lower()
+
+        best_type = "TOOL_ADOPTION"  # default
+        best_hits = 0
+        for sig_type, keywords in _SIGNAL_KEYWORDS.items():
+            hits = sum(1 for kw in keywords if kw.lower() in combined)
+            if hits > best_hits:
+                best_hits = hits
+                best_type = sig_type
+        type_buckets[best_type].append(card)
+
+    results: list[dict] = []
+    type_labels = {
+        "TOOL_ADOPTION": "工具/產品發布",
+        "USER_PAIN": "風險/痛點訊號",
+        "WORKFLOW_CHANGE": "工作流程變革",
+    }
+
+    for sig_type, bucket_cards in type_buckets.items():
+        if not bucket_cards:
+            continue
+        avg_score = sum(c.final_score for c in bucket_cards) / len(bucket_cards)
+        if avg_score >= 7:
+            heat = "hot"
+        elif avg_score >= 5:
+            heat = "warm"
+        else:
+            heat = "cool"
+
+        results.append({
+            "signal_type": sig_type,
+            "label": type_labels[sig_type],
+            "title": _smart_truncate(
+                sanitize(bucket_cards[0].title_plain or ""), 30
+            ),
+            "source_count": len(bucket_cards),
+            "heat": heat,
+        })
+
+    # Sort by source_count descending
+    results.sort(key=lambda x: x["source_count"], reverse=True)
+
+    # Always return at least one signal
+    if not results:
+        results.append({
+            "signal_type": "TOOL_ADOPTION",
+            "label": "工具/產品發布",
+            "title": "今日無明顯訊號",
+            "source_count": 0,
+            "heat": "cool",
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# v5 — Corp Watch (big tech monitoring)
+# ---------------------------------------------------------------------------
+
+
+def build_corp_watch_summary(cards: list[EduNewsCard]) -> dict:
+    """Scan cards for mentions of major tech companies (Tier A + Tier B).
+
+    Returns dict:
+        tier_a: list[dict] — [{name, event_title, impact_label, action}]
+        tier_b: list[dict] — [{name, event_title, impact_label, action}]
+        total_mentions: int
+    """
+    tier_a_results: list[dict] = []
+    tier_b_results: list[dict] = []
+
+    event_cards = [
+        c for c in cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    seen_corps: set[str] = set()
+
+    for card in event_cards:
+        combined = f"{card.title_plain or ''} {card.what_happened or ''}"
+
+        for corp in CORP_TIER_A:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                dc = build_decision_card(card)
+                tier_a_results.append({
+                    "name": corp,
+                    "event_title": _smart_truncate(
+                        sanitize(card.title_plain or ""), 30
+                    ),
+                    "impact_label": impact["label"],
+                    "action": dc["actions"][0] if dc["actions"] else "持續監控",
+                })
+
+        for corp in CORP_TIER_B:
+            if corp.lower() in combined.lower() and corp not in seen_corps:
+                seen_corps.add(corp)
+                impact = score_event_impact(card)
+                dc = build_decision_card(card)
+                tier_b_results.append({
+                    "name": corp,
+                    "event_title": _smart_truncate(
+                        sanitize(card.title_plain or ""), 30
+                    ),
+                    "impact_label": impact["label"],
+                    "action": dc["actions"][0] if dc["actions"] else "持續監控",
+                })
+
+    return {
+        "tier_a": tier_a_results[:7],
+        "tier_b": tier_b_results[:5],
+        "total_mentions": len(tier_a_results) + len(tier_b_results),
+    }

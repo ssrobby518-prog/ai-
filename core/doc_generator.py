@@ -19,14 +19,19 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from core.content_strategy import (
+    build_ceo_actions,
     build_ceo_article_blocks,
     build_ceo_brief_blocks,
+    build_corp_watch_summary,
     build_decision_card,
     build_executive_summary,
+    build_signal_summary,
     build_structured_executive_summary,
     build_term_explainer,
+    compute_market_heat,
     is_non_event_or_index,
     sanitize,
+    score_event_impact,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
@@ -405,6 +410,110 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
         run_src.font.color.rgb = GRAY_COLOR
 
 
+def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Signal Thermometer — market heat + signal breakdown, matching PPT."""
+    _add_heading(doc, "Signal Thermometer", level=1)
+    _add_divider(doc)
+
+    heat = compute_market_heat(cards)
+    _add_bold_label(doc, "Market Heat Index", f"{heat['score']} / 100")
+    _add_bold_label(doc, "Level", heat["level"])
+    _add_bold_label(doc, "趨勢", heat["trend_word"])
+
+    signals = build_signal_summary(cards)
+    sig_lines = []
+    for sig in signals[:3]:
+        sig_lines.append(
+            f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
+            f"({sig['source_count']} sources)"
+        )
+    _add_callout(doc, "Top Signals", sig_lines if sig_lines else ["今日無明顯訊號"])
+    _add_divider(doc)
+
+
+def _build_corp_watch(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Corp Watch — Tier A + Tier B company monitoring, matching PPT."""
+    _add_heading(doc, "Corp Watch", level=1)
+    _add_divider(doc)
+
+    corp = build_corp_watch_summary(cards)
+    _add_bold_label(doc, "Total Mentions", str(corp["total_mentions"]))
+
+    # Tier A
+    tier_a_lines = []
+    for item in corp["tier_a"][:5]:
+        tier_a_lines.append(
+            f"{item['name']} — [{item['impact_label']}] "
+            f"{sanitize(item['event_title'])}"
+        )
+    if not tier_a_lines:
+        tier_a_lines = ["今日無 Tier A 公司相關事件"]
+    _add_callout(doc, "Tier A — Global Leaders", tier_a_lines)
+
+    # Tier B
+    tier_b_lines = []
+    for item in corp["tier_b"][:4]:
+        tier_b_lines.append(
+            f"{item['name']} — [{item['impact_label']}] "
+            f"{sanitize(item['event_title'])}"
+        )
+    if not tier_b_lines:
+        tier_b_lines = ["今日無 Tier B 公司相關事件"]
+    _add_callout(doc, "Tier B — Asia Leaders", tier_b_lines)
+    _add_divider(doc)
+
+
+def _build_event_ranking(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Event Ranking — impact-scored table, matching PPT."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    if not event_cards:
+        return
+
+    _add_heading(doc, "Event Ranking  事件影響力排行", level=1)
+
+    scored = []
+    for c in event_cards[:8]:
+        impact = score_event_impact(c)
+        scored.append((c, impact))
+    scored.sort(key=lambda x: x[1]["impact"], reverse=True)
+
+    rows = []
+    for rank, (c, imp) in enumerate(scored, 1):
+        dc = build_decision_card(c)
+        action = dc["actions"][0] if dc["actions"] else "待確認"
+        rows.append([
+            str(rank),
+            f"{imp['impact']}/5 {imp['label']}",
+            sanitize(c.title_plain or "")[:25],
+            c.category or "綜合",
+            sanitize(action)[:25],
+        ])
+    _make_simple_table(
+        doc, ["Rank", "Impact", "標題", "類別", "Action"], rows
+    )
+    doc.add_paragraph("")
+
+
+def _build_recommended_moves(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Recommended Moves — MOVE/TEST/WATCH, matching PPT."""
+    _add_heading(doc, "Recommended Moves", level=1)
+    _add_divider(doc)
+
+    actions = build_ceo_actions(cards)
+    if not actions:
+        p = doc.add_paragraph("本日無需要立即行動的事項")
+        p.runs[0].font.size = Pt(11)
+        return
+
+    for act in actions[:6]:
+        lines = [
+            f"{sanitize(act['detail'])}",
+            f"Owner: {act['owner']}",
+        ]
+        _add_callout(doc, f"[{act['action_type']}] {act['title']}", lines)
+    _add_divider(doc)
+
+
 def _build_decision_matrix(doc: Document, cards: list[EduNewsCard]) -> None:
     """Decision Matrix table — 6 columns, same as PPT."""
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
@@ -478,21 +587,33 @@ def generate_executive_docx(
     # 2. Structured Summary (5 sections — new CEO Brief format)
     _build_structured_summary(doc, cards)
 
-    # 3. Key Takeaways
+    # 3. Signal Thermometer (v5)
+    _build_signal_thermometer(doc, cards)
+
+    # 4. Corp Watch (v5)
+    _build_corp_watch(doc, cards)
+
+    # 5. Key Takeaways
     _build_key_takeaways(doc, cards, total_items)
 
-    # 4. Overview Table
+    # 6. Overview Table
     _build_overview_table(doc, cards)
 
-    # 5. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
+    # 7. Event Ranking (v5)
+    _build_event_ranking(doc, cards)
+
+    # 8. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     for i, card in enumerate(event_cards, 1):
         _build_brief_card_section(doc, card, i)
 
-    # 6. Decision Matrix
+    # 9. Recommended Moves (v5)
+    _build_recommended_moves(doc, cards)
+
+    # 10. Decision Matrix
     _build_decision_matrix(doc, cards)
 
-    # 7. Pending Decisions
+    # 11. Pending Decisions
     _build_conclusion_section(doc, cards)
 
     doc.save(str(output_path))

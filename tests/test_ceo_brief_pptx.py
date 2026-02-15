@@ -187,10 +187,11 @@ class TestEventSlideCount:
         prs = Presentation(str(out))
         total_slides = len(prs.slides)
 
-        # Expected: Cover(1) + StructuredSummary(1) + KeyTakeaways(1) +
-        #           OverviewTable(1) + events(3*2=6) + DecisionMatrix(1) +
-        #           PendingDecisions(1) = 12
-        expected = 1 + 1 + 1 + 1 + (n_events * 2) + 1 + 1
+        # Expected: Cover(1) + StructuredSummary(1) + SignalThermometer(1) +
+        #           CorpWatch(1) + KeyTakeaways(1) + OverviewTable(1) +
+        #           EventRanking(1) + events(3*2=6) + RecommendedMoves(1) +
+        #           DecisionMatrix(1) + PendingDecisions(1) = 16
+        expected = 1 + 1 + 1 + 1 + 1 + 1 + 1 + (n_events * 2) + 1 + 1 + 1
         assert total_slides == expected, (
             f"Expected {expected} slides, got {total_slides}"
         )
@@ -313,3 +314,60 @@ class TestSlideContent:
         all_text = self._get_all_text(prs)
 
         assert "Decision Matrix" in all_text, "Decision Matrix should be present"
+
+    def test_signal_thermometer_present(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        health = _FakeHealth()
+        out = tmp_path / "signal_test.pptx"
+
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out)
+
+        from pptx import Presentation
+        prs = Presentation(str(out))
+        all_text = self._get_all_text(prs)
+
+        assert "Signal Thermometer" in all_text, "Signal Thermometer should be present"
+        assert "Market Heat Index" in all_text, "Market Heat Index should be present"
+
+    def test_corp_watch_present(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        health = _FakeHealth()
+        out = tmp_path / "corp_test.pptx"
+
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out)
+
+        from pptx import Presentation
+        prs = Presentation(str(out))
+        all_text = self._get_all_text(prs)
+
+        assert "Corp Watch" in all_text, "Corp Watch should be present"
+
+    def test_event_ranking_present(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        health = _FakeHealth()
+        out = tmp_path / "ranking_test.pptx"
+
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out)
+
+        from pptx import Presentation
+        prs = Presentation(str(out))
+        all_text = self._get_all_text(prs)
+
+        assert "Event Ranking" in all_text, "Event Ranking should be present"
+
+    def test_recommended_moves_present(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        health = _FakeHealth()
+        out = tmp_path / "moves_test.pptx"
+
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(cards, health, "2026-02-15 09:00", 5, out)
+
+        from pptx import Presentation
+        prs = Presentation(str(out))
+        all_text = self._get_all_text(prs)
+
+        assert "Recommended Moves" in all_text, "Recommended Moves should be present"

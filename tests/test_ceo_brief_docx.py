@@ -190,3 +190,54 @@ class TestChartSpec:
             generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
         text = _extract_all_text(out)
         assert "Chart Spec" in text or "Chart Type" in text, "Chart spec missing"
+
+
+class TestSignalThermometer:
+    def test_has_signal_thermometer(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        out = tmp_path / "signal.docx"
+        with patch("core.doc_generator.get_news_image", return_value=None):
+            generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
+        text = _extract_all_text(out)
+        assert "Signal Thermometer" in text, "Signal Thermometer missing"
+        assert "Market Heat Index" in text, "Market Heat Index missing"
+
+    def test_has_top_signals(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        out = tmp_path / "signals.docx"
+        with patch("core.doc_generator.get_news_image", return_value=None):
+            generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
+        text = _extract_all_text(out)
+        assert "Top Signals" in text, "Top Signals section missing"
+
+
+class TestCorpWatch:
+    def test_has_corp_watch(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        out = tmp_path / "corp.docx"
+        with patch("core.doc_generator.get_news_image", return_value=None):
+            generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
+        text = _extract_all_text(out)
+        assert "Corp Watch" in text, "Corp Watch missing"
+        assert "Tier A" in text, "Tier A section missing"
+        assert "Tier B" in text, "Tier B section missing"
+
+
+class TestEventRanking:
+    def test_has_event_ranking(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        out = tmp_path / "ranking.docx"
+        with patch("core.doc_generator.get_news_image", return_value=None):
+            generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
+        text = _extract_all_text(out)
+        assert "Event Ranking" in text, "Event Ranking missing"
+
+
+class TestRecommendedMoves:
+    def test_has_recommended_moves(self, tmp_path: Path):
+        cards = [_make_event_card()]
+        out = tmp_path / "moves.docx"
+        with patch("core.doc_generator.get_news_image", return_value=None):
+            generate_executive_docx(cards, _make_health(), "2026-02-15 09:00", 5, out)
+        text = _extract_all_text(out)
+        assert "Recommended Moves" in text, "Recommended Moves missing"

@@ -19,11 +19,16 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Cm, Pt
 
 from core.content_strategy import (
+    build_ceo_actions,
     build_ceo_brief_blocks,
+    build_corp_watch_summary,
     build_decision_card,
+    build_signal_summary,
     build_structured_executive_summary,
+    compute_market_heat,
     is_non_event_or_index,
     sanitize,
+    score_event_impact,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
@@ -434,6 +439,192 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
                      font_size=9, color=SUBTLE_GRAY)
 
 
+def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Signal Thermometer — market heat gauge + signal type breakdown."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # Title
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Signal Thermometer", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    # Market heat index
+    heat = compute_market_heat(cards)
+    heat_color = ACCENT if heat["level"] in ("VERY_HIGH", "HIGH") else HIGHLIGHT_YELLOW
+    _add_textbox(slide, Cm(2), Cm(3.0), Cm(10), Cm(2.5),
+                 str(heat["score"]), font_size=72, bold=True,
+                 color=heat_color)
+    _add_textbox(slide, Cm(12), Cm(3.2), Cm(20), Cm(1),
+                 f"Market Heat Index — {heat['trend_word']}",
+                 font_size=16, color=TEXT_WHITE)
+    _add_textbox(slide, Cm(12), Cm(4.5), Cm(20), Cm(1),
+                 f"Level: {heat['level']}", font_size=12, color=SUBTLE_GRAY)
+
+    # Signal breakdown
+    signals = build_signal_summary(cards)
+    y = 6.5
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                 "Top Signals", font_size=18, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.3
+
+    heat_colors = {"hot": ACCENT, "warm": HIGHLIGHT_YELLOW, "cool": SUBTLE_GRAY}
+
+    for sig in signals[:3]:
+        sig_color = heat_colors.get(sig["heat"], SUBTLE_GRAY)
+        # Signal type badge
+        _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
+                     sig["label"], font_size=12, bold=True,
+                     color=sig_color)
+        # Title + count
+        _add_textbox(slide, Cm(10), Cm(y), Cm(18), Cm(0.8),
+                     f"{sig['title']}  ({sig['source_count']} sources)",
+                     font_size=11, color=TEXT_WHITE)
+        # Heat badge
+        _add_textbox(slide, Cm(28), Cm(y), Cm(4), Cm(0.8),
+                     sig["heat"].upper(), font_size=10, bold=True,
+                     color=sig_color)
+        y += 1.2
+
+
+def _slide_corp_watch(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Corp Watch — Tier A + Tier B company monitoring."""
+    corp = build_corp_watch_summary(cards)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # Title
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Corp Watch", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    # Total mentions
+    _add_textbox(slide, Cm(2), Cm(3.0), Cm(30), Cm(1),
+                 f"Total Mentions: {corp['total_mentions']}",
+                 font_size=14, color=TEXT_WHITE)
+
+    y = 4.5
+
+    # Tier A
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                 "Tier A — Global Leaders", font_size=16, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.2
+
+    if corp["tier_a"]:
+        for item in corp["tier_a"][:5]:
+            _add_highlight_textbox(
+                slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                f"{item['name']}  ", item["impact_label"],
+                f"  {safe_text(item['event_title'], 30)}",
+                font_size=11,
+            )
+            y += 1.0
+    else:
+        _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                     "今日無 Tier A 公司相關事件", font_size=11,
+                     color=SUBTLE_GRAY)
+        y += 1.0
+
+    y += 0.5
+
+    # Tier B
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                 "Tier B — Asia Leaders", font_size=16, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.2
+
+    if corp["tier_b"]:
+        for item in corp["tier_b"][:4]:
+            _add_highlight_textbox(
+                slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                f"{item['name']}  ", item["impact_label"],
+                f"  {safe_text(item['event_title'], 30)}",
+                font_size=11,
+            )
+            y += 1.0
+    else:
+        _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                     "今日無 Tier B 公司相關事件", font_size=11,
+                     color=SUBTLE_GRAY)
+
+
+def _slide_event_ranking(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Event Ranking — impact-scored event list with color-coded badges."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    if not event_cards:
+        return
+
+    # Score and sort
+    scored = []
+    for c in event_cards[:8]:
+        impact = score_event_impact(c)
+        scored.append((c, impact))
+    scored.sort(key=lambda x: x[1]["impact"], reverse=True)
+
+    headers = ["Rank", "Impact", "標題", "類別", "Action"]
+    rows = []
+    for rank, (c, imp) in enumerate(scored, 1):
+        dc = build_decision_card(c)
+        action = dc["actions"][0] if dc["actions"] else "待確認"
+        rows.append([
+            str(rank),
+            f"{imp['impact']}/5 {imp['label']}",
+            safe_text(c.title_plain, 25),
+            c.category or "綜合",
+            safe_text(action, 25),
+        ])
+    _add_table_slide(prs, "Event Ranking  事件影響力排行", headers, rows)
+
+
+def _slide_recommended_moves(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Recommended Moves — MOVE (red) / TEST (yellow) / WATCH (gray) actions."""
+    actions = build_ceo_actions(cards)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # Title
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Recommended Moves", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    type_colors = {
+        "MOVE": ACCENT,
+        "TEST": HIGHLIGHT_YELLOW,
+        "WATCH": SUBTLE_GRAY,
+    }
+
+    y = 3.5
+    if not actions:
+        _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(1),
+                     "本日無需要立即行動的事項", font_size=14,
+                     color=TEXT_WHITE)
+        return
+
+    for act in actions[:6]:
+        tag_color = type_colors.get(act["action_type"], SUBTLE_GRAY)
+
+        # Action type badge
+        _add_textbox(slide, Cm(2), Cm(y), Cm(4), Cm(0.9),
+                     act["action_type"], font_size=14, bold=True,
+                     color=tag_color)
+        # Title
+        _add_textbox(slide, Cm(6.5), Cm(y), Cm(14), Cm(0.9),
+                     act["title"], font_size=12, color=TEXT_WHITE)
+        # Detail
+        _add_textbox(slide, Cm(6.5), Cm(y + 0.8), Cm(20), Cm(0.7),
+                     act["detail"], font_size=10, color=SUBTLE_GRAY)
+        # Owner
+        _add_textbox(slide, Cm(27), Cm(y), Cm(5), Cm(0.9),
+                     act["owner"], font_size=10, color=SUBTLE_GRAY,
+                     alignment=PP_ALIGN.RIGHT)
+        y += 2.0
+
+
 def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> None:
     """Last slide: pending decisions & owners."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -488,21 +679,33 @@ def generate_executive_ppt(
     # 2. Structured Summary (5 sections)
     _slide_structured_summary(prs, cards)
 
-    # 3. Key Takeaways
+    # 3. Signal Thermometer (v5)
+    _slide_signal_thermometer(prs, cards)
+
+    # 4. Corp Watch (v5)
+    _slide_corp_watch(prs, cards)
+
+    # 5. Key Takeaways
     _slide_key_takeaways(prs, cards, total_items)
 
-    # 4. Overview Table
+    # 6. Overview Table
     _slide_overview_table(prs, cards)
+
+    # 7. Event Ranking (v5)
+    _slide_event_ranking(prs, cards)
 
     # Filter: only event cards for the CEO deck
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
 
-    # 5. Per-event: brief_page1 + brief_page2
+    # 8. Per-event: brief_page1 + brief_page2
     for i, card in enumerate(event_cards, 1):
         _slide_brief_page1(prs, card, i)
         _slide_brief_page2(prs, card, i)
 
-    # 6. Decision Matrix (6 columns)
+    # 9. Recommended Moves (v5)
+    _slide_recommended_moves(prs, cards)
+
+    # 10. Decision Matrix (6 columns)
     if event_cards:
         decision_rows = []
         for i, c in enumerate(event_cards[:8], 1):
@@ -521,7 +724,7 @@ def generate_executive_ppt(
             decision_rows,
         )
 
-    # 7. Pending Decisions
+    # 11. Pending Decisions
     _slide_pending_decisions(prs, cards)
 
     prs.save(str(output_path))
