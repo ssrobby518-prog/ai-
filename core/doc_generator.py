@@ -423,9 +423,12 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     signals = build_signal_summary(cards)
     sig_lines = []
     for sig in signals[:3]:
+        insuff = bool(sig.get("signals_insufficient", False))
+        passed_total = int(sig.get("passed_total_count", 0))
+        suffix = f" | signals_insufficient=true | passed_total_count={passed_total}" if insuff else ""
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
-            f"({sig['source_count']} sources)"
+            f"({sig['source_count']} sources){suffix}"
         )
     _add_callout(doc, "Top Signals", sig_lines if sig_lines else ["今日無明顯訊號"])
     _add_divider(doc)

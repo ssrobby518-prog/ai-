@@ -19,7 +19,7 @@ def test_rejects_residual_fragment() -> None:
     text = "Last July was... " + _long_sentence("partial fragment with no closing thought", repeats=80)
     ok, reason = is_valid_article(text)
     assert ok is False
-    assert reason == "insufficient_sentences"
+    assert reason == "fragment_placeholder"
 
 
 def test_rejects_roundup_keyword() -> None:
@@ -48,8 +48,8 @@ def test_adaptive_gate_relaxes_when_kept_too_low() -> None:
     items = [
         SimpleNamespace(
             body=(
-                ("Platform migration completed across two regions with staged rollout safeguards. " * 8)
-                + ("Operators validated recovery windows and latency targets. " * 8)
+                ("Platform migration completed across two regions with staged rollout safeguards. " * 5)
+                + ("Operators validated recovery windows and latency targets. " * 5)
             )
         )
         for _ in range(4)
@@ -57,6 +57,8 @@ def test_adaptive_gate_relaxes_when_kept_too_low() -> None:
     kept, _rejected, stats = apply_adaptive_content_gate(items, min_keep_items=4)
     assert len(kept) == 4
     assert stats.level_used >= 2
+    assert stats.passed_strict < 4
+    assert stats.passed_relaxed >= 1
 
 
 def test_adaptive_gate_hard_reject_not_relaxed() -> None:

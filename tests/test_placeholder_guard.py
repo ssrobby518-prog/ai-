@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from unittest.mock import patch
 
 from docx import Document
@@ -96,7 +97,21 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
     ppt_text = _extract_ppt_text(pptx_path).lower()
     doc_text = _extract_doc_text(docx_path).lower()
 
-    banned = ["fallback monitoring signal", "last july was"]
-    for phrase in banned:
+    banned_phrases = [
+        "fallback monitoring signal",
+        "last july was",
+        "was...",
+        "is...",
+    ]
+    for phrase in banned_phrases:
         assert phrase not in ppt_text
         assert phrase not in doc_text
+
+    fragment_patterns = [
+        re.compile(r"last\\s+\\w+\\s+was", re.IGNORECASE),
+        re.compile(r"\\b(?:was|is|are)\\s*\\.\\.\\.", re.IGNORECASE),
+        re.compile(r"\\b(?:this|that|it)\\s+\\w+\\s+(?:was|is|are)\\s*,\\s*$", re.IGNORECASE),
+    ]
+    for pattern in fragment_patterns:
+        assert pattern.search(ppt_text) is None
+        assert pattern.search(doc_text) is None

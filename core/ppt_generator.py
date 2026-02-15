@@ -243,7 +243,7 @@ def _add_table_slide(prs: Presentation, title: str,
                 p.font.color.rgb = TEXT_WHITE
                 p.line_spacing = MIN_LINE_SPACING
             cell.fill.solid()
-            cell.fill.fore_color.rgb = BG_DARK
+            cell.fill.fore_color.rgb = CARD_BG
 
 
 # ---------------------------------------------------------------------------
@@ -532,13 +532,18 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
         platform_count = int(sig.get("platform_count", sig.get("source_count", 0)))
         heat_score = int(sig.get("heat_score", 0))
         label = str(sig.get("label", sig.get("signal_type", "Signal")))
+        insuff = bool(sig.get("signals_insufficient", False))
+        passed_total = int(sig.get("passed_total_count", 0))
+        suffix = ""
+        if insuff:
+            suffix = f" | signals_insufficient=true | passed_total_count={passed_total}"
         # Signal type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
                      label, font_size=12, bold=True,
                      color=sig_color)
         # signal_text + required fallback fields
         _add_textbox(slide, Cm(10), Cm(y), Cm(20), Cm(0.8),
-                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score}",
+                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score}{suffix}",
                      font_size=11, color=TEXT_WHITE)
         # Heat badge
         _add_textbox(slide, Cm(30), Cm(y), Cm(2), Cm(0.8),

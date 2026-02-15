@@ -206,6 +206,7 @@ class FilterSummary:
     input_count: int = 0
     kept_count: int = 0
     dropped_by_reason: dict[str, int] = field(default_factory=dict)
+    gate_stats: dict[str, int | list[tuple[str, int]]] = field(default_factory=dict)
     # reasons: too_old, lang_not_allowed, keyword_mismatch, body_too_short,
     #          content_too_short, insufficient_sentences, rejected_keyword:*
 
@@ -257,6 +258,16 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     kept_items, _rejected_map, gate_stats = apply_adaptive_content_gate(
         gate_candidates,
         min_keep_items=settings.CONTENT_GATE_MIN_KEEP_ITEMS,
+        levels=(
+            (
+                settings.CONTENT_GATE_STRICT_MIN_LEN,
+                settings.CONTENT_GATE_STRICT_MIN_SENTENCES,
+            ),
+            (
+                settings.CONTENT_GATE_RELAXED_MIN_LEN,
+                settings.CONTENT_GATE_RELAXED_MIN_SENTENCES,
+            ),
+        ),
     )
     result.extend(kept_items)
 
@@ -265,20 +276,20 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
 
     summary.kept_count = len(result)
     dropped_total = summary.input_count - summary.kept_count
+    summary.gate_stats = {
+        "total": gate_stats.total,
+        "passed_strict": gate_stats.passed_strict,
+        "passed_relaxed": gate_stats.passed_relaxed,
+        "rejected_total": gate_stats.rejected_total,
+        "rejected_reason_top": gate_stats.rejected_reason_top,
+    }
     log.info("Filters: %d -> %d items", len(items), len(result))
-    top_reasons = sorted(
-        gate_stats.rejected_by_reason.items(),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )[:5]
     log.info(
-        "CONTENT_GATE_STATS total=%d kept=%d level=%d threshold=(min_len=%d,min_sentences=%d) rejected_top=%s",
-        gate_stats.total,
-        gate_stats.kept,
-        gate_stats.level_used,
-        gate_stats.level_config[0],
-        gate_stats.level_config[1],
-        top_reasons,
+        "ContentGate strict_pass=%d relaxed_pass=%d rejected=%d reasons_top=%s",
+        gate_stats.passed_strict,
+        gate_stats.passed_relaxed,
+        gate_stats.rejected_total,
+        gate_stats.rejected_reason_top,
     )
     log.info(
         "FILTER_SUMMARY kept=%d dropped_total=%d reasons=%s",

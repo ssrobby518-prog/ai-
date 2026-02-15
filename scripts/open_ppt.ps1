@@ -40,6 +40,9 @@ Write-Host "  Repo root          : $repoRoot" -ForegroundColor DarkGray
 # Verify PPT source exists before calling generate
 $pptxSrc = Join-Path $repoRoot "outputs\executive_report.pptx"
 Write-Host "  PPT source exists  : $(Test-Path $pptxSrc)" -ForegroundColor DarkGray
+$pptxAbs = [System.IO.Path]::GetFullPath($pptxSrc)
+Write-Host "  PPT_PATH           : $pptxAbs" -ForegroundColor DarkGray
+Write-Host "PPT_PATH=$pptxAbs"
 
 # ---------------------------------------------------------------------------
 # (2) Call generate_reports.ps1 with -OpenPpt (forces open)

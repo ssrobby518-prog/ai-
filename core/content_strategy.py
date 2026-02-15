@@ -2335,6 +2335,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         return results
 
     valid_cards = [c for c in cards if c.is_valid_news]
+    passed_total_count = len(valid_cards)
     try:
         from config import settings as _settings
 
@@ -2365,6 +2366,8 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
         entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
         entry["source_count"] = entry["platform_count"]
+        entry["signals_insufficient"] = passed_total_count < 3
+        entry["passed_total_count"] = passed_total_count
         results.append(entry)
 
     results.sort(
@@ -2392,6 +2395,8 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
             entry["heat_score"] = max(int(entry.get("heat_score", 30)), 30)
             entry["platform_count"] = max(int(entry.get("platform_count", 1)), 1)
             entry["source_count"] = entry["platform_count"]
+            entry["signals_insufficient"] = passed_total_count < 3
+            entry["passed_total_count"] = passed_total_count
             results.append(entry)
             continue
 
@@ -2413,10 +2418,17 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
                     f"Monitoring {fallback_text} from source coverage baselines.",
                     120,
                 ),
+                "signals_insufficient": True,
+                "passed_total_count": passed_total_count,
             }
         )
 
-    return results[:3]
+    final = results[:3]
+    if len(final) < 3:
+        for sig in final:
+            sig["signals_insufficient"] = True
+            sig["passed_total_count"] = passed_total_count
+    return final
 
 
 def build_corp_watch_summary(

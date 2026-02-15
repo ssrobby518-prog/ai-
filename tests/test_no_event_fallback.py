@@ -68,7 +68,7 @@ def test_no_event_corp_watch_includes_scan_stats() -> None:
     assert corp.get("updates", -1) == 0
     assert corp.get("mentions_count", -1) == 0
     assert corp.get("trend_direction") == "STABLE"
-    assert corp.get("status_message") == "No major updates detected — monitoring continues."
+    assert "monitoring continues" in str(corp.get("status_message", "")).lower()
     assert "sources_total" in corp
     assert "success_count" in corp
     assert "fail_count" in corp
@@ -101,3 +101,12 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
     assert "sources_total" in text
     assert "monitoring continues" in text.lower()
     assert "fallback monitoring signal" not in text.lower()
+
+
+def test_empty_passed_signals_mark_insufficient() -> None:
+    signals = build_signal_summary([])
+    assert len(signals) >= 3
+    for sig in signals[:3]:
+        assert sig.get("signals_insufficient") is True
+        assert int(sig.get("passed_total_count", -1)) == 0
+        assert str(sig.get("signal_text", "")).strip()

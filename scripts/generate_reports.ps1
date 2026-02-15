@@ -106,16 +106,23 @@ card = EduNewsCard(
     final_score=8.0,
 )
 health = SystemHealthReport(success_rate=100.0, p50_latency=0.1, p95_latency=0.2)
-out = Path("outputs") / "executive_report.pptx"
-out.parent.mkdir(parents=True, exist_ok=True)
+out_dir = Path("outputs")
+out_dir.mkdir(parents=True, exist_ok=True)
+canonical = out_dir / "executive_report.pptx"
+tmp = out_dir / f"executive_report_smoke_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.pptx"
 generate_executive_ppt(
     cards=[card],
     health=health,
     report_time=datetime.now().strftime("%Y-%m-%d %H:%M"),
     total_items=1,
-    output_path=out,
+    output_path=tmp,
 )
-print(f"SMOKE_PPTX={out.resolve()}")
+try:
+    tmp.replace(canonical)
+except OSError:
+    # If canonical file is locked by an opened viewer, keep the new smoke artifact.
+    pass
+print(f"SMOKE_PPTX={tmp.resolve()}")
 '@ | & $py -
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
@@ -177,7 +184,7 @@ Write-Host "PPT generated successfully: $(Join-Path $projectRoot 'outputs\\execu
 # Open PPT (only when shouldOpen = True)
 # ---------------------------------------------------------------------------
 if (-not $shouldOpen) {
-    Write-Host "`n  Headless mode — skipping PPT open." -ForegroundColor DarkGray
+    Write-Host "`n  Headless mode - skipping PPT open." -ForegroundColor DarkGray
     exit 0
 }
 
@@ -188,32 +195,46 @@ if (-not (Test-Path $pptxPath)) {
 }
 
 $pptxAbs = (Resolve-Path $pptxPath).Path
-$pptxSize = (Get-Item $pptxAbs).Length
-if ($pptxSize -le 0) {
-    Write-Host "ERROR: PPT file is empty, skip auto-open: $pptxAbs" -ForegroundColor Red
-    exit 1
-}
+$opened = $false
+$lastError = ""
 
 Write-Host "`n--- Open PPT ---" -ForegroundColor Cyan
-Write-Host "  Target file  : $pptxAbs" -ForegroundColor Green
-Write-Host "  File size    : $pptxSize bytes" -ForegroundColor Green
+Write-Host "PPT_PATH=$pptxAbs"
 
-$opened = $false
 for ($attempt = 1; $attempt -le 5; $attempt++) {
+    Write-Host "OpenAttempt $attempt/5"
+
+    if (-not (Test-Path $pptxAbs)) {
+        Write-Host "ERROR: PPT file disappeared before open attempt: $pptxAbs" -ForegroundColor Red
+        exit 1
+    }
+
+    $pptxSize = (Get-Item $pptxAbs).Length
+    if ($pptxSize -le 0) {
+        Write-Host "ERROR: PPT file is empty, cannot open: $pptxAbs" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  File size    : $pptxSize bytes" -ForegroundColor DarkGray
+
     try {
-        Start-Process explorer.exe -ArgumentList "`"$pptxAbs`"" -ErrorAction Stop
-        Write-Host "  Open attempt ${attempt}/5 succeeded." -ForegroundColor Green
+        Start-Process -FilePath $pptxAbs -ErrorAction Stop
+        Write-Host "  OpenAttempt $attempt succeeded." -ForegroundColor Green
         $opened = $true
         break
     } catch {
-        Write-Host "  Open attempt ${attempt}/5 failed: $($_.Exception.Message)" -ForegroundColor Yellow
-        Start-Sleep -Seconds 1
+        $lastError = $_.Exception.Message
+        Write-Host "  OpenAttempt $attempt failed: $lastError" -ForegroundColor Yellow
     }
+
+    $delayMs = Get-Random -Minimum 700 -Maximum 1201
+    Start-Sleep -Milliseconds $delayMs
 }
 
 if (-not $opened) {
-    Write-Host "ERROR: Failed to auto-open PPT after 5 retries: $pptxAbs" -ForegroundColor Red
-    exit 1
+    Write-Host "ERROR: Failed to auto-open PPT after 5 attempts." -ForegroundColor Red
+    Write-Host "LAST_OPEN_ERROR: $lastError" -ForegroundColor Red
+    Write-Host "PPT remains generated at: $pptxAbs" -ForegroundColor Yellow
+    exit 2
 }
 
 Write-Host "`n=== Done ===" -ForegroundColor Cyan

@@ -7,6 +7,7 @@ from pptx import Presentation
 
 from core.ppt_generator import (
     DARK_BG,
+    LIGHT_CARD,
     LIGHT_BG,
     MIN_FONT_SIZE_PT,
     MIN_LINE_SPACING,
@@ -97,3 +98,31 @@ def test_light_theme_readability_floor(tmp_path: Path) -> None:
     assert min(font_sizes) >= MIN_FONT_SIZE_PT
     assert line_spacings, "Expected explicit line spacing in generated PPT"
     assert min(line_spacings) >= MIN_LINE_SPACING
+
+
+def test_light_theme_cards_have_contrast_fill(tmp_path: Path) -> None:
+    out = tmp_path / "light_card_contrast.pptx"
+    health = SystemHealthReport(success_rate=80.0, p50_latency=2.0, p95_latency=5.0)
+
+    with patch("core.ppt_generator.get_news_image", return_value=None):
+        generate_executive_ppt(
+            cards=_cards(),
+            health=health,
+            report_time="2026-02-15 09:00",
+            total_items=1,
+            output_path=out,
+        )
+
+    prs = Presentation(str(out))
+    table_fills = []
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_table:
+                continue
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    if cell.fill.type is not None and cell.fill.fore_color.rgb is not None:
+                        table_fills.append(cell.fill.fore_color.rgb)
+
+    assert table_fills, "Expected table cells in generated deck"
+    assert any(fill == LIGHT_CARD for fill in table_fills)
