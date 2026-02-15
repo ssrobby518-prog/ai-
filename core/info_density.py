@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover - fallback for isolated tests
     _settings = None
 
 DensityKind = Literal["event", "signal", "corp"]
+DensityTier = Literal["A", "B", "C"]
 
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?。？！]+")
 _ENTITY_TOKEN_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9\-_]{2,}\b")
@@ -99,6 +100,14 @@ class DensityGateStats:
     avg_score: float
     rejected_by_reason: dict[str, int]
     rejected_reason_top: list[tuple[str, int]]
+
+
+@dataclass(frozen=True)
+class DensityTierResult:
+    tier: DensityTier
+    score: int
+    reason_flags: tuple[str, ...]
+    breakdown: InfoDensityBreakdown
 
 
 def _threshold(kind: DensityKind) -> DensityGateThreshold:
@@ -227,6 +236,59 @@ def evaluate_text_density(
     return reason is None, reason, breakdown
 
 
+def classify_density_tier(
+    text: str,
+    kind: DensityKind = "event",
+) -> DensityTierResult:
+    """Classify text into density tier for routing.
+
+    Tier A: event/corp-ready (meets requested kind threshold, no hard quality flags)
+    Tier B: signal-ready fallback (meets signal threshold, no hard quality flags)
+    Tier C: rejected for CEO text generation
+    """
+    breakdown = info_density_breakdown(text)
+    event_reason = density_gate_reason(breakdown, kind)
+    signal_reason = density_gate_reason(breakdown, "signal")
+
+    hard_quality_flags: list[str] = []
+    if breakdown.fragment_penalty > 0:
+        hard_quality_flags.append("fragment_placeholder")
+    if breakdown.boilerplate_hits > 0:
+        hard_quality_flags.append("boilerplate")
+
+    if not hard_quality_flags and event_reason is None:
+        return DensityTierResult(
+            tier="A",
+            score=breakdown.score,
+            reason_flags=(),
+            breakdown=breakdown,
+        )
+
+    if not hard_quality_flags and signal_reason is None:
+        reason_flags = (event_reason,) if event_reason else ()
+        return DensityTierResult(
+            tier="B",
+            score=breakdown.score,
+            reason_flags=tuple(r for r in reason_flags if r),
+            breakdown=breakdown,
+        )
+
+    reasons: list[str] = []
+    reasons.extend(hard_quality_flags)
+    if signal_reason:
+        reasons.append(signal_reason)
+    elif event_reason:
+        reasons.append(event_reason)
+
+    dedup_reasons = tuple(dict.fromkeys(r for r in reasons if r))
+    return DensityTierResult(
+        tier="C",
+        score=breakdown.score,
+        reason_flags=dedup_reasons or ("low_density_score",),
+        breakdown=breakdown,
+    )
+
+
 def candidate_text_from_card(card: Any) -> str:
     parts: list[str] = []
     for attr in (
@@ -246,6 +308,44 @@ def candidate_text_from_card(card: Any) -> str:
         if isinstance(val, list):
             parts.extend(str(v).strip() for v in val[:5] if str(v).strip())
     return _normalize(" ".join(parts))
+
+
+def apply_density_tiering(
+    items: list[Any],
+    kind: DensityKind = "event",
+    text_getter: Callable[[Any], str] | None = None,
+) -> tuple[list[Any], list[Any], list[Any], dict[int, DensityTierResult]]:
+    """Route items into A/B/C tiers without changing existing gate APIs."""
+    if not items:
+        return [], [], [], {}
+
+    tier_a: list[Any] = []
+    tier_b: list[Any] = []
+    tier_c: list[Any] = []
+    tier_map: dict[int, DensityTierResult] = {}
+
+    for idx, item in enumerate(items):
+        raw_text = candidate_text_from_card(item) if text_getter is None else _normalize(text_getter(item))
+        tier_result = classify_density_tier(raw_text, kind=kind)
+        tier_map[idx] = tier_result
+
+        try:
+            setattr(item, "density_tier", tier_result.tier)
+            setattr(item, "info_density_score", tier_result.score)
+            setattr(item, "info_density_reason_flags", ",".join(tier_result.reason_flags))
+            if tier_result.tier == "C":
+                setattr(item, "rejected_reason", tier_result.reason_flags[0] if tier_result.reason_flags else "low_density_score")
+        except Exception:
+            pass
+
+        if tier_result.tier == "A":
+            tier_a.append(item)
+        elif tier_result.tier == "B":
+            tier_b.append(item)
+        else:
+            tier_c.append(item)
+
+    return tier_a, tier_b, tier_c, tier_map
 
 
 def gate_card_density(
@@ -307,4 +407,3 @@ def apply_density_gate(
         rejected_reason_top=reason_counter.most_common(5),
     )
     return passed, rejected, stats, breakdown_map
-

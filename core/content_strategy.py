@@ -3120,14 +3120,14 @@ def _v523_card_source(card: EduNewsCard) -> str:
         return source
     url = str(getattr(card, "source_url", "") or "").strip()
     if not url:
-        return "unknown"
+        return "platform"
     try:
         from urllib.parse import urlparse
 
         domain = urlparse(url).netloc.strip().lower()
-        return domain or "unknown"
+        return domain or "platform"
     except Exception:
-        return "unknown"
+        return "platform"
 
 
 def _v523_platform_stats(cards: list[EduNewsCard], passed_ids: set[str]) -> list[dict[str, int | str]]:
@@ -3146,38 +3146,103 @@ def _v523_platform_stats(cards: list[EduNewsCard], passed_ids: set[str]) -> list
     return sorted(rows.values(), key=lambda x: (int(x["gate_pass"]), int(x["heat_sum"])), reverse=True)
 
 
+def _v523_extract_evidence_tokens(
+    text: str,
+    *,
+    source_name: str = "",
+    heat_score: int | None = None,
+) -> list[str]:
+    payload = str(text or "")
+    tokens: list[str] = []
+
+    # Numbers/versions/dates and simple units.
+    for m in re.findall(
+        r"\b(?:20\d{2}|v?\d+(?:\.\d+){0,2}(?:%|x|ms|gb|mb|k|m|b|tokens?)?)\b",
+        payload,
+        flags=re.IGNORECASE,
+    ):
+        if m:
+            tokens.append(m)
+
+    # Verifiable entities (companies/models/tools).
+    for m in re.findall(
+        r"\b(?:OpenAI|Google|Microsoft|Amazon|Meta|Apple|NVIDIA|Alibaba|Tencent|ByteDance|Baidu|Huawei|"
+        r"GPT-?\d+(?:\.\d+)?|Claude|Gemini|Llama|Qwen|DeepSeek|Copilot)\b",
+        payload,
+        flags=re.IGNORECASE,
+    ):
+        if m:
+            tokens.append(m)
+
+    if source_name and source_name.lower() not in {"unknown", "none", "platform"}:
+        tokens.append(source_name)
+    if heat_score is not None:
+        tokens.append(str(int(heat_score)))
+
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        key = tok.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        dedup.append(tok.strip())
+    return dedup[:6]
+
+
 def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
-    """Final signal summary with info-density gate and numeric fallback content."""
-    from core.info_density import apply_density_gate, evaluate_text_density
+    """Final signal summary with density tiering and verifiable evidence tokens."""
+    from core.info_density import apply_density_gate, apply_density_tiering, evaluate_text_density
 
     base_rows = list(_v523_prev_build_signal_summary(cards) or [])
     valid_cards = [c for c in cards if bool(getattr(c, "is_valid_news", False))]
-    density_passed, _rejected, density_stats, _ = apply_density_gate(valid_cards, "signal")
-    passed_ids = {str(getattr(c, "item_id", "")) for c in density_passed}
+    tier_a_cards, tier_b_cards, _tier_c_cards, _tier_map = apply_density_tiering(valid_cards, "event")
+    signal_pool = tier_a_cards + tier_b_cards
+
+    # Keep legacy signal stats for metrics continuity.
+    signal_passed, _signal_rejected, signal_stats, _ = apply_density_gate(valid_cards, "signal")
+    passed_ids = {str(getattr(c, "item_id", "")) for c in signal_passed}
     platform_stats = _v523_platform_stats(valid_cards, passed_ids)
+
+    def _pick_card(index: int) -> EduNewsCard | None:
+        if signal_pool:
+            return signal_pool[index % len(signal_pool)]
+        if valid_cards:
+            return valid_cards[index % len(valid_cards)]
+        return None
 
     rows: list[dict] = []
     for idx, row in enumerate(base_rows):
         current = dict(row)
-        current["source_name"] = str(current.get("source_name") or "").strip() or (
-            _v523_card_source(valid_cards[min(idx, len(valid_cards) - 1)]) if valid_cards else "none"
-        )
+        card = _pick_card(idx)
+        source_name = str(current.get("source_name") or "").strip() or (_v523_card_source(card) if card else "platform")
+        if source_name.lower() == "unknown":
+            source_name = "platform"
+
         signal_text = _v522_strip_placeholders(str(current.get("signal_text", current.get("title", ""))))
         title = _v522_strip_placeholders(str(current.get("title", signal_text)))
-        current["signal_text"] = signal_text or title or str(current.get("label", "Signal"))
-        current["title"] = title or current["signal_text"]
-        current["platform_count"] = max(int(current.get("platform_count", current.get("source_count", 1)) or 1), 1)
-        current["source_count"] = current["platform_count"]
-        current["heat_score"] = max(int(current.get("heat_score", 30) or 30), 30)
+        if not signal_text and card is not None:
+            signal_text = _v522_strip_placeholders(str(getattr(card, "title_plain", "") or ""))
+        signal_text = signal_text or title or str(current.get("label", "Signal"))
+        title = title or signal_text
+
+        platform_count = max(int(current.get("platform_count", current.get("source_count", 1)) or 1), 1)
+        heat_score = max(int(current.get("heat_score", 30) or 30), 30)
+        heat_word = str(current.get("heat", "cool")).lower()
 
         snippet = _v522_strip_placeholders(str(current.get("example_snippet", "")))
         ok_snip, _reason_snip, snip_breakdown = evaluate_text_density(snippet, "signal")
-        if (not ok_snip) or (snip_breakdown.entity_hits < 1 and snip_breakdown.numeric_hits < 1):
-            if density_passed:
-                card = density_passed[idx % len(density_passed)]
+        evidence_tokens = _v523_extract_evidence_tokens(
+            f"{signal_text} {snippet}",
+            source_name=source_name,
+            heat_score=heat_score,
+        )
+        if (not ok_snip) or (snip_breakdown.entity_hits < 1 and snip_breakdown.numeric_hits < 1) or len(evidence_tokens) < 2:
+            if card is not None:
                 snippet = _smart_truncate(
                     _v522_strip_placeholders(
-                        f"{card.title_plain} | {card.what_happened} | source={_v523_card_source(card)} | score={float(card.final_score):.1f}"
+                        f"{getattr(card, 'title_plain', '')} | {getattr(card, 'what_happened', '')} | "
+                        f"source={_v523_card_source(card)} | score={float(getattr(card, 'final_score', 0.0) or 0.0):.1f}"
                     ),
                     120,
                 )
@@ -3189,18 +3254,93 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
                 )
             else:
                 snippet = (
-                    f"Coverage stats: total_in={density_stats.total_in}, passed={density_stats.passed}, "
-                    f"avg_score={density_stats.avg_score}."
+                    f"Coverage stats: total_in={signal_stats.total_in}, passed={signal_stats.passed}, "
+                    f"tier_a={len(tier_a_cards)}, tier_b={len(tier_b_cards)}."
                 )
-        current["example_snippet"] = _smart_truncate(snippet, 120)
+
+        snippet = _smart_truncate(_v522_strip_placeholders(snippet), 120)
+        if len(snippet) < 30:
+            snippet = _smart_truncate(
+                f"{source_name}: platform_count={platform_count}, heat_score={heat_score}, "
+                f"coverage_items={len(signal_pool) or len(valid_cards)}.",
+                120,
+            )
+
+        evidence_tokens = _v523_extract_evidence_tokens(
+            f"{signal_text} {snippet}",
+            source_name=source_name,
+            heat_score=heat_score,
+        )
+        if len(evidence_tokens) < 2:
+            evidence_tokens = list(dict.fromkeys(evidence_tokens + [source_name, str(platform_count), str(heat_score)]))[:4]
+
+        current["signal_text"] = signal_text
+        current["title"] = title
+        current["platform_count"] = platform_count
+        current["source_count"] = platform_count
+        current["heat_score"] = heat_score
+        current["heat"] = heat_word if heat_word in {"hot", "warm", "cool"} else ("warm" if heat_score >= 50 else "cool")
+        current["source_name"] = source_name
+        current["example_snippet"] = snippet
+        current["evidence_tokens"] = evidence_tokens
+        current["signals_insufficient"] = len(signal_pool) < 3
+        current["passed_total_count"] = len(signal_pool)
+        current["density_tier"] = str(getattr(card, "density_tier", "B")) if card is not None else "B"
         rows.append(current)
+
+    while len(rows) < 3 and signal_pool:
+        card = signal_pool[len(rows) % len(signal_pool)]
+        source_name = _v523_card_source(card)
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        heat_score = max(30, min(100, int(round(score * 12))))
+        snippet = _smart_truncate(
+            _v522_strip_placeholders(
+                f"{getattr(card, 'what_happened', '')} | source={source_name} | score={score:.1f}"
+            ),
+            120,
+        )
+        evidence_tokens = _v523_extract_evidence_tokens(
+            f"{getattr(card, 'title_plain', '')} {snippet}",
+            source_name=source_name,
+            heat_score=heat_score,
+        )
+        if len(evidence_tokens) < 2:
+            evidence_tokens = list(dict.fromkeys(evidence_tokens + [source_name, str(heat_score), "1"]))[:4]
+        rows.append(
+            {
+                "signal_name": "WORKFLOW_CHANGE",
+                "signal_type": "WORKFLOW_CHANGE",
+                "label": _SIGNAL_LABELS.get("WORKFLOW_CHANGE", "Workflow Change"),
+                "title": _smart_truncate(_v522_strip_placeholders(str(getattr(card, "title_plain", "") or "")) or "Workflow change", 40),
+                "source_count": 1,
+                "heat": "warm" if heat_score >= 50 else "cool",
+                "signal_text": _smart_truncate(_v522_strip_placeholders(str(getattr(card, "title_plain", "") or "")) or "Workflow change", 40),
+                "platform_count": 1,
+                "heat_score": heat_score,
+                "example_snippet": snippet,
+                "source_name": source_name,
+                "evidence_tokens": evidence_tokens,
+                "signals_insufficient": len(signal_pool) < 3,
+                "passed_total_count": len(signal_pool),
+                "density_tier": str(getattr(card, "density_tier", "B")),
+            }
+        )
 
     while len(rows) < 3 and platform_stats:
         plat = platform_stats[len(rows) % len(platform_stats)]
         items_seen = max(int(plat.get("items_seen", 0)), 1)
         heat_sum = int(plat.get("heat_sum", 0))
         heat_score = max(30, min(100, int(round(heat_sum / items_seen))))
-        source_name = str(plat.get("source_name", "unknown"))
+        source_name = str(plat.get("source_name", "platform")) or "platform"
+        if source_name.lower() == "unknown":
+            source_name = "platform"
+        snippet = _smart_truncate(
+            f"{source_name}: heat_sum={heat_sum}, items={items_seen}, gate_pass={int(plat.get('gate_pass', 0))}.",
+            120,
+        )
+        evidence_tokens = _v523_extract_evidence_tokens(snippet, source_name=source_name, heat_score=heat_score)
+        if len(evidence_tokens) < 2:
+            evidence_tokens = list(dict.fromkeys(evidence_tokens + [source_name, str(items_seen), str(heat_score)]))[:4]
         rows.append(
             {
                 "signal_name": f"PLATFORM_HEAT_{source_name.upper()}",
@@ -3212,13 +3352,12 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
                 "signal_text": f"{source_name} heat trend",
                 "platform_count": items_seen,
                 "heat_score": heat_score,
-                "example_snippet": _smart_truncate(
-                    f"{source_name}: heat_sum={heat_sum}, items={items_seen}, gate_pass={int(plat.get('gate_pass', 0))}.",
-                    120,
-                ),
+                "example_snippet": snippet,
                 "source_name": source_name,
-                "signals_insufficient": density_stats.passed < 3,
-                "passed_total_count": density_stats.passed,
+                "evidence_tokens": evidence_tokens,
+                "signals_insufficient": len(signal_pool) < 3,
+                "passed_total_count": len(signal_pool),
+                "density_tier": "B",
             }
         )
 
@@ -3227,6 +3366,13 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
     while len(rows) < 3:
         name = fallback_names[idx % len(fallback_names)]
         idx += 1
+        snippet = (
+            f"Coverage stats: total_in={signal_stats.total_in}, tier_a={len(tier_a_cards)}, "
+            f"tier_b={len(tier_b_cards)}, platform_count=1, heat_score=30."
+        )
+        evidence_tokens = _v523_extract_evidence_tokens(snippet, source_name="platform", heat_score=30)
+        if len(evidence_tokens) < 2:
+            evidence_tokens = ["platform", "30", str(signal_stats.total_in or 0)]
         rows.append(
             {
                 "signal_name": name,
@@ -3238,17 +3384,61 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
                 "signal_text": _SIGNAL_LABELS.get(name, name),
                 "platform_count": 1,
                 "heat_score": 30,
-                "example_snippet": (
-                    f"Coverage stats: total_in={density_stats.total_in}, passed={density_stats.passed}, "
-                    f"avg_score={density_stats.avg_score}."
-                ),
-                "source_name": "none",
-                "signals_insufficient": density_stats.passed < 3,
-                "passed_total_count": density_stats.passed,
+                "example_snippet": _smart_truncate(snippet, 120),
+                "source_name": "platform",
+                "evidence_tokens": evidence_tokens[:4],
+                "signals_insufficient": len(signal_pool) < 3,
+                "passed_total_count": len(signal_pool),
+                "density_tier": "B",
             }
         )
 
-    return rows[:3]
+    final_rows: list[dict] = []
+    for row in rows[:3]:
+        current = dict(row)
+        source_name = str(current.get("source_name", "")).strip() or "platform"
+        if source_name.lower() == "unknown":
+            source_name = "platform"
+
+        signal_text = _v522_strip_placeholders(str(current.get("signal_text", current.get("title", "")))) or "Signal"
+        title = _v522_strip_placeholders(str(current.get("title", signal_text))) or signal_text
+        snippet = _v522_strip_placeholders(str(current.get("example_snippet", "")))
+        snippet = snippet.replace("source=unknown", "source=platform")
+        if len(snippet) < 30:
+            snippet = _smart_truncate(
+                f"{source_name}: platform_count={int(current.get('platform_count', 1) or 1)}, "
+                f"heat_score={int(current.get('heat_score', 30) or 30)}.",
+                120,
+            )
+
+        heat_score = max(int(current.get("heat_score", 30) or 30), 30)
+        platform_count = max(int(current.get("platform_count", current.get("source_count", 1)) or 1), 1)
+        evidence_tokens = current.get("evidence_tokens")
+        if not isinstance(evidence_tokens, list):
+            evidence_tokens = []
+        evidence_tokens = [str(t).strip() for t in evidence_tokens if str(t).strip()]
+        if len(evidence_tokens) < 2:
+            evidence_tokens = _v523_extract_evidence_tokens(
+                f"{signal_text} {snippet}",
+                source_name=source_name,
+                heat_score=heat_score,
+            )
+        if len(evidence_tokens) < 2:
+            evidence_tokens = list(dict.fromkeys(evidence_tokens + [source_name, str(platform_count), str(heat_score)]))[:4]
+
+        current["source_name"] = source_name
+        current["signal_text"] = signal_text
+        current["title"] = title
+        current["example_snippet"] = _smart_truncate(snippet, 120)
+        current["platform_count"] = platform_count
+        current["source_count"] = platform_count
+        current["heat_score"] = heat_score
+        current["evidence_tokens"] = evidence_tokens[:6]
+        current["signals_insufficient"] = bool(current.get("signals_insufficient", len(signal_pool) < 3))
+        current["passed_total_count"] = int(current.get("passed_total_count", len(signal_pool)))
+        final_rows.append(current)
+
+    return final_rows
 
 
 def build_corp_watch_summary(
@@ -3279,9 +3469,14 @@ def build_corp_watch_summary(
 
     mentions_count = int(result.get("mentions_count", result.get("total_mentions", 0) or 0))
     if mentions_count == 0:
+        reason_bits = ", ".join(
+            f"{str(item.get('reason', 'none'))}:{int(item.get('count', 0))}"
+            for item in top_fail_reasons[:3]
+        ) or "none"
         result["status_message"] = (
-            f"Scan stats: sources_total={sources_total}, success_count={success_count}, "
-            f"fail_count={fail_count}; last_success_source={last_success_source}. Monitoring continues."
+            f"掃描統計：sources_total={sources_total}、success_count={success_count}、"
+            f"fail_count={fail_count}、last_success_source={last_success_source}、"
+            f"top_fail_reasons={reason_bits}。"
         )
 
     result["sources_total"] = sources_total

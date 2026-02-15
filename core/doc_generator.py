@@ -423,7 +423,9 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     signals = build_signal_summary(cards)
     sig_lines = []
     for sig in signals[:3]:
-        source_name = str(sig.get("source_name", "unknown"))
+        source_name = str(sig.get("source_name", "platform"))
+        if source_name.strip().lower() == "unknown":
+            source_name = "platform"
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
             f"({sig['source_count']} sources, source={source_name})"

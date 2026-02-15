@@ -532,7 +532,9 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
         platform_count = int(sig.get("platform_count", sig.get("source_count", 0)))
         heat_score = int(sig.get("heat_score", 0))
         label = str(sig.get("label", sig.get("signal_type", "Signal")))
-        source_name = str(sig.get("source_name", "unknown"))
+        source_name = str(sig.get("source_name", "platform"))
+        if source_name.strip().lower() == "unknown":
+            source_name = "platform"
         # Signal type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
                      label, font_size=12, bold=True,

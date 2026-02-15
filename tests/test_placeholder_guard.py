@@ -101,6 +101,7 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
         "fallback monitoring signal",
         "desktop smoke signal",
         "signals_insufficient=true",
+        "source=unknown",
         "last july was",
         "stay tuned",
         "this shows",

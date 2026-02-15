@@ -61,10 +61,15 @@ def test_no_event_signal_summary_top3() -> None:
         assert int(sig["platform_count"]) >= 1
         assert int(sig["heat_score"]) >= 30
         assert str(sig.get("source_name", "")).strip()
+        assert str(sig.get("source_name", "")).strip().lower() != "unknown"
+        assert "evidence_tokens" in sig
+        assert isinstance(sig["evidence_tokens"], list)
+        assert len(sig["evidence_tokens"]) >= 2
         assert "fallback monitoring signal" not in str(sig["signal_text"]).lower()
         assert "fallback monitoring signal" not in str(sig["example_snippet"]).lower()
         assert "smoke" not in str(sig["signal_text"]).lower()
         assert "smoke" not in str(sig["example_snippet"]).lower()
+        assert "source=unknown" not in str(sig["example_snippet"]).lower()
 
 
 def test_no_event_corp_watch_includes_scan_stats() -> None:
@@ -72,7 +77,11 @@ def test_no_event_corp_watch_includes_scan_stats() -> None:
     assert corp.get("updates", -1) == 0
     assert corp.get("mentions_count", -1) == 0
     assert corp.get("trend_direction") == "STABLE"
-    assert "monitoring continues" in str(corp.get("status_message", "")).lower()
+    status = str(corp.get("status_message", ""))
+    assert "掃描統計" in status
+    assert "sources_total=" in status
+    assert "success_count=" in status
+    assert "fail_count=" in status
     assert "sources_total" in corp
     assert "success_count" in corp
     assert "fail_count" in corp
@@ -113,10 +122,12 @@ def test_no_event_still_generates_complete_deck(tmp_path: Path) -> None:
     assert "sources_total" in text
     assert "fetched_total" in text
     assert "gate_pass_total" in text
-    assert "monitoring continues" in text.lower()
+    assert "sources_total" in text.lower()
+    assert "success_count" in text.lower()
     assert "fallback monitoring signal" not in text.lower()
     assert "desktop smoke signal" not in text.lower()
     assert "signals_insufficient=true" not in text.lower()
+    assert "source=unknown" not in text.lower()
 
 
 def test_empty_passed_signals_mark_insufficient() -> None:

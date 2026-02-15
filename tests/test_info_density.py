@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 from core.info_density import (
     apply_density_gate,
+    apply_density_tiering,
+    classify_density_tier,
     evaluate_text_density,
     info_density_breakdown,
 )
@@ -83,3 +85,56 @@ def test_apply_density_gate_stats_and_reasons() -> None:
     assert stats.rejected_total == len(rejected)
     assert isinstance(stats.avg_score, float)
     assert stats.rejected_reason_top
+
+
+def test_density_tiering_a_b_c_routes() -> None:
+    tier_a = classify_density_tier(
+        (
+            "NVIDIA released CUDA 13.2 in 2026 with 18% throughput gain. "
+            "OpenAI benchmark reported 120 ms latency across 12 regions. "
+            "Microsoft published deployment cost reduction of 22%."
+        ),
+        "event",
+    )
+    assert tier_a.tier == "A"
+
+    tier_b = classify_density_tier(
+        (
+            "OpenAI copilots reached 12 support teams this week. "
+            "Microsoft integration reduced triage time by 30%."
+        ),
+        "event",
+    )
+    assert tier_b.tier == "B"
+    assert "insufficient_sentences" in tier_b.reason_flags
+
+    tier_c = classify_density_tier("Last July was...", "event")
+    assert tier_c.tier == "C"
+    assert "fragment_placeholder" in tier_c.reason_flags
+
+
+def test_apply_density_tiering_sets_density_tier_attribute() -> None:
+    items = [
+        _Item(
+            body=(
+                "OpenAI launched GPT-5.3 in 2026 with 20% cost reduction. "
+                "Microsoft Azure deployed it in 12 regions. "
+                "Google benchmark showed 95 ms latency."
+            )
+        ),
+        _Item(
+            body=(
+                "OpenAI copilots reached 12 support teams this week. "
+                "Microsoft integration reduced triage time by 30%."
+            )
+        ),
+        _Item(body="Last July was..."),
+    ]
+
+    tier_a, tier_b, tier_c, _ = apply_density_tiering(items, "event", text_getter=lambda x: x.body)
+    assert len(tier_a) == 1
+    assert len(tier_b) == 1
+    assert len(tier_c) == 1
+    assert getattr(items[0], "density_tier", "") == "A"
+    assert getattr(items[1], "density_tier", "") == "B"
+    assert getattr(items[2], "density_tier", "") == "C"
