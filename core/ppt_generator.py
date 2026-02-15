@@ -21,6 +21,7 @@ from pptx.util import Cm, Pt
 from core.content_strategy import (
     build_ceo_article_blocks,
     build_decision_card,
+    build_executive_summary,
     build_term_explainer,
     is_non_event_or_index,
     sanitize,
@@ -179,6 +180,33 @@ def _slide_cover(prs: Presentation, report_time: str) -> None:
     _add_textbox(slide, Cm(4), Cm(15), Cm(26), Cm(1.5),
                  report_time, font_size=14, color=LIGHT_GRAY,
                  alignment=PP_ALIGN.CENTER)
+
+
+def _slide_executive_summary(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Executive Summary — narrative paragraph, not bullets."""
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # Title
+    _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
+                 "今日重點總覽", font_size=36, bold=True, color=DARK_TEXT)
+    _add_textbox(slide, Cm(2), Cm(3), Cm(30), Cm(1.2),
+                 "Executive Summary", font_size=16, color=MID_GRAY)
+    _add_divider(slide, Cm(2), Cm(4.2), Cm(4), color=ACCENT)
+
+    # Narrative body — each sentence as a separate paragraph, no bullets
+    summary_lines = build_executive_summary(cards)
+    txBox = slide.shapes.add_textbox(Cm(2.5), Cm(5.5), Cm(29), Cm(13))
+    tf = txBox.text_frame
+    tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+
+    for i, line in enumerate(summary_lines):
+        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+        p.text = safe_text(line, 160)
+        p.font.size = Pt(18)
+        p.font.color.rgb = DARK_TEXT
+        p.space_after = Pt(14)
 
 
 def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
@@ -425,6 +453,7 @@ def generate_executive_ppt(
     prs.slide_height = SLIDE_HEIGHT
 
     _slide_cover(prs, report_time)
+    _slide_executive_summary(prs, cards)
     _slide_key_takeaways(prs, cards, total_items)
     _slide_overview_table(prs, cards)
 

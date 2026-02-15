@@ -21,6 +21,7 @@ from docx.shared import Cm, Pt, RGBColor
 from core.content_strategy import (
     build_ceo_article_blocks,
     build_decision_card,
+    build_executive_summary,
     build_term_explainer,
     is_non_event_or_index,
     sanitize,
@@ -162,6 +163,24 @@ def _build_cover_section(doc: Document, report_time: str, total_items: int,
     run_info.font.size = Pt(11)
     run_info.font.color.rgb = GRAY_COLOR
     doc.add_page_break()
+
+
+def _build_executive_summary(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Executive Summary — narrative paragraph, not bullets."""
+    _add_heading(doc, "今日重點總覽", level=1)
+    subtitle = doc.add_paragraph("Executive Summary")
+    subtitle.runs[0].font.size = Pt(12)
+    subtitle.runs[0].font.color.rgb = GRAY_COLOR
+    _add_divider(doc)
+
+    summary_lines = build_executive_summary(cards)
+    for line in summary_lines:
+        p = doc.add_paragraph(sanitize(line))
+        p.paragraph_format.space_after = Pt(8)
+        for run in p.runs:
+            run.font.size = Pt(11)
+            run.font.color.rgb = DARK_TEXT
+    _add_divider(doc)
 
 
 def _build_key_takeaways(doc: Document, cards: list[EduNewsCard],
@@ -321,6 +340,7 @@ def generate_executive_docx(
     style.font.size = Pt(11)
 
     _build_cover_section(doc, report_time, total_items, health)
+    _build_executive_summary(doc, cards)
     _build_key_takeaways(doc, cards, total_items)
     _build_overview_table(doc, cards)
 

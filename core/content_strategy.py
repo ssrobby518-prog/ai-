@@ -875,6 +875,104 @@ def build_term_explainer_qa(card: EduNewsCard) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Executive Summary — daily business narrative (3–5 sentences)
+# ---------------------------------------------------------------------------
+
+
+def build_executive_summary(news_cards: list[EduNewsCard]) -> list[str]:
+    """Synthesize multiple news cards into a 3–5 sentence business narrative.
+
+    This is NOT a bullet list — it reads like a daily CEO briefing paragraph.
+    Sources: each card's why_it_matters, possible_impact, risks.
+    Returns list of 3–5 complete Chinese sentences (no bullets).
+    """
+    event_cards = [
+        c for c in news_cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    if not event_cards:
+        return [
+            "今日掃描的資訊來源中，沒有需要管理層立即關注的重大事件。",
+            "多數內容為產業索引頁或非單一事件報導，已自動排除。",
+            "建議維持目前監控頻率，明日再檢視是否有新動態浮現。",
+        ]
+
+    # Collect raw material from all event cards
+    categories: list[str] = []
+    why_fragments: list[str] = []
+    impact_fragments: list[str] = []
+    risk_fragments: list[str] = []
+
+    for card in event_cards:
+        article = build_ceo_article_blocks(card)
+
+        cat = (card.category or "").strip()
+        if cat and cat not in categories:
+            categories.append(cat)
+
+        for w in article.get("why_it_matters", []):
+            cleaned = _clean_text(w, 80)
+            if cleaned and len(cleaned) > 8 and not cleaned.startswith("缺口"):
+                why_fragments.append(cleaned)
+
+        for imp in article.get("possible_impact", []):
+            cleaned = _clean_text(imp, 80)
+            if cleaned and len(cleaned) > 8 and not cleaned.startswith("缺口"):
+                impact_fragments.append(cleaned)
+
+        for r in article.get("risks", []):
+            cleaned = _clean_text(r, 80)
+            if cleaned and len(cleaned) > 8 and not cleaned.startswith("缺口"):
+                risk_fragments.append(cleaned)
+
+    # Build narrative sentences
+    n_events = len(event_cards)
+    sentences: list[str] = []
+
+    # Sentence 1: market overview (what happened today)
+    cat_label = "、".join(categories[:3]) if categories else "科技"
+    sentences.append(
+        f"今日共有 {n_events} 則值得關注的動態，"
+        f"主要集中在{cat_label}領域。"
+    )
+
+    # Sentence 2: why it matters (trend / competitive signal)
+    if why_fragments:
+        best_why = _smart_truncate(why_fragments[0], 100)
+        sentences.append(f"目前趨勢顯示：{best_why}。")
+    elif impact_fragments:
+        best_imp = _smart_truncate(impact_fragments[0], 100)
+        sentences.append(f"對公司而言，{best_imp}。")
+
+    # Sentence 3: broader impact
+    if impact_fragments and len(sentences) < 4:
+        # Pick an impact fragment we haven't used
+        used = set(sentences)
+        for frag in impact_fragments:
+            candidate = f"從業務面來看，{_smart_truncate(frag, 100)}。"
+            if candidate not in used:
+                sentences.append(candidate)
+                break
+
+    # Sentence 4: risk posture
+    if risk_fragments:
+        best_risk = _smart_truncate(risk_fragments[0], 100)
+        sentences.append(f"風險方面需留意：{best_risk}。")
+    else:
+        sentences.append("目前沒有需要立即決策的高風險事項。")
+
+    # Sentence 5: recommendation
+    if n_events >= 3:
+        sentences.append("建議管理層本週內安排簡短討論，確認是否需要調整策略方向。")
+    else:
+        sentences.append("建議持續關注相關發展，如有變化將在下次報告中更新。")
+
+    # Ensure 3–5 sentences
+    return sentences[:5]
+
+
+# ---------------------------------------------------------------------------
 # CEO article blocks (replaces Q/A format with article-style content)
 # ---------------------------------------------------------------------------
 
