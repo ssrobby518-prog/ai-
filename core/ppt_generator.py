@@ -1,9 +1,9 @@
-"""PPTX 總經理版簡報生成器 — Notion 文檔式排版。
+"""PPTX CEO Motion Slides — Dark Theme 簡報生成器。
 
-白底、左對齊、大留白、細分隔線、無厚重色塊。
-每則新聞兩頁：Page 1 文章頁 + Page 2 名詞+來源頁。
-色彩系統：#212838 深藍文字 + #E65A37 橘色 accent。
-含嵌入圖片、6 欄決策卡、名詞白話解釋、決策摘要表格。
+深色背景、黃色高亮、白色內文。
+每則新聞兩頁：Page 1 WHAT HAPPENED + Page 2 WHY IT MATTERS (Q&A)。
+色彩系統：#121218 深色背景 + #FFD600 黃色高亮 + #E65A37 橘色 accent。
+含數據卡、CEO 比喻、Video Reference、Sources。
 
 禁用詞彙：ai捕捉、AI Intel、Z1~Z5、pipeline、ETL、verify_run、ingestion、ai_core
 禁用系統運作字眼：系統健康、資料可信度、延遲、P95、雜訊清除、健康狀態
@@ -19,10 +19,9 @@ from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Cm, Pt
 
 from core.content_strategy import (
-    build_ceo_article_blocks,
+    build_ceo_brief_blocks,
     build_decision_card,
-    build_executive_summary,
-    build_term_explainer,
+    build_structured_executive_summary,
     is_non_event_or_index,
     sanitize,
 )
@@ -34,15 +33,14 @@ from schemas.education_models import (
 from utils.logger import get_logger
 
 # ---------------------------------------------------------------------------
-# Notion-style colour palette
+# CEO Motion Slides — Dark Theme colour palette
 # ---------------------------------------------------------------------------
-DARK_TEXT = RGBColor(33, 40, 56)       # #212838 — primary text
-ACCENT = RGBColor(230, 90, 55)        # #E65A37 — orange accent
-WHITE = RGBColor(255, 255, 255)
-BG_WHITE = RGBColor(255, 255, 255)    # slide background
-LIGHT_GRAY = RGBColor(180, 180, 180)  # subtle text
-MID_GRAY = RGBColor(120, 120, 120)    # secondary text
-TABLE_HEADER_BG = RGBColor(245, 245, 245)  # very light gray for table headers
+BG_DARK = RGBColor(0x12, 0x12, 0x18)          # #121218
+TEXT_WHITE = RGBColor(0xF0, 0xF0, 0xF0)        # #F0F0F0
+HIGHLIGHT_YELLOW = RGBColor(0xFF, 0xD6, 0x00)  # #FFD600
+ACCENT = RGBColor(0xE6, 0x5A, 0x37)            # #E65A37
+SUBTLE_GRAY = RGBColor(0x64, 0x64, 0x6E)       # #64646E
+CARD_BG = RGBColor(0x1C, 0x1C, 0x24)           # #1C1C24
 
 SLIDE_WIDTH = Cm(33.867)   # 16:9 default
 SLIDE_HEIGHT = Cm(19.05)
@@ -58,7 +56,6 @@ def safe_text(text: str, limit: int = 200) -> str:
     t = sanitize(text)
     if len(t) <= limit:
         return t
-    # Try to cut at word/sentence boundary
     cut = t[:limit]
     for sep in ["。", ". ", "，", " "]:
         pos = cut.rfind(sep)
@@ -67,7 +64,9 @@ def safe_text(text: str, limit: int = 200) -> str:
     return cut + "…"
 
 
-def _set_slide_bg(slide, color: RGBColor = BG_WHITE) -> None:
+def _set_slide_bg(slide, color: RGBColor = None) -> None:
+    if color is None:
+        color = BG_DARK
     bg = slide.background
     fill = bg.fill
     fill.solid()
@@ -76,9 +75,11 @@ def _set_slide_bg(slide, color: RGBColor = BG_WHITE) -> None:
 
 def _add_textbox(
     slide, left, top, width, height, text: str,
-    font_size: int = 18, color: RGBColor = DARK_TEXT,
+    font_size: int = 18, color: RGBColor = None,
     bold: bool = False, alignment: PP_ALIGN = PP_ALIGN.LEFT,
 ) -> None:
+    if color is None:
+        color = TEXT_WHITE
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
@@ -93,9 +94,11 @@ def _add_textbox(
 
 def _add_multiline_textbox(
     slide, left, top, width, height, lines: list[str],
-    font_size: int = 14, color: RGBColor = DARK_TEXT,
+    font_size: int = 14, color: RGBColor = None,
     bold_first: bool = False, line_spacing: float = 1.5,
 ) -> None:
+    if color is None:
+        color = TEXT_WHITE
     txBox = slide.shapes.add_textbox(left, top, width, height)
     tf = txBox.text_frame
     tf.word_wrap = True
@@ -110,7 +113,40 @@ def _add_multiline_textbox(
         p.space_after = Pt(font_size * (line_spacing - 1))
 
 
-def _add_divider(slide, left, top, width, color: RGBColor = ACCENT) -> None:
+def _add_highlight_textbox(
+    slide, left, top, width, height,
+    prefix: str, highlight: str, suffix: str = "",
+    font_size: int = 18,
+) -> None:
+    """Add a textbox with keyword in yellow bold (HIGHLIGHT_YELLOW)."""
+    txBox = slide.shapes.add_textbox(left, top, width, height)
+    tf = txBox.text_frame
+    tf.word_wrap = True
+    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    p = tf.paragraphs[0]
+
+    if prefix:
+        run_pre = p.add_run()
+        run_pre.text = safe_text(prefix)
+        run_pre.font.size = Pt(font_size)
+        run_pre.font.color.rgb = TEXT_WHITE
+
+    run_hl = p.add_run()
+    run_hl.text = safe_text(highlight)
+    run_hl.font.size = Pt(font_size)
+    run_hl.font.color.rgb = HIGHLIGHT_YELLOW
+    run_hl.font.bold = True
+
+    if suffix:
+        run_suf = p.add_run()
+        run_suf.text = safe_text(suffix)
+        run_suf.font.size = Pt(font_size)
+        run_suf.font.color.rgb = TEXT_WHITE
+
+
+def _add_divider(slide, left, top, width, color: RGBColor = None) -> None:
+    if color is None:
+        color = ACCENT
     line = slide.shapes.add_shape(1, left, top, width, Cm(0.05))
     line.fill.solid()
     line.fill.fore_color.rgb = color
@@ -122,7 +158,7 @@ def _add_table_slide(prs: Presentation, title: str,
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
     _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
-                 title, font_size=28, bold=True, color=DARK_TEXT)
+                 title, font_size=28, bold=True, color=HIGHLIGHT_YELLOW)
     _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
 
     n_rows = len(rows) + 1
@@ -138,18 +174,18 @@ def _add_table_slide(prs: Presentation, title: str,
         for p in cell.text_frame.paragraphs:
             p.font.size = Pt(10)
             p.font.bold = True
-            p.font.color.rgb = DARK_TEXT
+            p.font.color.rgb = TEXT_WHITE
         cell.fill.solid()
-        cell.fill.fore_color.rgb = TABLE_HEADER_BG
+        cell.fill.fore_color.rgb = CARD_BG
     for ri, row_data in enumerate(rows):
         for ci, val in enumerate(row_data):
             cell = tbl.cell(ri + 1, ci)
             cell.text = safe_text(val)
             for p in cell.text_frame.paragraphs:
                 p.font.size = Pt(9)
-                p.font.color.rgb = DARK_TEXT
+                p.font.color.rgb = TEXT_WHITE
             cell.fill.solid()
-            cell.fill.fore_color.rgb = WHITE
+            cell.fill.fore_color.rgb = BG_DARK
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +196,7 @@ def _add_table_slide(prs: Presentation, title: str,
 def _slide_cover(prs: Presentation, report_time: str) -> None:
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
-    # Cover banner image — ensures deck always has at least 1 image
+    # Cover banner image
     try:
         img_path = get_news_image("Daily Tech Intelligence Briefing", "科技")
         if img_path and img_path.exists():
@@ -171,54 +207,63 @@ def _slide_cover(prs: Presentation, report_time: str) -> None:
         pass
     _add_divider(slide, Cm(0), Cm(7.2), SLIDE_WIDTH, color=ACCENT)
     _add_textbox(slide, Cm(4), Cm(8), Cm(26), Cm(3.5),
-                 "每日科技趨勢簡報", font_size=44, bold=True,
-                 color=DARK_TEXT, alignment=PP_ALIGN.CENTER)
+                 "CEO Decision Brief", font_size=44, bold=True,
+                 color=HIGHLIGHT_YELLOW, alignment=PP_ALIGN.CENTER)
     _add_textbox(slide, Cm(4), Cm(11.5), Cm(26), Cm(2),
-                 "Daily Tech Intelligence Briefing", font_size=20,
-                 color=MID_GRAY, alignment=PP_ALIGN.CENTER)
+                 "每日科技趨勢簡報", font_size=20,
+                 color=SUBTLE_GRAY, alignment=PP_ALIGN.CENTER)
     _add_divider(slide, Cm(15.5), Cm(14), Cm(3), color=ACCENT)
     _add_textbox(slide, Cm(4), Cm(15), Cm(26), Cm(1.5),
-                 report_time, font_size=14, color=LIGHT_GRAY,
+                 report_time, font_size=14, color=SUBTLE_GRAY,
                  alignment=PP_ALIGN.CENTER)
 
 
-def _slide_executive_summary(prs: Presentation, cards: list[EduNewsCard]) -> None:
-    """Executive Summary — narrative paragraph, not bullets."""
+def _slide_structured_summary(prs: Presentation, cards: list[EduNewsCard]) -> None:
+    """Structured Executive Summary — 5 sections, yellow titles, white content."""
+    summary = build_structured_executive_summary(cards)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
 
-    # Title
-    _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
-                 "今日重點總覽", font_size=36, bold=True, color=DARK_TEXT)
-    _add_textbox(slide, Cm(2), Cm(3), Cm(30), Cm(1.2),
-                 "Executive Summary", font_size=16, color=MID_GRAY)
-    _add_divider(slide, Cm(2), Cm(4.2), Cm(4), color=ACCENT)
+    # Page title
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Structured Summary", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
 
-    # Narrative body — each sentence as a separate paragraph, no bullets
-    summary_lines = build_executive_summary(cards, tone="neutral")
-    txBox = slide.shapes.add_textbox(Cm(2.5), Cm(5.5), Cm(29), Cm(13))
-    tf = txBox.text_frame
-    tf.word_wrap = True
-    tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+    section_map = [
+        ("AI Trends", summary.get("ai_trends", [])),
+        ("Tech Landing", summary.get("tech_landing", [])),
+        ("Market Competition", summary.get("market_competition", [])),
+        ("Opportunities & Risks", summary.get("opportunities_risks", [])),
+        ("Recommended Actions", summary.get("recommended_actions", [])),
+    ]
 
-    for i, line in enumerate(summary_lines):
-        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = safe_text(line, 160)
-        p.font.size = Pt(18)
-        p.font.color.rgb = DARK_TEXT
-        p.space_after = Pt(14)
+    y = 3.0
+    for sec_title, items in section_map:
+        # Section title in yellow
+        _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                     sec_title, font_size=14, bold=True,
+                     color=HIGHLIGHT_YELLOW)
+        y += 1.0
+        # Content in white
+        for item in items[:2]:
+            _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                         f"• {safe_text(item, 80)}", font_size=11,
+                         color=TEXT_WHITE)
+            y += 0.8
+        y += 0.3
 
 
 def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
                          total_items: int) -> None:
-    """Key takeaways — NO system health/metrics."""
+    """Key takeaways slide."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
     _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
-                 "Key Takeaways", font_size=36, bold=True, color=DARK_TEXT)
+                 "Key Takeaways", font_size=36, bold=True,
+                 color=HIGHLIGHT_YELLOW)
     _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
 
-    # Filter to event cards only
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
 
     takeaways: list[str] = []
@@ -231,7 +276,7 @@ def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
 
     _add_multiline_textbox(
         slide, Cm(3), Cm(4.5), Cm(28), Cm(13),
-        takeaways, font_size=18, color=DARK_TEXT, line_spacing=1.8,
+        takeaways, font_size=18, color=TEXT_WHITE, line_spacing=1.8,
     )
 
 
@@ -249,25 +294,144 @@ def _slide_overview_table(prs: Presentation, cards: list[EduNewsCard]) -> None:
     _add_table_slide(prs, "今日總覽  Overview", headers, rows)
 
 
-def _slide_section(prs: Presentation, title: str, subtitle: str = "") -> None:
+def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+    """WHAT HAPPENED slide — event badge, title, AI trend, hero image,
+    event liner, data card, CEO metaphor."""
+    brief = build_ceo_brief_blocks(card)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
-    _add_divider(slide, Cm(2), Cm(6), Cm(4), color=ACCENT)
-    _add_textbox(slide, Cm(3), Cm(6.5), Cm(28), Cm(4),
-                 title, font_size=36, bold=True, color=DARK_TEXT)
-    if subtitle:
-        _add_textbox(slide, Cm(3), Cm(10.5), Cm(28), Cm(2),
-                     subtitle, font_size=16, color=MID_GRAY)
+
+    # Event badge number
+    _add_textbox(slide, Cm(1.5), Cm(0.5), Cm(3), Cm(1.2),
+                 f"#{idx}", font_size=28, bold=True,
+                 color=ACCENT)
+
+    # Title (≤14 chars)
+    _add_textbox(slide, Cm(4.5), Cm(0.5), Cm(26), Cm(1.2),
+                 brief["title"], font_size=22, bold=True,
+                 color=TEXT_WHITE)
+
+    # AI trend liner (yellow)
+    _add_textbox(slide, Cm(2), Cm(1.8), Cm(30), Cm(1),
+                 brief["ai_trend_liner"], font_size=12,
+                 color=HIGHLIGHT_YELLOW)
+
+    # Hero image (full width)
+    text_top = Cm(3.0)
+    try:
+        img_path = get_news_image(card.title_plain, card.category)
+        if img_path and img_path.exists():
+            slide.shapes.add_picture(
+                str(img_path), Cm(0), Cm(3.0), SLIDE_WIDTH, Cm(5.5),
+            )
+            text_top = Cm(8.8)
+    except Exception:
+        pass
+
+    # Event one-liner
+    _add_textbox(slide, Cm(2), text_top, Cm(30), Cm(1.2),
+                 brief["event_liner"], font_size=14,
+                 color=TEXT_WHITE)
+
+    y_cursor = text_top.cm + 1.5
+
+    # Data card → large yellow numbers
+    data_items = brief.get("data_card", [])
+    if data_items:
+        for item in data_items[:2]:
+            _add_textbox(slide, Cm(2), Cm(y_cursor), Cm(10), Cm(1.5),
+                         item["value"], font_size=32, bold=True,
+                         color=HIGHLIGHT_YELLOW)
+            _add_textbox(slide, Cm(13), Cm(y_cursor + 0.3), Cm(18), Cm(1),
+                         item["label"], font_size=12,
+                         color=SUBTLE_GRAY)
+            y_cursor += 1.8
+
+    # CEO metaphor (italic style — using subtle gray)
+    metaphor = brief.get("ceo_metaphor", "")
+    if metaphor:
+        txBox = slide.shapes.add_textbox(
+            Cm(2), Cm(min(y_cursor, 16.5)), Cm(30), Cm(1.5))
+        tf = txBox.text_frame
+        tf.word_wrap = True
+        tf.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = safe_text(metaphor, 150)
+        run.font.size = Pt(12)
+        run.font.color.rgb = SUBTLE_GRAY
+        run.font.italic = True
 
 
-def _slide_text(prs: Presentation, title: str, body_lines: list[str]) -> None:
+def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+    """WHY IT MATTERS (Q&A) slide — Q1/Q2/Q3, video reference, sources."""
+    brief = build_ceo_brief_blocks(card)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
-    _add_textbox(slide, Cm(2), Cm(1.2), Cm(30), Cm(2),
-                 title, font_size=28, bold=True, color=DARK_TEXT)
-    _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
-    _add_multiline_textbox(slide, Cm(2.5), Cm(4), Cm(29), Cm(14),
-                           body_lines, font_size=15, color=DARK_TEXT)
+
+    # Page header
+    _add_textbox(slide, Cm(2), Cm(0.5), Cm(28), Cm(1.2),
+                 f"#{idx}  WHY IT MATTERS", font_size=22, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(1.8), Cm(4), color=ACCENT)
+
+    y = 2.5
+
+    # Q1 — 商業意義
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(0.8),
+                 "Q1：這件事的商業意義？", font_size=14, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.0
+    _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(1.5),
+                 brief["q1_meaning"], font_size=12,
+                 color=TEXT_WHITE)
+    y += 1.8
+
+    # Q2 — 對公司影響
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(0.8),
+                 "Q2：對公司的影響？", font_size=14, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.0
+    _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(1.5),
+                 brief["q2_impact"], font_size=12,
+                 color=TEXT_WHITE)
+    y += 1.8
+
+    # Q3 — 現在要做什麼 (numbered actions ≤3)
+    _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(0.8),
+                 "Q3：現在要做什麼？", font_size=14, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    y += 1.0
+    actions = brief.get("q3_actions", [])
+    action_lines = [f"{i}. {safe_text(a, 60)}" for i, a in enumerate(actions[:3], 1)]
+    _add_multiline_textbox(
+        slide, Cm(3), Cm(y), Cm(28), Cm(2.5),
+        action_lines, font_size=12, color=TEXT_WHITE, line_spacing=1.4,
+    )
+    y += max(len(action_lines) * 0.9, 1.5) + 0.5
+
+    # Divider before bottom section
+    _add_divider(slide, Cm(2), Cm(min(y, 15.5)), Cm(30), color=SUBTLE_GRAY)
+    y = min(y + 0.5, 16.0)
+
+    # Video reference
+    videos = brief.get("video_source", [])
+    if videos:
+        vid = videos[0]
+        _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(0.7),
+                     f"Video: {safe_text(vid.get('title', ''), 50)}",
+                     font_size=10, color=SUBTLE_GRAY)
+        y += 0.7
+        _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(0.5),
+                     vid.get("url", ""), font_size=8, color=SUBTLE_GRAY)
+        y += 0.7
+
+    # Sources
+    sources = brief.get("sources", [])
+    if sources:
+        _add_textbox(slide, Cm(2), Cm(min(y, 17.5)), Cm(30), Cm(0.7),
+                     f"Source: {safe_text(sources[0], 80)}",
+                     font_size=9, color=SUBTLE_GRAY)
 
 
 def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> None:
@@ -275,7 +439,8 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
     _add_textbox(slide, Cm(2), Cm(1.5), Cm(30), Cm(2.5),
-                 "待決事項與 Owner", font_size=36, bold=True, color=DARK_TEXT)
+                 "待決事項與 Owner", font_size=36, bold=True,
+                 color=HIGHLIGHT_YELLOW)
     _add_divider(slide, Cm(2), Cm(3.8), Cm(4), color=ACCENT)
 
     items: list[str] = []
@@ -290,144 +455,9 @@ def _slide_pending_decisions(prs: Presentation, cards: list[EduNewsCard]) -> Non
         items.append("1. 本日無待決事項")
 
     _add_multiline_textbox(slide, Cm(3), Cm(5), Cm(28), Cm(13),
-                           items, font_size=18, color=DARK_TEXT,
+                           items, font_size=18, color=TEXT_WHITE,
                            line_spacing=1.8)
     _add_divider(slide, Cm(0), Cm(18.7), SLIDE_WIDTH, color=ACCENT)
-
-
-# ---------------------------------------------------------------------------
-# News card slides — two-page article layout per card
-# Page 1: headline + hero image + one-liner + facts + why + impact + actions + quote
-# Page 2: key terms with CEO-readable explanations + sources
-# ---------------------------------------------------------------------------
-
-
-def _slide_article_page1(prs: Presentation, card: EduNewsCard,
-                         idx: int, article: dict) -> None:
-    """Article page 1: headline + banner + one_liner + facts + why + impact."""
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_slide_bg(slide)
-
-    # Headline
-    _add_textbox(slide, Cm(2), Cm(0.5), Cm(30), Cm(1.8),
-                 f"#{idx}  {safe_text(article['headline_cn'], 40)}",
-                 font_size=24, bold=True, color=DARK_TEXT)
-    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
-
-    # Hero image — full-width banner (not inset)
-    text_top = Cm(2.6)
-    try:
-        img_path = get_news_image(card.title_plain, card.category)
-        if img_path and img_path.exists():
-            slide.shapes.add_picture(
-                str(img_path), Cm(0), Cm(2.6), SLIDE_WIDTH, Cm(6),
-            )
-            text_top = Cm(9)
-    except Exception:
-        pass
-
-    # Page 1 body: one_liner + facts + why_it_matters + possible_impact
-    body: list[str] = []
-
-    # Event one-liner
-    body.append(f"事件：{safe_text(article['one_liner'], 80)}")
-    body.append("")
-
-    # Known facts (up to 3)
-    body.append("已知事實：")
-    for fact in article.get("known_facts", [])[:3]:
-        body.append(f"  • {safe_text(fact, 55)}")
-    body.append("")
-
-    # Why it matters (up to 2)
-    body.append("為什麼重要：")
-    for why in article.get("why_it_matters", [])[:2]:
-        body.append(f"  • {safe_text(why, 55)}")
-
-    # Possible impact (up to 3)
-    impacts = article.get("possible_impact", [])[:3]
-    if impacts:
-        body.append("")
-        body.append("可能影響：")
-        for imp in impacts:
-            body.append(f"  • {safe_text(imp, 55)}")
-
-    remaining_h = 18.5 - text_top.cm
-    _add_multiline_textbox(slide, Cm(2), text_top, Cm(30), Cm(remaining_h),
-                           body, font_size=13, color=DARK_TEXT,
-                           line_spacing=1.25)
-
-
-def _slide_article_page2(prs: Presentation, card: EduNewsCard,
-                         idx: int, article: dict) -> None:
-    """Article page 2: risks + actions + key terms + quote + sources."""
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    _set_slide_bg(slide)
-
-    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
-                 f"#{idx}  風險・行動・名詞解釋",
-                 font_size=22, bold=True, color=DARK_TEXT)
-    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
-
-    lines: list[str] = []
-
-    # Risks
-    risks = article.get("risks", [])
-    if risks:
-        lines.append("主要風險：")
-        for r in risks[:2]:
-            lines.append(f"  • {safe_text(r, 55)}")
-        lines.append("")
-
-    # Actions
-    actions = article.get("what_to_do", [])
-    if actions:
-        lines.append("建議下一步：")
-        for act in actions[:2]:
-            lines.append(f"  • {safe_text(act, 60)}")
-        lines.append("")
-
-    # Quote
-    if article.get("quote"):
-        lines.append(f"▌ 「{safe_text(article['quote'], 100)}」")
-        lines.append("")
-
-    # Key terms — Notion-style: term + what + CEO concern
-    term_items = build_term_explainer(card)
-    if term_items:
-        lines.append("——————")
-        lines.append("重要名詞白話解釋：")
-        for item in term_items:
-            lines.append(f"  {item['term']}：{safe_text(item['explain'], 80)}")
-            if item.get("biz"):
-                lines.append(f"    {safe_text(item['biz'], 80)}")
-        lines.append("")
-
-    # Sources
-    sources = article.get("sources", [])
-    if sources:
-        lines.append("——————")
-        lines.append("來源：")
-        for src in sources[:2]:
-            lines.append(f"  {safe_text(src, 90)}")
-
-    _add_multiline_textbox(slide, Cm(2.5), Cm(3), Cm(29), Cm(15.5),
-                           lines, font_size=12, color=DARK_TEXT,
-                           line_spacing=1.3)
-
-
-def _slides_news_card(prs: Presentation, card: EduNewsCard, idx: int) -> None:
-    if not card.is_valid_news:
-        _slide_text(prs, f"#{idx} — 無效內容", [
-            f"判定：{card.invalid_reason or '非新聞內容'}",
-            "", f"原因：{card.invalid_cause or '資料抓取異常'}",
-            f"處理建議：{card.invalid_fix or '調整來源設定'}",
-        ])
-        return
-
-    article = build_ceo_article_blocks(card)
-    _slide_article_page1(prs, card, idx, article)
-    _slide_article_page2(prs, card, idx, article)
 
 
 # ---------------------------------------------------------------------------
@@ -452,22 +482,27 @@ def generate_executive_ppt(
     prs.slide_width = SLIDE_WIDTH
     prs.slide_height = SLIDE_HEIGHT
 
+    # 1. Cover
     _slide_cover(prs, report_time)
-    _slide_executive_summary(prs, cards)
+
+    # 2. Structured Summary (5 sections)
+    _slide_structured_summary(prs, cards)
+
+    # 3. Key Takeaways
     _slide_key_takeaways(prs, cards, total_items)
+
+    # 4. Overview Table
     _slide_overview_table(prs, cards)
 
     # Filter: only event cards for the CEO deck
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
-    non_event_valid = [c for c in cards if c.is_valid_news and is_non_event_or_index(c)]
-    invalid_cards = [c for c in cards if not c.is_valid_news]
 
-    if event_cards:
-        _slide_section(prs, "新聞深度解析", "News Analysis")
-        for i, card in enumerate(event_cards, 1):
-            _slides_news_card(prs, card, i)
+    # 5. Per-event: brief_page1 + brief_page2
+    for i, card in enumerate(event_cards, 1):
+        _slide_brief_page1(prs, card, i)
+        _slide_brief_page2(prs, card, i)
 
-    # Decision Summary Table (6 columns) — event cards only
+    # 6. Decision Matrix (6 columns)
     if event_cards:
         decision_rows = []
         for i, c in enumerate(event_cards[:8], 1):
@@ -486,25 +521,7 @@ def generate_executive_ppt(
             decision_rows,
         )
 
-    # Non-event cards get a brief mention, not full pages
-    if non_event_valid:
-        ne_rows = []
-        for i, c in enumerate(non_event_valid[:5], 1):
-            ne_rows.append([
-                str(i), safe_text(c.title_plain, 30),
-                "索引/非事件", "已排除",
-            ])
-        _add_table_slide(
-            prs, "已排除：索引/非事件來源",
-            ["#", "標題", "類型", "處理"],
-            ne_rows,
-        )
-
-    for i, card in enumerate(invalid_cards, len(event_cards) + 1):
-        _slides_news_card(prs, card, i)
-
-    # No system health / metrics slide — removed per CEO deck requirements
-
+    # 7. Pending Decisions
     _slide_pending_decisions(prs, cards)
 
     prs.save(str(output_path))

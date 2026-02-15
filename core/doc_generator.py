@@ -20,8 +20,10 @@ from docx.shared import Cm, Pt, RGBColor
 
 from core.content_strategy import (
     build_ceo_article_blocks,
+    build_ceo_brief_blocks,
     build_decision_card,
     build_executive_summary,
+    build_structured_executive_summary,
     build_term_explainer,
     is_non_event_or_index,
     sanitize,
@@ -293,6 +295,137 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
         run_src.font.color.rgb = GRAY_COLOR
 
 
+def _build_structured_summary(doc: Document, cards: list[EduNewsCard],
+                              tone: str = "neutral") -> None:
+    """Structured Executive Summary — 5 sections matching PPT."""
+    _add_heading(doc, "Structured Summary", level=1)
+    _add_divider(doc)
+
+    summary = build_structured_executive_summary(cards, tone)
+    section_map = [
+        ("AI Trends", summary.get("ai_trends", [])),
+        ("Tech Landing", summary.get("tech_landing", [])),
+        ("Market Competition", summary.get("market_competition", [])),
+        ("Opportunities & Risks", summary.get("opportunities_risks", [])),
+        ("Recommended Actions", summary.get("recommended_actions", [])),
+    ]
+    for sec_title, items in section_map:
+        _add_callout(doc, sec_title, [sanitize(it) for it in items[:3]])
+    _add_divider(doc)
+
+
+def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> None:
+    """CEO Brief card — WHAT HAPPENED + WHY IT MATTERS (Q&A), matching PPT."""
+    brief = build_ceo_brief_blocks(card)
+    _add_divider(doc)
+
+    # ── WHAT HAPPENED ──
+    _add_heading(doc, f"#{idx}  {brief['title']}", level=2)
+
+    # AI trend liner
+    p_trend = doc.add_paragraph()
+    run_trend = p_trend.add_run(sanitize(brief["ai_trend_liner"]))
+    run_trend.font.size = Pt(11)
+    run_trend.font.color.rgb = ACCENT_COLOR
+    run_trend.bold = True
+
+    # Image query (text reference)
+    p_img = doc.add_paragraph()
+    run_img = p_img.add_run(f"Image: {sanitize(brief['image_query'])}")
+    run_img.font.size = Pt(9)
+    run_img.font.color.rgb = GRAY_COLOR
+
+    # Embedded image
+    try:
+        img_path = get_news_image(card.title_plain, card.category)
+        if img_path.exists():
+            doc.add_picture(str(img_path), width=Cm(14))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    except Exception:
+        pass
+
+    # Event one-liner
+    _add_bold_label(doc, "事件", brief["event_liner"])
+
+    # Data card (1-3 metrics)
+    data_items = brief.get("data_card", [])
+    if data_items:
+        dc_lines = [f"{it['value']}  {it['label']}" for it in data_items[:3]]
+        _add_callout(doc, "Data Card", dc_lines)
+
+    # Chart spec (text block)
+    chart = brief.get("chart_spec", {})
+    if chart:
+        chart_lines = [
+            f"Chart Type: {chart.get('type', 'bar')}",
+            f"Labels: {', '.join(chart.get('labels', []))}",
+            f"Values: {', '.join(str(v) for v in chart.get('values', []))}",
+        ]
+        _add_callout(doc, "Chart Spec", chart_lines)
+
+    # CEO metaphor (italic)
+    metaphor = brief.get("ceo_metaphor", "")
+    if metaphor:
+        p_meta = doc.add_paragraph()
+        run_meta = p_meta.add_run(sanitize(metaphor))
+        run_meta.font.size = Pt(11)
+        run_meta.font.color.rgb = GRAY_COLOR
+        run_meta.italic = True
+
+    # ── WHY IT MATTERS (Q&A) ──
+    _add_heading(doc, f"#{idx}  WHY IT MATTERS", level=3)
+
+    # Q1
+    _add_bold_label(doc, "Q1：這件事的商業意義", brief["q1_meaning"])
+
+    # Q2
+    _add_bold_label(doc, "Q2：對公司的影響", brief["q2_impact"])
+
+    # Q3 (numbered actions ≤3)
+    actions = brief.get("q3_actions", [])
+    q3_lines = [f"{i}. {sanitize(a)}" for i, a in enumerate(actions[:3], 1)]
+    _add_callout(doc, "Q3：現在要做什麼", q3_lines)
+
+    # Video source
+    videos = brief.get("video_source", [])
+    if videos:
+        vid = videos[0]
+        p_vid = doc.add_paragraph()
+        run_vid = p_vid.add_run(
+            f"Video: {sanitize(vid.get('title', ''))} — {vid.get('url', '')}")
+        run_vid.font.size = Pt(9)
+        run_vid.font.color.rgb = GRAY_COLOR
+
+    # Sources
+    sources = brief.get("sources", [])
+    if sources:
+        p_src = doc.add_paragraph()
+        run_src = p_src.add_run(f"Source: {sources[0]}")
+        run_src.font.size = Pt(9)
+        run_src.font.color.rgb = GRAY_COLOR
+
+
+def _build_decision_matrix(doc: Document, cards: list[EduNewsCard]) -> None:
+    """Decision Matrix table — 6 columns, same as PPT."""
+    event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
+    if not event_cards:
+        return
+    _add_heading(doc, "決策摘要表  Decision Matrix", level=1)
+    rows = []
+    for i, c in enumerate(event_cards[:8], 1):
+        dc = build_decision_card(c)
+        rows.append([
+            str(i),
+            sanitize(dc["event"][:18]),
+            sanitize(dc["effects"][0][:25]) if dc["effects"] else "缺口",
+            sanitize(dc["risks"][0][:25]) if dc["risks"] else "缺口",
+            sanitize(dc["actions"][0][:30]) if dc["actions"] else "待確認",
+            dc["owner"],
+        ])
+    _make_simple_table(doc, ["#", "事件", "影響", "風險", "建議行動", "要問誰"], rows)
+    doc.add_paragraph("")
+
+
 def _build_conclusion_section(doc: Document, cards: list[EduNewsCard]) -> None:
     doc.add_page_break()
     _add_heading(doc, "待決事項與 Owner", level=1)
@@ -339,16 +472,27 @@ def generate_executive_docx(
     style.font.name = "Calibri"
     style.font.size = Pt(11)
 
+    # 1. Cover
     _build_cover_section(doc, report_time, total_items, health)
-    _build_executive_summary(doc, cards)
+
+    # 2. Structured Summary (5 sections — new CEO Brief format)
+    _build_structured_summary(doc, cards)
+
+    # 3. Key Takeaways
     _build_key_takeaways(doc, cards, total_items)
+
+    # 4. Overview Table
     _build_overview_table(doc, cards)
 
-    # Only include event cards in detail sections
+    # 5. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
     event_cards = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
     for i, card in enumerate(event_cards, 1):
-        _build_news_card_section(doc, card, i)
+        _build_brief_card_section(doc, card, i)
 
+    # 6. Decision Matrix
+    _build_decision_matrix(doc, cards)
+
+    # 7. Pending Decisions
     _build_conclusion_section(doc, cards)
 
     doc.save(str(output_path))

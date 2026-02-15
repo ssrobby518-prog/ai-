@@ -1131,3 +1131,360 @@ def build_executive_qa(card: EduNewsCard, dc: dict) -> list[str]:
         f"→ 指派{owner}用 1 個工作天完成初步影響評估並回報。",
     ]
     return lines
+
+
+# ---------------------------------------------------------------------------
+# CEO Brief — new functions for CEO Decision Brief upgrade
+# ---------------------------------------------------------------------------
+
+# Regex to extract numbers with optional units from text
+_NUMBER_RE = re.compile(
+    r"(\d[\d,.]*)\s*(%|億|萬|百萬|千萬|million|billion|percent|"
+    r"美元|元|USD|users|用戶|人|家|間|台|款|項|個|筆|件)",
+    re.IGNORECASE,
+)
+
+
+def build_data_card(card: EduNewsCard) -> list[dict[str, str]]:
+    """Extract numeric metrics from card text via regex.
+
+    Returns list of 1–3 dicts: [{"label": ..., "value": ...}, ...]
+    Sources: what_happened, fact_check_confirmed, evidence_lines, derivable_effects.
+    """
+    sources = [card.what_happened or ""]
+    sources.extend(card.fact_check_confirmed or [])
+    sources.extend(card.evidence_lines or [])
+    sources.extend(card.derivable_effects or [])
+    combined = " ".join(sources)
+
+    metrics: list[dict[str, str]] = []
+    seen_values: set[str] = set()
+    for match in _NUMBER_RE.finditer(combined):
+        value = match.group(1)
+        unit = match.group(2)
+        if value in seen_values:
+            continue
+        seen_values.add(value)
+        # Extract surrounding context as label (up to 15 chars before match)
+        start = max(0, match.start() - 15)
+        prefix = combined[start:match.start()].strip()
+        # Clean prefix to a short label
+        label = re.sub(r"^.*[，。；：,;:\s]", "", prefix)
+        if not label:
+            label = "數據"
+        metrics.append({"label": label, "value": f"{value}{unit}"})
+        if len(metrics) >= 3:
+            break
+
+    # Ensure at least 1 metric
+    if not metrics:
+        score = card.final_score
+        metrics.append({"label": "重要性評分", "value": f"{score:.1f}/10"})
+
+    return metrics
+
+
+def build_chart_spec(card: EduNewsCard) -> dict:
+    """Build a simple chart specification from card data.
+
+    Returns dict: {"type": "bar"|"line"|"pie", "labels": [...], "values": [...]}
+    """
+    data_card = build_data_card(card)
+
+    labels = [m["label"] for m in data_card]
+    # Extract numeric part from value strings
+    values: list[float] = []
+    for m in data_card:
+        nums = re.findall(r"[\d,.]+", m["value"])
+        if nums:
+            try:
+                values.append(float(nums[0].replace(",", "")))
+            except ValueError:
+                values.append(0.0)
+        else:
+            values.append(0.0)
+
+    # Choose chart type based on data characteristics
+    if len(labels) == 1:
+        chart_type = "bar"
+    elif len(labels) == 2:
+        chart_type = "line"
+    else:
+        chart_type = "pie"
+
+    return {
+        "type": chart_type,
+        "labels": labels,
+        "values": values,
+    }
+
+
+def build_video_source(card: EduNewsCard) -> list[dict[str, str]]:
+    """Convert video_suggestions to YouTube search URLs.
+
+    Returns list of dicts: [{"title": ..., "url": ...}, ...]
+    """
+    results: list[dict[str, str]] = []
+    suggestions = card.video_suggestions or []
+    for sug in suggestions[:2]:
+        cleaned = sanitize(sug)
+        if not cleaned:
+            continue
+        # Strip common prefixes
+        query = re.sub(r"^(YouTube\s*(search|搜尋)[：:]\s*)", "", cleaned, flags=re.IGNORECASE)
+        query = query.strip()
+        if not query:
+            continue
+        # URL-encode the query
+        import urllib.parse
+        encoded = urllib.parse.quote_plus(query)
+        url = f"https://www.youtube.com/results?search_query={encoded}"
+        results.append({"title": query, "url": url})
+
+    # Fallback: generate from title
+    if not results and card.title_plain:
+        title = sanitize(card.title_plain)
+        if title:
+            import urllib.parse
+            encoded = urllib.parse.quote_plus(title)
+            url = f"https://www.youtube.com/results?search_query={encoded}"
+            results.append({"title": title, "url": url})
+
+    return results
+
+
+# CEO metaphor connectors — at least one must appear
+_METAPHOR_CONNECTORS = ["就像", "等於是", "可以想像成", "好比", "類似於"]
+
+
+def build_ceo_metaphor(card: EduNewsCard) -> str:
+    """Build a CEO-readable metaphor (2–3 sentences) with mandatory connector.
+
+    Sources: card.metaphor, what_happened, why_important.
+    Must contain at least one of: 就像、等於是、可以想像成、好比、類似於
+    """
+    raw = (card.metaphor or "").strip()
+    raw_sanitized = sanitize(raw) if raw else ""
+
+    # Check if raw metaphor already has a connector
+    if raw_sanitized and any(c in raw_sanitized for c in _METAPHOR_CONNECTORS):
+        return _smart_truncate(raw_sanitized, 120)
+
+    # Build from scratch using card content
+    what = _clean_text(card.what_happened or "", 40)
+    why = _clean_text(card.why_important or "", 40)
+
+    if raw_sanitized:
+        # Add connector to existing metaphor
+        result = f"這件事就像{raw_sanitized}。"
+        if why:
+            result += f"對公司而言，等於是{why}。"
+    elif what and why:
+        result = f"可以想像成：{what}。等於是{why}。"
+    elif what:
+        result = f"可以想像成：{what}。"
+    else:
+        result = "就像產業地圖正在重新繪製，需要確認自己的位置是否改變。"
+
+    return _smart_truncate(result, 150)
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:
+    """Core assembly function: build all CEO Brief blocks for one card.
+
+    Returns dict with keys for Slide 1 (WHAT HAPPENED) and Slide 2 (WHY IT MATTERS):
+
+    Slide 1 keys:
+        title: str (≤14 chars)
+        ai_trend_liner: str
+        image_query: str
+        event_liner: str
+        data_card: list[dict]
+        chart_spec: dict
+        ceo_metaphor: str
+
+    Slide 2 keys:
+        q1_meaning: str (商業意義)
+        q2_impact: str (對公司影響)
+        q3_actions: list[str] (≤3 actions)
+        video_source: list[dict]
+        sources: list[str]
+    """
+    article = build_ceo_article_blocks(card)
+    dc = build_decision_card(card)
+
+    # --- Slide 1: WHAT HAPPENED ---
+    raw_title = sanitize(card.title_plain or "事件摘要")
+    title = _smart_truncate(raw_title, 14)
+
+    # AI trend liner from category + why_important
+    cat = card.category or "科技"
+    why = _clean_text(card.why_important or "", 60)
+    ai_trend_liner = f"【{cat}趨勢】{why}" if why else f"【{cat}趨勢】市場正在關注此領域的最新動態"
+
+    # Image query for visual search
+    image_query = f"{sanitize(card.title_plain or '')} {cat} AI technology"
+
+    # Event liner
+    event_liner = article["one_liner"]
+
+    # Data card + chart spec
+    data_card = build_data_card(card)
+    chart_spec = build_chart_spec(card)
+
+    # CEO metaphor
+    ceo_metaphor = build_ceo_metaphor(card)
+
+    # --- Slide 2: WHY IT MATTERS (Q&A) ---
+    # Q1: 商業意義
+    why_parts = article.get("why_it_matters", [])
+    q1 = why_parts[0] if why_parts else "此事件的商業意義尚待進一步分析"
+
+    # Q2: 對公司影響 (product/cost/opportunity/risk)
+    impacts = article.get("possible_impact", [])
+    risks = article.get("risks", [])
+    impact_str = impacts[0] if impacts else "影響面待評估"
+    risk_str = risks[0] if risks else "風險待評估"
+    q2 = f"{impact_str}。風險面：{risk_str}"
+
+    # Q3: 現在要做什麼 (≤3 actions)
+    actions: list[str] = []
+    for a in dc["actions"][:2]:
+        cleaned = _clean_text(a, 50)
+        if cleaned:
+            actions.append(cleaned)
+    if not actions:
+        actions.append("確認此事件是否影響現有業務或專案排程")
+    # Add owner action
+    owner = dc["owner"]
+    actions.append(f"指派{owner}於本週內回覆評估結論")
+    actions = actions[:3]
+
+    # Video source
+    video_source = build_video_source(card)
+
+    # Sources
+    sources: list[str] = []
+    if card.source_url and card.source_url.startswith("http"):
+        sources.append(card.source_url)
+
+    return {
+        # Slide 1
+        "title": title,
+        "ai_trend_liner": ai_trend_liner,
+        "image_query": image_query,
+        "event_liner": event_liner,
+        "data_card": data_card,
+        "chart_spec": chart_spec,
+        "ceo_metaphor": ceo_metaphor,
+        # Slide 2
+        "q1_meaning": q1,
+        "q2_impact": q2,
+        "q3_actions": actions,
+        "video_source": video_source,
+        "sources": sources,
+    }
+
+
+def build_structured_executive_summary(
+    news_cards: list[EduNewsCard],
+    tone: str = "neutral",
+) -> dict[str, list[str]]:
+    """Build a structured 5-section executive summary for CEO Decision Brief.
+
+    Returns dict with 5 keys, each containing a list of bullet strings:
+        ai_trends: AI 技術趨勢方向
+        tech_landing: 正在落地的技術
+        market_competition: 市場與競爭動態
+        opportunities_risks: 機會與風險
+        recommended_actions: 建議行動
+    """
+    tone_dict = SUMMARY_TONE_LIBRARY.get(tone, SUMMARY_TONE_LIBRARY["neutral"])
+    risk_word = tone_dict["risk_words"][0]
+    action_word = tone_dict["action_words"][0]
+
+    event_cards = [
+        c for c in news_cards
+        if c.is_valid_news and not is_non_event_or_index(c)
+    ]
+
+    if not event_cards:
+        return {
+            "ai_trends": ["今日未發現需要關注的 AI 技術新趨勢。"],
+            "tech_landing": ["今日無新技術落地動態。"],
+            "market_competition": ["市場面暫無重大變化。"],
+            "opportunities_risks": [f"目前沒有立即的風險事項，但{risk_word}。"],
+            "recommended_actions": [f"{action_word}目前監控頻率。"],
+        }
+
+    ai_trends: list[str] = []
+    tech_landing: list[str] = []
+    market_competition: list[str] = []
+    opportunities_risks: list[str] = []
+    recommended_actions: list[str] = []
+
+    for card in event_cards:
+        article = build_ceo_article_blocks(card)
+        cat = (card.category or "").lower()
+        short_title = _smart_truncate(sanitize(card.title_plain or ""), 25)
+
+        # Classify into sections based on category + content
+        why = article.get("why_it_matters", [])
+        why_text = why[0] if why else ""
+        impacts = article.get("possible_impact", [])
+        impact_text = impacts[0] if impacts else ""
+        risks_list = article.get("risks", [])
+        risk_text = risks_list[0] if risks_list else ""
+        actions = article.get("what_to_do", [])
+        action_text = actions[0] if actions else ""
+
+        # AI trends: AI-related categories
+        if any(kw in cat for kw in ["ai", "人工", "機器", "模型"]):
+            if why_text and not why_text.startswith("缺口"):
+                ai_trends.append(f"{short_title}：{_smart_truncate(why_text, 60)}")
+            else:
+                ai_trends.append(f"{short_title}：值得關注的 AI 領域動態")
+
+        # Tech landing: tech/engineering categories
+        if any(kw in cat for kw in ["tech", "科技", "工程", "雲", "資安"]):
+            if impact_text and not impact_text.startswith("缺口"):
+                tech_landing.append(f"{short_title}：{_smart_truncate(impact_text, 60)}")
+
+        # Market competition: market/finance categories
+        if any(kw in cat for kw in ["市場", "金融", "投融", "併購", "創業"]):
+            if impact_text and not impact_text.startswith("缺口"):
+                market_competition.append(f"{short_title}：{_smart_truncate(impact_text, 60)}")
+
+        # Risks from all cards
+        if risk_text and not risk_text.startswith("缺口"):
+            opportunities_risks.append(f"{short_title}：{_smart_truncate(risk_text, 60)}")
+
+        # Actions from all cards
+        if action_text and not action_text.startswith("缺口"):
+            recommended_actions.append(_smart_truncate(action_text, 70))
+
+    # Ensure each section has at least one item
+    if not ai_trends:
+        # Fall back: use first event card
+        c = event_cards[0]
+        ai_trends.append(
+            f"{_smart_truncate(sanitize(c.title_plain or ''), 25)}："
+            f"可能影響 AI 產業格局"
+        )
+    if not tech_landing:
+        tech_landing.append("本日事件中尚未出現明確的技術落地案例。")
+    if not market_competition:
+        market_competition.append("市場競爭面暫無重大訊號。")
+    if not opportunities_risks:
+        opportunities_risks.append(f"目前{risk_word}，需持續追蹤。")
+    if not recommended_actions:
+        recommended_actions.append(f"{action_word}相關發展，如有變化將即時更新。")
+
+    # Cap each section at 3 items
+    return {
+        "ai_trends": ai_trends[:3],
+        "tech_landing": tech_landing[:3],
+        "market_competition": market_competition[:3],
+        "opportunities_risks": opportunities_risks[:3],
+        "recommended_actions": recommended_actions[:3],
+    }
