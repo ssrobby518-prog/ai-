@@ -189,7 +189,7 @@ if (-not $shouldOpen) {
 }
 
 $pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
-$minOpenBytes = 20480
+$minOpenBytes = 30720
 if (-not (Test-Path $pptxPath)) {
     Write-Host "ERROR: PPT file not found for auto-open: $pptxPath" -ForegroundColor Red
     exit 2

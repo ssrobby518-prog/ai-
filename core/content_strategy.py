@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from urllib.parse import urlparse
 
 from schemas.education_models import EduNewsCard
 
@@ -4073,3 +4074,328 @@ def build_corp_watch_summary(
         result["top_fail_reasons"] = [{"reason": "no_event_candidates", "count": 1}]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# v5.3.2 terminal wrappers (non-air density guard + fragment-safe fallback)
+# ---------------------------------------------------------------------------
+
+_v532_prev_build_signal_summary = build_signal_summary
+_v532_prev_build_corp_watch_summary = build_corp_watch_summary
+_v532_prev_build_structured_summary = build_structured_executive_summary
+
+_V532_FRAGMENT_END_RE = re.compile(r"\b(?:was|is|are|the|and|to|of)\s*$", re.IGNORECASE)
+_V532_PLACEHOLDER_TOKENS = (
+    "last july was",
+    "desktop smoke signal",
+    "fallback monitoring signal",
+    "signals_insufficient=true",
+    "source=platform",
+)
+_V532_SIGNAL_NAMES = ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE", "COST_PRESSURE", "COMPETITION_SIGNAL"]
+_V532_SIGNAL_LABELS = {
+    "TOOL_ADOPTION": "工具採用",
+    "USER_PAIN": "使用者痛點",
+    "WORKFLOW_CHANGE": "工作流變化",
+    "COST_PRESSURE": "成本壓力",
+    "COMPETITION_SIGNAL": "競爭訊號",
+}
+
+
+def _v532_domain_from_url(url: str) -> str:
+    try:
+        return urlparse(url).netloc.lower().strip()
+    except Exception:
+        return ""
+
+
+def _v532_is_fragment(text: str) -> bool:
+    payload = str(text or "").strip()
+    if not payload:
+        return True
+    lowered = payload.lower()
+    if any(token in lowered for token in _V532_PLACEHOLDER_TOKENS):
+        return True
+    # Evaluate only last sentence fragment to avoid over-filtering numeric lines.
+    tail = re.split(r"[.!?。？！]\s*", payload)[-1].strip() or payload
+    if len(tail) < 8:
+        return True
+    return _V532_FRAGMENT_END_RE.search(tail) is not None
+
+
+def _v532_clean_line(text: str, fallback: str) -> str:
+    cleaned = _v522_strip_placeholders(str(text or "")).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if _v532_is_fragment(cleaned):
+        cleaned = fallback
+    return _smart_truncate(cleaned, 120)
+
+
+def _v532_safe_source(row: dict, card: EduNewsCard | None) -> tuple[str, str]:
+    source_name = _v524_safe_source_name(str(row.get("source_name", "") or ""))
+    source_url = str(row.get("source_url", "") or "").strip()
+    if card is not None:
+        card_url = str(getattr(card, "source_url", "") or "").strip()
+        if not source_url and card_url.startswith(("http://", "https://")):
+            source_url = card_url
+        if source_name == "靘?撟喳":
+            source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+    if source_name == "靘?撟喳":
+        domain = _v532_domain_from_url(source_url)
+        source_name = domain or "scan"
+    return source_name, source_url if source_url.startswith(("http://", "https://")) else ""
+
+
+def _v532_signal_card_pool(cards: list[EduNewsCard]) -> list[EduNewsCard]:
+    pool = [c for c in cards if bool(getattr(c, "is_valid_news", False))]
+    pool.sort(key=lambda c: float(getattr(c, "final_score", 0.0) or 0.0), reverse=True)
+    return pool
+
+
+def _v532_signal_snippet(
+    *,
+    row: dict,
+    card: EduNewsCard | None,
+    source_name: str,
+    heat_score: int,
+    platform_count: int,
+    evidence_terms: list[str],
+    evidence_numbers: list[str],
+) -> str:
+    raw = " ".join(
+        [
+            str(row.get("example_snippet", "") or ""),
+            str(row.get("signal_text", "") or ""),
+            str(row.get("title", "") or ""),
+            str(getattr(card, "what_happened", "") if card else ""),
+            str(getattr(card, "why_important", "") if card else ""),
+            str(getattr(card, "title_plain", "") if card else ""),
+        ]
+    ).strip()
+    # Only use raw snippet when it's sufficiently rich and not fragment-like.
+    if len(raw) >= 200 and not _v532_is_fragment(raw):
+        return _smart_truncate(_v522_strip_placeholders(raw), 120)
+
+    term_a = evidence_terms[0] if evidence_terms else source_name
+    term_b = evidence_terms[1] if len(evidence_terms) > 1 else "AI signal"
+    num_a = evidence_numbers[0] if evidence_numbers else str(heat_score)
+    num_b = evidence_numbers[1] if len(evidence_numbers) > 1 else str(platform_count)
+    fallback = (
+        f"來源 {source_name} 觀測到 {term_a} 與 {term_b}；"
+        f"heat_score={heat_score}、platform_count={platform_count}、evidence={num_a}/{num_b}。"
+    )
+    return _smart_truncate(fallback, 120)
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Final non-empty signal summary with verifiable terms/numbers and fragment guard."""
+    base_rows = list(_v532_prev_build_signal_summary(cards) or [])
+    pool = _v532_signal_card_pool(cards)
+    source_counts: dict[str, int] = {}
+    for card in pool:
+        name = _v524_safe_source_name(str(getattr(card, "source_name", "") or "scan"))
+        source_counts[name] = source_counts.get(name, 0) + 1
+
+    rows: list[dict] = []
+    idx = 0
+    while len(rows) < 3:
+        row = dict(base_rows[idx]) if idx < len(base_rows) else {}
+        card = pool[idx % len(pool)] if pool else None
+        signal_name = str(row.get("signal_name", _V532_SIGNAL_NAMES[idx % len(_V532_SIGNAL_NAMES)])).upper()
+        label = str(row.get("label", _V532_SIGNAL_LABELS.get(signal_name, signal_name)))
+
+        source_name, source_url = _v532_safe_source(row, card)
+        platform_count = max(int(row.get("platform_count", row.get("source_count", source_counts.get(source_name, 1) or 1)) or 1), 1)
+        heat_score = max(int(row.get("heat_score", max(30, int(round(float(getattr(card, "final_score", 3.0) or 3.0) * 12)))) or 30), 30)
+        heat = str(row.get("heat", "hot" if heat_score >= 75 else ("warm" if heat_score >= 50 else "cool")))
+
+        title = str(row.get("title", "") or "").strip()
+        if not title and card is not None:
+            title = str(getattr(card, "title_plain", "") or "").strip()
+        if not title:
+            title = _V532_SIGNAL_LABELS.get(signal_name, signal_name)
+        title = _smart_truncate(_v522_strip_placeholders(title), 80)
+
+        combined = " ".join(
+            [
+                title,
+                str(row.get("example_snippet", "") or ""),
+                str(row.get("signal_text", "") or ""),
+                str(getattr(card, "what_happened", "") if card else ""),
+                str(getattr(card, "why_important", "") if card else ""),
+                source_name,
+                source_url,
+                str(heat_score),
+                str(platform_count),
+            ]
+        )
+        evidence_terms = list(_extract_evidence_terms(combined))
+        if source_name and source_name not in evidence_terms:
+            evidence_terms.insert(0, source_name)
+        while len(evidence_terms) < 2:
+            evidence_terms.append(_V532_SIGNAL_LABELS.get(signal_name, signal_name))
+
+        evidence_numbers = list(_extract_evidence_numbers(combined))
+        if not evidence_numbers:
+            evidence_numbers = [str(heat_score), str(platform_count)]
+
+        snippet = _v532_signal_snippet(
+            row=row,
+            card=card,
+            source_name=source_name,
+            heat_score=heat_score,
+            platform_count=platform_count,
+            evidence_terms=evidence_terms,
+            evidence_numbers=evidence_numbers,
+        )
+        snippet = _v532_clean_line(
+            snippet,
+            f"來源 {source_name} 訊號觀測：heat_score={heat_score}、platform_count={platform_count}。",
+        )
+        signal_text = _v532_clean_line(
+            str(row.get("signal_text", "") or ""),
+            f"{label}：來源 {source_name}，heat_score={heat_score}，platform_count={platform_count}。",
+        )
+
+        rows.append(
+            {
+                "signal_name": signal_name,
+                "signal_type": signal_name,
+                "label": label,
+                "title": title,
+                "source_url": source_url,
+                "heat": heat,
+                "signal_text": signal_text,
+                "platform_count": platform_count,
+                "source_count": platform_count,
+                "heat_score": heat_score,
+                "example_snippet": snippet,
+                "source_name": source_name,
+                "evidence_terms": evidence_terms[:8],
+                "evidence_numbers": evidence_numbers[:6],
+                "evidence_tokens": (evidence_terms[:2] + evidence_numbers[:2])[:6],
+                "signals_insufficient": len(pool) < 3,
+                "passed_total_count": len(pool),
+            }
+        )
+        idx += 1
+
+    return rows[:3]
+
+
+def _v532_top_sources(cards: list[EduNewsCard]) -> list[dict]:
+    agg: dict[str, dict[str, int | str]] = {}
+    for card in cards:
+        source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or "scan"))
+        row = agg.setdefault(
+            source_name,
+            {"source_name": source_name, "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0},
+        )
+        row["items_seen"] = int(row["items_seen"]) + 1
+        if bool(getattr(card, "event_gate_pass", False)):
+            row["gate_pass"] = int(row["gate_pass"]) + 1
+        elif bool(getattr(card, "signal_gate_pass", True)):
+            row["gate_soft_pass"] = int(row["gate_soft_pass"]) + 1
+    rows = sorted(agg.values(), key=lambda r: int(r["items_seen"]), reverse=True)
+    return [dict(r) for r in rows[:3]]
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Corp watch fallback with numeric scan stats and top source observability."""
+    result = dict(_v532_prev_build_corp_watch_summary(cards, metrics=metrics) or {})
+    result.setdefault("update_type_counts", {k: 0 for k in _CORP_UPDATE_TYPES})
+
+    top_sources = result.get("top_sources") or _v532_top_sources(cards)
+    if not top_sources:
+        top_sources = [{"source_name": "none", "items_seen": 0, "gate_pass": 0, "gate_soft_pass": 0}]
+
+    m = metrics or {}
+    sources_total = int(result.get("sources_total", m.get("sources_total", len(top_sources))))
+    success_count = int(result.get("success_count", m.get("sources_success", max(sources_total, 0))))
+    fail_count = int(result.get("fail_count", m.get("sources_failed", max(sources_total - success_count, 0))))
+    top_fail_reasons = result.get("top_fail_reasons") or [{"reason": "none", "count": 0}]
+    fail_text = "、".join(f"{str(x.get('reason', 'none'))}:{int(x.get('count', 0))}" for x in top_fail_reasons[:3]) or "none:0"
+
+    result["sources_total"] = sources_total
+    result["success_count"] = success_count
+    result["fail_count"] = fail_count
+    result["top_fail_reasons"] = top_fail_reasons
+    result["top_sources"] = top_sources
+
+    updates = int(result.get("updates", result.get("total_mentions", 0) or 0))
+    if updates == 0:
+        result["status_message"] = (
+            f"掃描統計：sources_total={sources_total}、success_count={success_count}、"
+            f"fail_count={fail_count}、top_fail_reasons={fail_text}。"
+        )
+        result["trend_direction"] = str(result.get("trend_direction", "STABLE") or "STABLE")
+
+    return result
+
+
+def build_structured_executive_summary(
+    news_cards: list[EduNewsCard],
+    tone: str = "neutral",
+    metrics: dict | None = None,
+) -> dict[str, list[str]]:
+    """Structured summary with numeric-first fallback to prevent 'air' content."""
+    summary = dict(_v532_prev_build_structured_summary(news_cards, tone, metrics=metrics) or {})
+    m = metrics or {}
+    fetched_total = int(m.get("fetched_total", len(news_cards)))
+    gate_pass_total = int(m.get("gate_pass_total", m.get("event_gate_pass_total", 0)))
+    signal_gate_pass_total = int(m.get("signal_gate_pass_total", m.get("soft_pass_total", 0)))
+    hard_pass_total = int(m.get("hard_pass_total", 0))
+    soft_pass_total = int(m.get("soft_pass_total", 0))
+    gate_reject_total = int(m.get("gate_reject_total", m.get("rejected_total", 0)))
+    sources_total = int(m.get("sources_total", 0))
+    success_count = int(m.get("sources_success", 0))
+    fail_count = int(m.get("sources_failed", 0))
+    reason_top = list(m.get("rejected_reason_top", []))
+    reason_line = "、".join(f"{str(r)}:{int(c)}" for r, c in reason_top[:3]) or "none:0"
+
+    defaults: dict[str, list[str]] = {
+        "ai_trends": [
+            (
+                f"掃描統計：fetched_total={fetched_total}、gate_pass_total={gate_pass_total}、"
+                f"signal_gate_pass_total={signal_gate_pass_total}。"
+            ),
+            f"門檻分流：hard_pass_total={hard_pass_total}、soft_pass_total={soft_pass_total}、gate_reject_total={gate_reject_total}。",
+        ],
+        "tech_landing": [
+            f"來源覆蓋：sources_total={sources_total}、success_count={success_count}、fail_count={fail_count}。",
+            f"拒絕原因 Top：{reason_line}。",
+        ],
+        "market_competition": [
+            "若今日事件密度不足，改以 Signal/Cop Watch 的熱度與來源統計支撐決策。",
+            "建議先以 WATCH/TEST 驗證，再等待下一輪可核對數據後決定是否 MOVE。",
+        ],
+        "opportunities_risks": [
+            "機會：追蹤連續出現的公司/模型名與數字訊號，避免單篇摘要誤導。",
+            "風險：若來源失敗率升高，需先處理抓取品質，再解讀事件重要性。",
+        ],
+        "recommended_actions": [
+            "動作 1：先看 heat_score 與 platform_count 前三名，確認市場溫度是否持續。",
+            "動作 2：交叉檢查 top_fail_reasons 與來源覆蓋，避免因資料缺口造成誤判。",
+        ],
+    }
+
+    cleaned: dict[str, list[str]] = {}
+    for key, fallback_lines in defaults.items():
+        lines: list[str] = []
+        for raw in list(summary.get(key, [])) + list(fallback_lines):
+            line = _v532_clean_line(str(raw or ""), "")
+            if not line:
+                continue
+            if line in lines:
+                continue
+            lines.append(line)
+            if len(lines) >= 3:
+                break
+        while len(lines) < 2:
+            lines.append(fallback_lines[len(lines)])
+        cleaned[key] = lines
+
+    return cleaned

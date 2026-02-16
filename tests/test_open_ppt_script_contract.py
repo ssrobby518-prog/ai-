@@ -22,7 +22,7 @@ def test_generate_reports_open_contract_has_retry_and_openattempt() -> None:
     assert "OpenAttempt" in text
     assert "Start-Process -FilePath $pptxAbs" in text
     assert "for ($attempt = 1; $attempt -le 5; $attempt++)" in text
-    assert "$minOpenBytes = 20480" in text
+    assert "$minOpenBytes = 30720" in text
     assert "exit 2" in text
     assert "exit 3" in text
     assert "PPT_PATH=$pptxAbs" in text
