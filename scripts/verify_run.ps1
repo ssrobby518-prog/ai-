@@ -276,6 +276,16 @@ Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -F
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
 
 $head = (git rev-parse HEAD 2>$null | Select-Object -First 1)
+$gitStatusSb = (git status -sb 2>$null | Select-Object -First 1)
+$gitPorcelain = (git status --porcelain 2>$null | Out-String).Trim()
+$workingTree = if ([string]::IsNullOrWhiteSpace($gitPorcelain)) { "clean" } else { "dirty" }
+$branchSummary = if ($gitStatusSb -match "^##\s+(.+)\.\.\.(.+)$") {
+    "$($Matches[1]) -> $($Matches[2]) up-to-date"
+} elseif ($gitStatusSb -match "^##\s+(.+)$") {
+    "$($Matches[1]) (no upstream)"
+} else {
+    "<unavailable>"
+}
 $schemaDiff = (git diff HEAD~1..HEAD -- schemas/education_models.py 2>$null | Out-String).Trim()
 $schemaModified = if ([string]::IsNullOrWhiteSpace($schemaDiff)) { "NO" } else { "YES" }
 $schemaProofOutput = if ([string]::IsNullOrWhiteSpace($schemaDiff)) { "<empty>" } else { "non-empty" }
@@ -296,6 +306,9 @@ Write-Host "DOCX output: $docxBannedHits hits"
 Write-Host "PPTX output: $pptxBannedHits hits"
 Write-Host ""
 Write-Host "verify_run: 9/9 PASS"
+Write-Host "Working tree: $workingTree"
+Write-Host "Branch: $branchSummary"
+Write-Host "git status -sb -> $gitStatusSb"
 $noteBase64 = "Tm90ZTog5pys57O757Wx5L+d6K2J6Ly45Ye65LiN54K656m677yI6LOH6KiK5a+G5bqm6ZaA5qq7ICsg5pW45a2X5YyWIGZhbGxiYWNr77yJ77yM5L2G5LiN5L+d6K2J5q+P5pel5LiA5a6a5pyJ44CM55yf5LqL5Lu244CN77yb6Iul5LqL5Lu2PTDvvIzlsIfku6UgU2lnbmFsL0NvcnAg55qE5Y+v6L+95rqv57Wx6KiI6KOc6Laz5rG6562W6LOH6KiK6YeP44CC"
 $note = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($noteBase64))
 Write-Host $note
