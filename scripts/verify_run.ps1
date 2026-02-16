@@ -168,7 +168,8 @@ Write-Host "`n[9/9] Executive Output v3 guard..." -ForegroundColor Yellow
 $bannedWords = @(
     "ai???", "AI Intel", "Z1", "Z2", "Z3", "Z4", "Z5",
     "pipeline", "ETL", "verify_run", "ingestion", "ai_core",
-    "Last July was", "Desktop smoke signal", "signals_insufficient=true"
+    "Last July was", "Desktop smoke signal", "signals_insufficient=true",
+    "低信心事件候選", "source=platform", "本次無有效新聞；本次掃描統計"
 )
 $v3Pass = $true
 $notionBannedHits = 0

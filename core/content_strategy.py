@@ -2336,7 +2336,7 @@ def _v522_signal_snippet(card: EduNewsCard | None, fallback_label: str) -> str:
     merged = _v522_strip_placeholders(merged)
     if len(merged) < 30:
         merged = _v522_strip_placeholders(
-            f"{fields[2]} | {fields[0]} | source={_v522_source_name(card)}"
+            f"{fields[2]} | {fields[0]} | 來源：{_v522_source_name(card)}"
         )
     merged = merged or f"{fallback_label} signal from {_v522_source_name(card)}."
     return _smart_truncate(merged, 120)
@@ -3242,7 +3242,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
                 snippet = _smart_truncate(
                     _v522_strip_placeholders(
                         f"{getattr(card, 'title_plain', '')} | {getattr(card, 'what_happened', '')} | "
-                        f"source={_v523_card_source(card)} | score={float(getattr(card, 'final_score', 0.0) or 0.0):.1f}"
+                        f"來源={_v523_card_source(card)} | score={float(getattr(card, 'final_score', 0.0) or 0.0):.1f}"
                     ),
                     120,
                 )
@@ -3295,7 +3295,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         heat_score = max(30, min(100, int(round(score * 12))))
         snippet = _smart_truncate(
             _v522_strip_placeholders(
-                f"{getattr(card, 'what_happened', '')} | source={source_name} | score={score:.1f}"
+                f"{getattr(card, 'what_happened', '')} | 來源={source_name} | score={score:.1f}"
             ),
             120,
         )
@@ -3403,7 +3403,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         signal_text = _v522_strip_placeholders(str(current.get("signal_text", current.get("title", "")))) or "Signal"
         title = _v522_strip_placeholders(str(current.get("title", signal_text))) or signal_text
         snippet = _v522_strip_placeholders(str(current.get("example_snippet", "")))
-        snippet = snippet.replace("source=unknown", "source=platform")
+        snippet = snippet.replace("source=unknown", "來源未標示")
         if len(snippet) < 30:
             snippet = _smart_truncate(
                 f"{source_name}: platform_count={int(current.get('platform_count', 1) or 1)}, "
@@ -3609,7 +3609,7 @@ def _v524_has_cjk(text: str) -> bool:
 def _v524_safe_source_name(source_name: str) -> str:
     name = str(source_name or "").strip()
     if not name or name.lower() in {"unknown", "none"}:
-        return "platform"
+        return "來源平台"
     return name
 
 
@@ -3642,146 +3642,241 @@ def _v524_to_zh_snippet(
     return _smart_truncate(cleaned, 120)
 
 
+def _v525_has_anchor_url(card: EduNewsCard) -> bool:
+    url = str(getattr(card, "source_url", "") or "").strip()
+    return bool(url.startswith("http://") or url.startswith("https://"))
+
+
+def _v525_count_entities_numbers(text: str) -> tuple[int, int]:
+    payload = str(text or "")
+    entities = set(re.findall(r"\b[A-Z][A-Za-z0-9\-_]{2,}\b", payload))
+    entities.update(re.findall(r"[\u4e00-\u9fff]{2,}", payload))
+    numbers = re.findall(r"\b\d+(?:\.\d+)?(?:%|x|ms|gb|mb|k|m|b)?\b", payload, flags=re.IGNORECASE)
+    return len(entities), len(numbers)
+
+
+def _v525_is_placeholder_text(text: str) -> bool:
+    lowered = str(text or "").lower()
+    if not lowered.strip():
+        return True
+    banned = (
+        "fallback monitoring signal",
+        "desktop smoke signal",
+        "signals_insufficient=true",
+        "last july was",
+        "weekly roundup",
+        "top links",
+        "subscribe",
+        "sign in",
+        "低信心事件候選",
+        "source=platform",
+        "本次無有效新聞；本次掃描統計",
+    )
+    return any(token in lowered for token in banned)
+
+
+def _v525_extract_signal_snippet(card: EduNewsCard) -> str:
+    raw = " ".join(
+        [
+            str(getattr(card, "what_happened", "") or ""),
+            str(getattr(card, "why_important", "") or ""),
+            str(getattr(card, "title_plain", "") or ""),
+        ]
+    )
+    cleaned = _v522_strip_placeholders(raw).replace("source=platform", "來源平台")
+    cleaned = cleaned.replace("source=unknown", "來源未標示")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if _v525_is_placeholder_text(cleaned) or len(cleaned) < 30:
+        src_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+        src_url = str(getattr(card, "source_url", "") or "")
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        cleaned = (
+            f"來源 {src_name}，網址 {src_url if src_url.startswith('http') else 'N/A'}，"
+            f"分數 {score:.1f}。請以原文核對。"
+        )
+    return _smart_truncate(cleaned, 120)
+
+
 def get_event_cards_for_deck(
     cards: list[EduNewsCard],
     metrics: dict | None = None,
     *,
-    min_events: int = 1,
+    min_events: int = 0,
 ) -> list[EduNewsCard]:
-    """Return event cards for deck rendering, always keeping minimum non-empty events."""
-    base_events = [c for c in cards if c.is_valid_news and not is_non_event_or_index(c)]
-    if len(base_events) >= min_events:
-        return base_events
+    """Return only verifiable event cards (no synthetic placeholders)."""
+    event_cards: list[EduNewsCard] = []
+    for card in cards:
+        if not bool(getattr(card, "is_valid_news", False)):
+            continue
+        if is_non_event_or_index(card):
+            continue
+        if bool(getattr(card, "event_gate_pass", True)) is False:
+            continue
+        if not _v525_has_anchor_url(card):
+            continue
 
-    fallbacks: list[EduNewsCard] = []
-    pool = [c for c in cards if c.is_valid_news and c not in base_events]
-    pool.sort(key=lambda c: float(getattr(c, "final_score", 0.0) or 0.0), reverse=True)
-
-    for src in pool:
-        if len(base_events) + len(fallbacks) >= min_events:
-            break
-        fallback = EduNewsCard(
-            item_id=str(getattr(src, "item_id", "") or ""),
-            is_valid_news=True,
-            title_plain=f"低信心事件候選：{_v522_strip_placeholders(str(getattr(src, 'title_plain', '') or '來源訊號'))[:36]}",
-            what_happened=_v522_strip_placeholders(str(getattr(src, "what_happened", "") or ""))[:260]
-            or "來源資料不足，但已保留為低信心事件候選。",
-            why_important=_v522_strip_placeholders(str(getattr(src, "why_important", "") or ""))
-            or "此候選用於維持決策版面完整，需等待下一輪來源補強。",
-            source_name=_v524_safe_source_name(str(getattr(src, "source_name", "") or "")),
-            source_url=str(getattr(src, "source_url", "") or ""),
-            category=str(getattr(src, "category", "") or "tech"),
-            final_score=max(3.0, float(getattr(src, "final_score", 0.0) or 0.0)),
+        payload = " ".join(
+            [
+                str(getattr(card, "title_plain", "") or ""),
+                str(getattr(card, "what_happened", "") or ""),
+                str(getattr(card, "why_important", "") or ""),
+            ]
         )
+        entities_count, numbers_count = _v525_count_entities_numbers(payload)
+        if entities_count < 3:
+            continue
+        if numbers_count < 1:
+            continue
+        if _v525_is_placeholder_text(payload):
+            continue
+
         try:
-            setattr(fallback, "low_confidence", True)
-            setattr(fallback, "confidence", "low")
+            setattr(card, "entities_count", entities_count)
+            setattr(card, "numbers_count", numbers_count)
+            setattr(card, "has_anchor_url", True)
         except Exception:
             pass
-        fallbacks.append(fallback)
+        event_cards.append(card)
 
-    while len(base_events) + len(fallbacks) < min_events:
-        fetched_total = int((metrics or {}).get("fetched_total", len(cards)))
-        hard_pass_total = int((metrics or {}).get("hard_pass_total", 0))
-        soft_pass_total = int((metrics or {}).get("soft_pass_total", 0))
-        sources_total = int((metrics or {}).get("sources_total", 0))
-        idx = len(base_events) + len(fallbacks) + 1
-        synthetic = EduNewsCard(
-            item_id=f"diagnostic-event-{idx}",
-            is_valid_news=True,
-            title_plain="低信心事件候選：來源掃描診斷",
-            what_happened=(
-                f"本次掃描統計為 fetched_total={fetched_total}、hard_pass_total={hard_pass_total}、"
-                f"soft_pass_total={soft_pass_total}、sources_total={sources_total}。"
-            ),
-            why_important="目前高信心事件不足，先以可追溯統計維持決策資訊量。",
-            source_name="platform",
-            source_url="",
-            category="tech",
-            final_score=3.0,
-        )
-        try:
-            setattr(synthetic, "low_confidence", True)
-            setattr(synthetic, "confidence", "low")
-        except Exception:
-            pass
-        fallbacks.append(synthetic)
-
-    return base_events + fallbacks
+    return event_cards
 
 
 def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
-    """Final signal summary: keep Top3 informative and Chinese-readable."""
-    rows = list(_v524_prev_build_signal_summary(cards) or [])
-    final_rows: list[dict] = []
-    for row in rows[:3]:
-        current = dict(row)
-        source_name = _v524_safe_source_name(str(current.get("source_name", "") or ""))
-        platform_count = max(int(current.get("platform_count", current.get("source_count", 1)) or 1), 1)
-        heat_score = max(int(current.get("heat_score", 30) or 30), 30)
-        signal_name = str(current.get("signal_name", current.get("signal_type", "SIGNAL")) or "SIGNAL").upper()
-        raw_label = str(current.get("label", current.get("signal_type", "Signal")) or "Signal")
-        label = _V524_SIGNAL_LABEL_ZH.get(signal_name, raw_label)
+    """Top 3 signal rows built from verifiable signal pool cards."""
+    signal_cards = [
+        c for c in cards
+        if bool(getattr(c, "is_valid_news", False))
+        and bool(getattr(c, "signal_gate_pass", True))
+    ]
+    if not signal_cards:
+        signal_cards = [c for c in cards if bool(getattr(c, "is_valid_news", False))]
 
-        signal_text = _v522_strip_placeholders(str(current.get("signal_text", current.get("title", ""))))
-        if _v524_ascii_alpha_ratio(signal_text) > 0.7 or not _v524_has_cjk(signal_text):
+    if not signal_cards:
+        base = list(_v524_prev_build_signal_summary(cards) or [])
+        sanitized: list[dict] = []
+        for row in base[:3]:
+            source_name = _v524_safe_source_name(str(row.get("source_name", "") or ""))
+            platform_count = max(int(row.get("platform_count", row.get("source_count", 1)) or 1), 1)
+            heat_score = max(int(row.get("heat_score", 30) or 30), 30)
+            signal_name = str(row.get("signal_name", row.get("signal_type", "TOOL_ADOPTION")) or "TOOL_ADOPTION").upper()
+            label = _V524_SIGNAL_LABEL_ZH.get(signal_name, str(row.get("label", signal_name)))
             signal_text = _v524_to_zh_signal_text(label, source_name, heat_score, platform_count)
-        if len(signal_text) < 8:
-            signal_text = _v524_to_zh_signal_text(label, source_name, heat_score, platform_count)
+            sanitized.append(
+                {
+                    "signal_name": signal_name,
+                    "signal_type": signal_name,
+                    "label": label,
+                    "title": str(row.get("title", signal_text) or signal_text)[:80],
+                    "source_url": str(row.get("source_url", "") or ""),
+                    "heat": "cool" if heat_score < 50 else ("warm" if heat_score < 75 else "hot"),
+                    "signal_text": signal_text,
+                    "platform_count": platform_count,
+                    "source_count": platform_count,
+                    "heat_score": heat_score,
+                    "example_snippet": _smart_truncate(str(row.get("example_snippet", signal_text) or signal_text), 120),
+                    "source_name": source_name,
+                    "evidence_tokens": [source_name, str(platform_count), str(heat_score)],
+                    "signals_insufficient": True,
+                    "passed_total_count": 0,
+                }
+            )
+        return sanitized[:3]
 
-        evidence_tokens = current.get("evidence_tokens")
-        if not isinstance(evidence_tokens, list):
-            evidence_tokens = []
-        evidence_tokens = [str(t).strip() for t in evidence_tokens if str(t).strip()]
-        if len(evidence_tokens) < 2:
-            evidence_tokens = [source_name, str(heat_score), str(platform_count)]
+    source_counts: dict[str, int] = {}
+    for card in signal_cards:
+        source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+        source_counts[source_name] = source_counts.get(source_name, 0) + 1
 
-        snippet = _v524_to_zh_snippet(
-            str(current.get("example_snippet", "")),
+    sorted_cards = sorted(
+        signal_cards,
+        key=lambda c: float(getattr(c, "final_score", 0.0) or 0.0),
+        reverse=True,
+    )
+    with_url = [c for c in sorted_cards if _v525_has_anchor_url(c)]
+    if with_url:
+        sorted_cards = with_url + [c for c in sorted_cards if c not in with_url]
+
+    names = ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE", "COST_PRESSURE", "COMPETITION_SIGNAL"]
+    rows: list[dict] = []
+    idx = 0
+    while len(rows) < 3 and sorted_cards:
+        card = sorted_cards[idx % len(sorted_cards)]
+        idx += 1
+
+        signal_name = names[(idx - 1) % len(names)]
+        label = _V524_SIGNAL_LABEL_ZH.get(signal_name, signal_name)
+        source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+        source_url = str(getattr(card, "source_url", "") or "").strip()
+        title = _v522_strip_placeholders(str(getattr(card, "title_plain", "") or "")).strip() or "來源訊號"
+        platform_count = max(source_counts.get(source_name, 1), 1)
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        heat_score = max(30, min(100, int(round(score * 12))))
+        heat = "hot" if heat_score >= 75 else ("warm" if heat_score >= 50 else "cool")
+        signal_text = _v524_to_zh_signal_text(label, source_name, heat_score, platform_count)
+        snippet = _v525_extract_signal_snippet(card)
+        if _v525_is_placeholder_text(snippet):
+            continue
+        entities_count, numbers_count = _v525_count_entities_numbers(f"{title} {snippet}")
+        if entities_count < 1 and numbers_count < 1:
+            continue
+        evidence_tokens = _v523_extract_evidence_tokens(
+            f"{title} {snippet}",
             source_name=source_name,
             heat_score=heat_score,
-            platform_count=platform_count,
-            evidence_tokens=evidence_tokens,
         )
-
-        current["source_name"] = source_name
-        current["signal_name"] = signal_name
-        current["signal_text"] = signal_text
-        current["title"] = signal_text
-        current["label"] = label
-        current["platform_count"] = platform_count
-        current["source_count"] = platform_count
-        current["heat_score"] = heat_score
-        current["example_snippet"] = snippet.replace("source=unknown", "source=platform")
-        current["evidence_tokens"] = evidence_tokens[:6]
-        final_rows.append(current)
-
-    fallback_names = ["TOOL_ADOPTION", "USER_PAIN", "WORKFLOW_CHANGE", "COST_PRESSURE", "COMPETITION_SIGNAL"]
-    idx = 0
-    while len(final_rows) < 3:
-        name = fallback_names[idx % len(fallback_names)]
-        idx += 1
-        label = _V524_SIGNAL_LABEL_ZH.get(name, _SIGNAL_LABELS.get(name, name))
-        final_rows.append(
+        if len(evidence_tokens) < 2:
+            evidence_tokens = [source_name, str(platform_count), str(heat_score)]
+        rows.append(
             {
-                "signal_name": name,
-                "signal_type": name,
+                "signal_name": signal_name,
+                "signal_type": signal_name,
                 "label": label,
-                "title": f"{label}：來源 platform，熱度 30，平台數 1。",
-                "heat": "cool",
-                "signal_text": f"{label}：來源 platform，熱度 30，平台數 1。",
-                "platform_count": 1,
-                "source_count": 1,
-                "heat_score": 30,
-                "example_snippet": "中文轉述：來源 platform 的監測信號已建立，熱度 30、平台數 1，持續觀察。",
-                "source_name": "platform",
-                "evidence_tokens": ["platform", "30", "1"],
-                "signals_insufficient": True,
-                "passed_total_count": 0,
+                "title": _smart_truncate(title, 80),
+                "source_url": source_url if source_url.startswith("http") else "",
+                "heat": heat,
+                "signal_text": signal_text,
+                "platform_count": platform_count,
+                "source_count": platform_count,
+                "heat_score": heat_score,
+                "example_snippet": _smart_truncate(snippet, 120),
+                "source_name": source_name,
+                "evidence_tokens": evidence_tokens[:6],
+                "signals_insufficient": len(sorted_cards) < 3,
+                "passed_total_count": len(sorted_cards),
             }
         )
 
-    return final_rows[:3]
+    while len(rows) < 3 and sorted_cards:
+        card = sorted_cards[len(rows) % len(sorted_cards)]
+        source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+        source_url = str(getattr(card, "source_url", "") or "").strip()
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        heat_score = max(30, min(100, int(round(score * 12))))
+        platform_count = max(source_counts.get(source_name, 1), 1)
+        label = _V524_SIGNAL_LABEL_ZH.get("WORKFLOW_CHANGE", "流程變動")
+        title = _v522_strip_placeholders(str(getattr(card, "title_plain", "") or "")).strip() or "來源訊號"
+        snippet = _v525_extract_signal_snippet(card)
+        rows.append(
+            {
+                "signal_name": "WORKFLOW_CHANGE",
+                "signal_type": "WORKFLOW_CHANGE",
+                "label": label,
+                "title": _smart_truncate(title, 80),
+                "source_url": source_url if source_url.startswith("http") else "",
+                "heat": "warm" if heat_score >= 50 else "cool",
+                "signal_text": _v524_to_zh_signal_text(label, source_name, heat_score, platform_count),
+                "platform_count": platform_count,
+                "source_count": platform_count,
+                "heat_score": heat_score,
+                "example_snippet": _smart_truncate(snippet, 120),
+                "source_name": source_name,
+                "evidence_tokens": [source_name, str(platform_count), str(heat_score)],
+                "signals_insufficient": len(sorted_cards) < 3,
+                "passed_total_count": len(sorted_cards),
+            }
+        )
+
+    return rows[:3]
 
 
 def build_corp_watch_summary(
@@ -3833,13 +3928,13 @@ def build_structured_executive_summary(
             f"來源覆蓋 sources_total={sources_total}，rejected_total={rejected_total}，密度候選前列為 {density_preview}。"
         ],
         "market_competition": [
-            "今日未形成高信心事件，但已保留低信心候選並提供平台訊號供決策參考。"
+            "今日未形成可核對事件，已改以訊號池與來源統計提供決策參考。"
         ],
         "opportunities_risks": [
             "建議優先追蹤連續出現的來源與可核對數字，降低短摘要造成的判讀誤差。"
         ],
         "recommended_actions": [
-            "先以 WATCH/TEST 驗證低信心候選，待下一輪資料補齊後再決定是否 MOVE。"
+            "先以 WATCH/TEST 驗證訊號池項目，待下一輪資料補齊後再決定是否 MOVE。"
         ],
     }
     translated: dict[str, list[str]] = {}
@@ -3855,3 +3950,42 @@ def build_structured_executive_summary(
             output_lines.append(text)
         translated[key] = output_lines or list(fallback_lines)
     return translated
+
+
+_v525_prev_build_ceo_actions = build_ceo_actions
+
+
+def build_ceo_actions(cards: list[EduNewsCard]) -> list[dict]:
+    """Fallback actions should be signal/corp based when event cards are unavailable."""
+    actions = list(_v525_prev_build_ceo_actions(cards) or [])
+    if actions:
+        return actions
+    if not cards:
+        return actions
+
+    signals = build_signal_summary(cards)
+    if not signals:
+        return actions
+
+    fallback_actions: list[dict] = []
+    action_types = ["WATCH", "TEST", "WATCH"]
+    for idx, sig in enumerate(signals[:3]):
+        action_type = action_types[idx % len(action_types)]
+        title = _smart_truncate(str(sig.get("title", "") or str(sig.get("signal_text", "")) or "來源訊號"), 36)
+        heat_score = int(sig.get("heat_score", 30) or 30)
+        platform_count = int(sig.get("platform_count", 1) or 1)
+        source_name = _v524_safe_source_name(str(sig.get("source_name", "") or ""))
+        source_url = str(sig.get("source_url", "") or "").strip()
+        detail = (
+            f"追蹤 {title}；heat_score={heat_score}、platform_count={platform_count}，"
+            f"來源={source_name}，網址={source_url if source_url.startswith('http') else 'N/A'}。"
+        )
+        fallback_actions.append(
+            {
+                "action_type": action_type,
+                "title": title,
+                "detail": detail,
+                "owner": "策略長/PM",
+            }
+        )
+    return fallback_actions

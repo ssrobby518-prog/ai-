@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import feedparser
 import requests
 from config import settings
-from core.content_gate import apply_adaptive_content_gate
+from core.content_gate import apply_split_content_gate
 from langdetect import LangDetectException, detect
 from rapidfuzz import fuzz
 from schemas.models import RawItem
@@ -206,7 +206,8 @@ class FilterSummary:
     input_count: int = 0
     kept_count: int = 0
     dropped_by_reason: dict[str, int] = field(default_factory=dict)
-    gate_stats: dict[str, int | list[tuple[str, int]]] = field(default_factory=dict)
+    gate_stats: dict[str, int | list[tuple[str, int]] | list[tuple[str, str, int]]] = field(default_factory=dict)
+    signal_pool: list[RawItem] = field(default_factory=list)
     # reasons: too_old, lang_not_allowed, keyword_mismatch, body_too_short,
     #          content_too_short, insufficient_sentences, rejected_keyword:*
 
@@ -254,22 +255,20 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
 
         gate_candidates.append(item)
 
-    # Adaptive Pre-LLM content gate (hard reject first, then threshold relaxation).
-    kept_items, _rejected_map, gate_stats = apply_adaptive_content_gate(
+    # Split content gates (event vs signal) after hard quality filters.
+    event_candidates, signal_pool, _rejected_map, gate_stats = apply_split_content_gate(
         gate_candidates,
-        min_keep_items=settings.CONTENT_GATE_MIN_KEEP_ITEMS,
-        levels=(
-            (
-                settings.CONTENT_GATE_STRICT_MIN_LEN,
-                settings.CONTENT_GATE_STRICT_MIN_SENTENCES,
-            ),
-            (
-                settings.CONTENT_GATE_RELAXED_MIN_LEN,
-                settings.CONTENT_GATE_RELAXED_MIN_SENTENCES,
-            ),
+        event_level=(
+            settings.EVENT_GATE_MIN_LEN,
+            settings.EVENT_GATE_MIN_SENTENCES,
+        ),
+        signal_level=(
+            settings.SIGNAL_GATE_MIN_LEN,
+            settings.SIGNAL_GATE_MIN_SENTENCES,
         ),
     )
-    result.extend(kept_items)
+    result.extend(event_candidates)
+    summary.signal_pool = signal_pool
 
     for reason, count in gate_stats.rejected_by_reason.items():
         summary.dropped_by_reason[reason] = summary.dropped_by_reason.get(reason, 0) + count
@@ -278,32 +277,28 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     dropped_total = summary.input_count - summary.kept_count
     summary.gate_stats = {
         "total": gate_stats.total,
-        "hard_pass_total": gate_stats.hard_pass_total,
-        "soft_pass_total": gate_stats.soft_pass_total,
-        "gate_pass_total": gate_stats.kept,
-        "passed_strict": gate_stats.passed_strict,
-        "passed_relaxed": gate_stats.passed_relaxed,
-        "passed_density_soft": gate_stats.soft_density_pass,
+        "event_gate_pass_total": gate_stats.event_gate_pass_total,
+        "signal_gate_pass_total": gate_stats.signal_gate_pass_total,
+        "hard_pass_total": gate_stats.event_gate_pass_total,
+        "soft_pass_total": max(gate_stats.signal_gate_pass_total - gate_stats.event_gate_pass_total, 0),
+        "gate_pass_total": gate_stats.event_gate_pass_total,
+        "passed_strict": gate_stats.event_gate_pass_total,
+        "passed_relaxed": max(gate_stats.signal_gate_pass_total - gate_stats.event_gate_pass_total, 0),
+        "passed_density_soft": 0,
         "gate_reject_total": gate_stats.rejected_total,
         "rejected_total": gate_stats.rejected_total,
-        "density_score_top5": gate_stats.density_score_top5,
+        "density_score_top5": [],
         "rejected_reason_top": gate_stats.rejected_reason_top,
         "after_filter_total": len(result),
     }
     log.info("Filters: %d -> %d items", len(items), len(result))
     log.info(
-        "ContentGate strict_pass=%d relaxed_pass=%d rejected=%d reasons_top=%s",
-        gate_stats.passed_strict,
-        gate_stats.passed_relaxed + gate_stats.soft_density_pass,
+        "ContentGate fetched_total=%d event_gate_pass_total=%d signal_gate_pass_total=%d rejected=%d reasons_top=%s",
+        len(items),
+        gate_stats.event_gate_pass_total,
+        gate_stats.signal_gate_pass_total,
         gate_stats.rejected_total,
         gate_stats.rejected_reason_top,
-    )
-    log.info(
-        "ContentGate hard_pass=%d soft_pass=%d rejected=%d density_top5=%s",
-        gate_stats.hard_pass_total,
-        gate_stats.soft_pass_total,
-        gate_stats.rejected_total,
-        gate_stats.density_score_top5,
     )
     log.info(
         "FILTER_SUMMARY kept=%d dropped_total=%d reasons=%s",

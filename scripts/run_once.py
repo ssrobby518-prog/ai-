@@ -76,13 +76,13 @@ def _build_quality_cards(all_results: list) -> list[EduNewsCard]:
 
 
 def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNewsCard]:
-    """Build low-confidence cards from post-gate RawItems when AI results are empty."""
+    """Build fallback cards from post-gate RawItems when AI results are empty."""
     cards: list[EduNewsCard] = []
     for item in filtered_items:
         title = str(getattr(item, "title", "") or "").strip() or "來源訊號"
         body = str(getattr(item, "body", "") or "").strip()
-        summary = body[:260] if body else "來源內容有限，先保留為低信心觀測訊號。"
-        source_name = str(getattr(item, "source_name", "") or "").strip() or "platform"
+        summary = body[:260] if body else "來源內容有限，請以原始連結核對。"
+        source_name = str(getattr(item, "source_name", "") or "").strip() or "來源平台"
         source_url = str(getattr(item, "url", "") or "").strip()
         density = float(getattr(item, "density_score", 0) or 0)
         score = max(3.0, min(10.0, round(density / 10.0, 2)))
@@ -91,17 +91,17 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
             is_valid_news=True,
             title_plain=title,
             what_happened=summary,
-            why_important=f"來源：{source_name}。此卡片為低信心事件候選，用於避免報告空白。",
+            why_important=f"來源：{source_name}。原始連結：{source_url if source_url.startswith('http') else 'N/A'}。",
             source_name=source_name,
             source_url=source_url if source_url.startswith("http") else "",
             category=str(getattr(item, "source_category", "") or "tech"),
             final_score=score,
         )
         try:
-            setattr(card, "low_confidence", True)
-            setattr(card, "confidence", "low")
+            setattr(card, "event_gate_pass", bool(getattr(item, "event_gate_pass", True)))
+            setattr(card, "signal_gate_pass", bool(getattr(item, "signal_gate_pass", True)))
             setattr(card, "density_score", int(density))
-            setattr(card, "density_tier", "B")
+            setattr(card, "density_tier", "A" if bool(getattr(item, "event_gate_pass", False)) else "B")
         except Exception:
             pass
         cards.append(card)
@@ -157,23 +157,32 @@ def run_pipeline() -> None:
 
     # Filter
     filtered, filter_summary = filter_items(deduped)
+    signal_pool = list(filter_summary.signal_pool or [])
     gate_stats = dict(filter_summary.gate_stats or {})
-    collector.gate_pass_total = int(gate_stats.get("gate_pass_total", filter_summary.kept_count))
-    collector.hard_pass_total = int(gate_stats.get("hard_pass_total", gate_stats.get("passed_strict", 0)))
-    collector.soft_pass_total = int(gate_stats.get("soft_pass_total", gate_stats.get("passed_relaxed", 0)))
+    collector.event_gate_pass_total = int(gate_stats.get("event_gate_pass_total", gate_stats.get("gate_pass_total", filter_summary.kept_count)))
+    collector.signal_gate_pass_total = int(gate_stats.get("signal_gate_pass_total", len(signal_pool)))
+    collector.gate_pass_total = collector.event_gate_pass_total
+    collector.hard_pass_total = int(gate_stats.get("hard_pass_total", gate_stats.get("passed_strict", collector.event_gate_pass_total)))
+    collector.soft_pass_total = int(gate_stats.get("soft_pass_total", gate_stats.get("passed_relaxed", max(collector.signal_gate_pass_total - collector.event_gate_pass_total, 0))))
     collector.gate_reject_total = int(gate_stats.get("gate_reject_total", 0))
     collector.rejected_total = int(gate_stats.get("rejected_total", collector.gate_reject_total))
     collector.after_filter_total = len(filtered)
     collector.rejected_reason_top = list(gate_stats.get("rejected_reason_top", []))
     collector.density_score_top5 = list(gate_stats.get("density_score_top5", []))
     log.info(
-        "INGEST_COUNTS hard_pass_total=%d soft_pass_total=%d gate_pass_total=%d gate_reject_total=%d after_filter_total=%d rejected_reason_top=%s density_score_top5=%s",
-        collector.hard_pass_total,
-        collector.soft_pass_total,
-        collector.gate_pass_total,
+        "INGEST_COUNTS fetched_total=%d event_gate_pass_total=%d signal_gate_pass_total=%d gate_reject_total=%d after_filter_total=%d rejected_reason_top=%s",
+        collector.fetched_total,
+        collector.event_gate_pass_total,
+        collector.signal_gate_pass_total,
         collector.gate_reject_total,
         collector.after_filter_total,
         collector.rejected_reason_top,
+    )
+    log.info(
+        "INGEST_COUNTS hard_pass_total=%d soft_pass_total=%d gate_pass_total=%d density_score_top5=%s",
+        collector.hard_pass_total,
+        collector.soft_pass_total,
+        collector.gate_pass_total,
         collector.density_score_top5,
     )
 
@@ -239,6 +248,8 @@ def run_pipeline() -> None:
         log.info("Z4: Deep analysis disabled")
 
     quality_cards = _build_quality_cards(all_results)
+    if not quality_cards and signal_pool:
+        quality_cards = _build_soft_quality_cards_from_filtered(signal_pool)
     if not quality_cards and filtered:
         quality_cards = _build_soft_quality_cards_from_filtered(filtered)
     density_candidates = [c for c in quality_cards if c.is_valid_news]
@@ -308,6 +319,20 @@ def run_pipeline() -> None:
         try:
             log.info("--- Z5: Education Renderer ---")
             metrics_dict = collector.to_dict()
+            metrics_dict["signal_pool_samples"] = [
+                {
+                    "item_id": str(getattr(it, "item_id", "") or ""),
+                    "title": str(getattr(it, "title", "") or ""),
+                    "url": str(getattr(it, "url", "") or ""),
+                    "body": str(getattr(it, "body", "") or "")[:500],
+                    "source_name": str(getattr(it, "source_name", "") or ""),
+                    "source_category": str(getattr(it, "source_category", "") or ""),
+                    "density_score": int(getattr(it, "density_score", 0) or 0),
+                    "event_gate_pass": bool(getattr(it, "event_gate_pass", False)),
+                    "signal_gate_pass": bool(getattr(it, "signal_gate_pass", True)),
+                }
+                for it in signal_pool[:20]
+            ]
             # 模式 A（優先）：結構化輸入
             z5_results = all_results if all_results else None
             z5_report = z4_report

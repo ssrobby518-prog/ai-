@@ -57,6 +57,8 @@ class TestMetricsCollector:
         collector.deduped_total = 24
         collector.enriched_total = 30
         collector.gate_pass_total = 18
+        collector.event_gate_pass_total = 12
+        collector.signal_gate_pass_total = 18
         collector.gate_reject_total = 6
         collector.after_filter_total = 18
         collector.rejected_reason_top = [("content_too_short", 4), ("fragment_placeholder", 2)]
@@ -91,6 +93,8 @@ class TestMetricsCollector:
             "deduped_total",
             "enriched_total",
             "gate_pass_total",
+            "event_gate_pass_total",
+            "signal_gate_pass_total",
             "gate_reject_total",
             "after_filter_total",
             "rejected_reason_top",
@@ -126,6 +130,8 @@ class TestMetricsCollector:
         assert data["deduped_total"] == 24
         assert data["enriched_total"] == 30
         assert data["gate_pass_total"] == 18
+        assert data["event_gate_pass_total"] == 12
+        assert data["signal_gate_pass_total"] == 18
         assert data["gate_reject_total"] == 6
         assert data["after_filter_total"] == 18
         assert data["rejected_reason_top"] == [["content_too_short", 4], ["fragment_placeholder", 2]]

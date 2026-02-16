@@ -229,6 +229,19 @@ def _build_overview_table(
                 card.category or "綜合", f"{card.final_score:.1f}",
             ])
         _make_simple_table(doc, ["#", "標題", "類別", "評分"], rows)
+    else:
+        signals = build_signal_summary(cards)
+        rows = []
+        for i, sig in enumerate(signals[:3], 1):
+            rows.append(
+                [
+                    str(i),
+                    sanitize(str(sig.get("title", sig.get("signal_text", "來源訊號")))[:35]),
+                    sanitize(str(sig.get("source_url", "") or sig.get("source_name", "N/A"))[:35]),
+                    str(int(sig.get("heat_score", 30) or 30)),
+                ]
+            )
+        _make_simple_table(doc, ["#", "Signal", "來源", "熱度"], rows)
     doc.add_paragraph("")
 
 
@@ -429,12 +442,12 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     signals = build_signal_summary(cards)
     sig_lines = []
     for sig in signals[:3]:
-        source_name = str(sig.get("source_name", "platform"))
-        if source_name.strip().lower() == "unknown":
-            source_name = "platform"
+        source_name = str(sig.get("source_name", "來源平台"))
+        source_url = str(sig.get("source_url", "")).strip()
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
-            f"({sig['source_count']} sources, source={source_name})"
+            f"(platform_count={sig['source_count']}，heat_score={int(sig.get('heat_score', 30) or 30)}，"
+            f"來源={source_name}，URL={source_url if source_url.startswith('http') else 'N/A'})"
         )
     _add_callout(doc, "Top Signals", sig_lines if sig_lines else ["今日無明顯訊號"])
     _add_divider(doc)
@@ -501,33 +514,46 @@ def _build_corp_watch(
     _add_divider(doc)
 
 
-def _build_event_ranking(doc: Document, event_cards: list[EduNewsCard]) -> None:
+def _build_event_ranking(
+    doc: Document,
+    event_cards: list[EduNewsCard],
+    cards: list[EduNewsCard] | None = None,
+) -> None:
     """Event Ranking — impact-scored table, matching PPT."""
-    if not event_cards:
-        return
-
     _add_heading(doc, "Event Ranking  事件影響力排行", level=1)
-
-    scored = []
-    for c in event_cards[:8]:
-        impact = score_event_impact(c)
-        scored.append((c, impact))
-    scored.sort(key=lambda x: x[1]["impact"], reverse=True)
-
     rows = []
-    for rank, (c, imp) in enumerate(scored, 1):
-        dc = build_decision_card(c)
-        action = dc["actions"][0] if dc["actions"] else "待確認"
-        rows.append([
-            str(rank),
-            f"{imp['impact']}/5 {imp['label']}",
-            sanitize(c.title_plain or "")[:25],
-            c.category or "綜合",
-            sanitize(action)[:25],
-        ])
-    _make_simple_table(
-        doc, ["Rank", "Impact", "標題", "類別", "Action"], rows
-    )
+    if event_cards:
+        scored = []
+        for c in event_cards[:8]:
+            impact = score_event_impact(c)
+            scored.append((c, impact))
+        scored.sort(key=lambda x: x[1]["impact"], reverse=True)
+
+        for rank, (c, imp) in enumerate(scored, 1):
+            dc = build_decision_card(c)
+            action = dc["actions"][0] if dc["actions"] else "待確認"
+            rows.append([
+                str(rank),
+                f"{imp['impact']}/5 {imp['label']}",
+                sanitize(c.title_plain or "")[:25],
+                c.category or "綜合",
+                sanitize(action)[:25],
+            ])
+    else:
+        signals = build_signal_summary(cards or [])
+        for rank, sig in enumerate(signals[:3], 1):
+            heat_score = int(sig.get("heat_score", 30) or 30)
+            action = "WATCH" if rank <= 2 else "TEST"
+            rows.append(
+                [
+                    str(rank),
+                    f"{heat_score}/100",
+                    sanitize(str(sig.get("title", sig.get("signal_text", "來源訊號")))[:25]),
+                    "No-Event",
+                    action,
+                ]
+            )
+    _make_simple_table(doc, ["Rank", "Impact", "標題", "類別", "Action"], rows)
     doc.add_paragraph("")
 
 
@@ -629,7 +655,7 @@ def generate_executive_docx(
     # 4. Corp Watch (v5)
     _build_corp_watch(doc, cards, metrics=metrics)
 
-    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
 
     # 5. Key Takeaways
     _build_key_takeaways(doc, cards, total_items, metrics=metrics, event_cards=event_cards)
@@ -638,7 +664,7 @@ def generate_executive_docx(
     _build_overview_table(doc, cards, event_cards=event_cards)
 
     # 7. Event Ranking (v5)
-    _build_event_ranking(doc, event_cards)
+    _build_event_ranking(doc, event_cards, cards=cards)
 
     # 8. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
     for i, card in enumerate(event_cards, 1):
@@ -698,7 +724,7 @@ def _build_key_takeaways(
 ) -> None:
     """Key takeaways with stats-backed no-event fallback."""
     if event_cards is None:
-        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
     lines = [f"本次掃描總量：{total_items}；事件候選：{len(event_cards)}。"]
     for c in event_cards[:3]:
         dc = build_decision_card(c)

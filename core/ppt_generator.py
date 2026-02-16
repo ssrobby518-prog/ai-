@@ -339,16 +339,31 @@ def _slide_key_takeaways(prs: Presentation, cards: list[EduNewsCard],
     )
 
 
-def _slide_overview_table(prs: Presentation, event_cards: list[EduNewsCard]) -> None:
-    if not event_cards:
-        return
+def _slide_overview_table(
+    prs: Presentation,
+    event_cards: list[EduNewsCard],
+    cards: list[EduNewsCard] | None = None,
+) -> None:
     headers = ["#", "標題", "類別", "評分"]
     rows = []
-    for i, c in enumerate(event_cards[:8], 1):
-        rows.append([
-            str(i), safe_text(c.title_plain, 35),
-            c.category or "綜合", f"{c.final_score:.1f}",
-        ])
+    if event_cards:
+        for i, c in enumerate(event_cards[:8], 1):
+            rows.append([
+                str(i), safe_text(c.title_plain, 35),
+                c.category or "綜合", f"{c.final_score:.1f}",
+            ])
+    else:
+        signals = build_signal_summary(cards or [])
+        headers = ["#", "Signal", "來源", "熱度"]
+        for i, sig in enumerate(signals[:3], 1):
+            rows.append(
+                [
+                    str(i),
+                    safe_text(str(sig.get("title", sig.get("signal_text", "來源訊號"))), 35),
+                    safe_text(str(sig.get("source_url", "") or sig.get("source_name", "N/A")), 35),
+                    str(int(sig.get("heat_score", 30) or 30)),
+                ]
+            )
     _add_table_slide(prs, "今日總覽  Overview", headers, rows)
 
 
@@ -532,22 +547,25 @@ def _slide_signal_thermometer(prs: Presentation, cards: list[EduNewsCard]) -> No
         platform_count = int(sig.get("platform_count", sig.get("source_count", 0)))
         heat_score = int(sig.get("heat_score", 0))
         label = str(sig.get("label", sig.get("signal_type", "Signal")))
-        source_name = str(sig.get("source_name", "platform"))
-        if source_name.strip().lower() == "unknown":
-            source_name = "platform"
+        title = str(sig.get("title", signal_text))
+        source_name = str(sig.get("source_name", "來源平台"))
+        source_url = str(sig.get("source_url", "")).strip()
         # Signal type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(8), Cm(0.8),
                      label, font_size=12, bold=True,
                      color=sig_color)
         # signal_text + required fallback fields
         _add_textbox(slide, Cm(10), Cm(y), Cm(20), Cm(0.8),
-                     f"{signal_text}  | platform_count={platform_count} | heat_score={heat_score} | source={source_name}",
+                     f"{title} | platform_count={platform_count} | heat_score={heat_score} | source: {source_name}",
                      font_size=11, color=TEXT_WHITE)
+        if source_url.startswith("http"):
+            _add_textbox(slide, Cm(10), Cm(y + 0.55), Cm(20), Cm(0.6),
+                         source_url, font_size=10, color=SUBTLE_GRAY)
         # Heat badge
         _add_textbox(slide, Cm(30), Cm(y), Cm(2), Cm(0.8),
                      heat_word.upper(), font_size=10, bold=True,
                      color=sig_color)
-        y += 1.2
+        y += 1.4
 
 
 def _slide_corp_watch(
@@ -706,30 +724,45 @@ def _slide_scan_diagnostics(
                      font_size=12, color=SUBTLE_GRAY)
 
 
-def _slide_event_ranking(prs: Presentation, event_cards: list[EduNewsCard]) -> None:
-    """Event Ranking — impact-scored event list with color-coded badges."""
-    if not event_cards:
-        return
-
-    # Score and sort
-    scored = []
-    for c in event_cards[:8]:
-        impact = score_event_impact(c)
-        scored.append((c, impact))
-    scored.sort(key=lambda x: x[1]["impact"], reverse=True)
-
+def _slide_event_ranking(
+    prs: Presentation,
+    event_cards: list[EduNewsCard],
+    cards: list[EduNewsCard] | None = None,
+) -> None:
+    """Event ranking slide; in no-event mode use signal/corp-backed ranking rows."""
     headers = ["Rank", "Impact", "標題", "類別", "Action"]
     rows = []
-    for rank, (c, imp) in enumerate(scored, 1):
-        dc = build_decision_card(c)
-        action = dc["actions"][0] if dc["actions"] else "待確認"
-        rows.append([
-            str(rank),
-            f"{imp['impact']}/5 {imp['label']}",
-            safe_text(c.title_plain, 25),
-            c.category or "綜合",
-            safe_text(action, 25),
-        ])
+    if event_cards:
+        scored = []
+        for c in event_cards[:8]:
+            impact = score_event_impact(c)
+            scored.append((c, impact))
+        scored.sort(key=lambda x: x[1]["impact"], reverse=True)
+
+        for rank, (c, imp) in enumerate(scored, 1):
+            dc = build_decision_card(c)
+            action = dc["actions"][0] if dc["actions"] else "待確認"
+            rows.append([
+                str(rank),
+                f"{imp['impact']}/5 {imp['label']}",
+                safe_text(c.title_plain, 25),
+                c.category or "綜合",
+                safe_text(action, 25),
+            ])
+    else:
+        signals = build_signal_summary(cards or [])
+        for rank, sig in enumerate(signals[:3], 1):
+            heat_score = int(sig.get("heat_score", 30) or 30)
+            action = "WATCH" if rank <= 2 else "TEST"
+            rows.append(
+                [
+                    str(rank),
+                    f"{heat_score}/100",
+                    safe_text(str(sig.get("title", sig.get("signal_text", "來源訊號"))), 25),
+                    "No-Event",
+                    action,
+                ]
+            )
     _add_table_slide(prs, "Event Ranking  事件影響力排行", headers, rows)
 
 
@@ -841,17 +874,17 @@ def generate_executive_ppt(
     # 4. Corp Watch (v5)
     _slide_corp_watch(prs, cards, metrics=metrics)
 
-    # Event pool: keep at least one low-confidence event to avoid empty deck.
-    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+    # Event pool: only verifiable event cards (no synthetic placeholders).
+    event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
 
     # 5. Key Takeaways
     _slide_key_takeaways(prs, cards, total_items, metrics=metrics, event_cards=event_cards)
 
     # 6. Overview Table
-    _slide_overview_table(prs, event_cards)
+    _slide_overview_table(prs, event_cards, cards=cards)
 
     # 7. Event Ranking (v5)
-    _slide_event_ranking(prs, event_cards)
+    _slide_event_ranking(prs, event_cards, cards=cards)
 
     # 8. Per-event: brief_page1 + brief_page2
     for i, card in enumerate(event_cards, 1):
@@ -948,7 +981,7 @@ def _slide_key_takeaways(
     _add_divider(slide, Cm(2), Cm(3.2), Cm(4), color=ACCENT)
 
     if event_cards is None:
-        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=1)
+        event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
     takeaways: list[str] = [f"本次掃描總量：{total_items}；事件候選：{len(event_cards)}。"]
 
     for c in event_cards[:3]:

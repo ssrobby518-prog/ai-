@@ -14,6 +14,8 @@ DEFAULT_GATE_LEVELS: tuple[tuple[int, int], ...] = (
     (1200, 3),  # strict
     (600, 2),   # relaxed
 )
+EVENT_GATE_LEVEL: tuple[int, int] = (1200, 3)
+SIGNAL_GATE_LEVEL: tuple[int, int] = (300, 2)
 
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?。？！]+")
 _SENTENCE_PUNCT_RE = re.compile(r"[.!?。？！]")
@@ -84,6 +86,16 @@ class AdaptiveGateStats:
     @property
     def hard_pass_total(self) -> int:
         return self.passed_strict
+
+
+@dataclass(frozen=True)
+class SplitGateStats:
+    total: int
+    event_gate_pass_total: int
+    signal_gate_pass_total: int
+    rejected_total: int
+    rejected_by_reason: dict[str, int]
+    rejected_reason_top: list[tuple[str, int]]
 
 
 def _normalize(text: str) -> str:
@@ -371,3 +383,122 @@ def apply_adaptive_content_gate(
         density_score_top5=sorted(density_rankings, key=lambda t: t[2], reverse=True)[:5],
     )
     return kept_items, rejected_map, stats
+
+
+def apply_split_content_gate(
+    items: list[Any],
+    *,
+    event_level: tuple[int, int] = EVENT_GATE_LEVEL,
+    signal_level: tuple[int, int] = SIGNAL_GATE_LEVEL,
+) -> tuple[list[Any], list[Any], dict[int, str], SplitGateStats]:
+    """Apply split gates for Event and Signal pools.
+
+    - Event gate: stricter thresholds, used for event candidate pipeline.
+    - Signal gate: lower thresholds, used for signal/corp fallback pool.
+    - Hard reject rules always apply equally to both gates.
+    """
+    total = len(items)
+    if total == 0:
+        stats = SplitGateStats(
+            total=0,
+            event_gate_pass_total=0,
+            signal_gate_pass_total=0,
+            rejected_total=0,
+            rejected_by_reason={},
+            rejected_reason_top=[],
+        )
+        return [], [], {}, stats
+
+    event_min_len, event_min_sentences = event_level
+    signal_min_len, signal_min_sentences = signal_level
+
+    event_pass_idx: list[int] = []
+    signal_pass_idx: list[int] = []
+    rejected_map: dict[int, str] = {}
+
+    for idx, item in enumerate(items):
+        body = _normalize(getattr(item, "body", ""))
+        d_score = density_score(body)
+
+        hard_reason = _hard_reject_reason(body)
+        if hard_reason:
+            rejected_map[idx] = hard_reason
+            _set_rejected_reason(item, hard_reason)
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", False)
+            except Exception:
+                pass
+            continue
+
+        if _is_fragment_placeholder(body):
+            rejected_map[idx] = "fragment_placeholder"
+            _set_rejected_reason(item, "fragment_placeholder")
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", False)
+            except Exception:
+                pass
+            continue
+
+        event_ok, event_reason = is_valid_article(
+            body,
+            content_min_len=event_min_len,
+            min_sentences=event_min_sentences,
+        )
+        signal_ok, signal_reason = is_valid_article(
+            body,
+            content_min_len=signal_min_len,
+            min_sentences=signal_min_sentences,
+        )
+
+        if event_ok:
+            event_pass_idx.append(idx)
+            signal_pass_idx.append(idx)
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="EVENT_PASS", level="event", density=d_score, low_confidence=False)
+            try:
+                setattr(item, "event_gate_pass", True)
+                setattr(item, "signal_gate_pass", True)
+            except Exception:
+                pass
+            continue
+
+        if signal_ok:
+            signal_pass_idx.append(idx)
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="SIGNAL_PASS", level="signal", density=d_score, low_confidence=True)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", True)
+                setattr(item, "event_rejected_reason", event_reason or "event_gate_reject")
+            except Exception:
+                pass
+            continue
+
+        reason = signal_reason or event_reason or "rejected_by_gate"
+        rejected_map[idx] = reason
+        _set_rejected_reason(item, reason)
+        _set_gate_meta(item, stage="REJECT", level="split", density=d_score, low_confidence=False)
+        try:
+            setattr(item, "event_gate_pass", False)
+            setattr(item, "signal_gate_pass", False)
+        except Exception:
+            pass
+
+    event_candidates = [items[idx] for idx in event_pass_idx]
+    signal_pool = [items[idx] for idx in signal_pass_idx]
+
+    rejected_by_reason = dict(Counter(rejected_map.values()))
+    rejected_reason_top = sorted(rejected_by_reason.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    stats = SplitGateStats(
+        total=total,
+        event_gate_pass_total=len(event_pass_idx),
+        signal_gate_pass_total=len(signal_pass_idx),
+        rejected_total=len(rejected_map),
+        rejected_by_reason=rejected_by_reason,
+        rejected_reason_top=rejected_reason_top,
+    )
+    return event_candidates, signal_pool, rejected_map, stats

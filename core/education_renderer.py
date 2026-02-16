@@ -1306,43 +1306,69 @@ def _build_cards_and_health(
     else:
         log.warning("Z5: 無結構化輸入，使用診斷保底卡片避免輸出空白。")
         fetched_total = int((metrics or {}).get("fetched_total", 0))
+        event_gate_pass_total = int((metrics or {}).get("event_gate_pass_total", 0))
+        signal_gate_pass_total = int((metrics or {}).get("signal_gate_pass_total", 0))
         hard_pass_total = int((metrics or {}).get("hard_pass_total", 0))
         soft_pass_total = int((metrics or {}).get("soft_pass_total", 0))
         gate_pass_total = int((metrics or {}).get("gate_pass_total", 0))
         sources_total = int((metrics or {}).get("sources_total", 0))
-        density_top5 = list((metrics or {}).get("density_score_top5", []))
+        signal_samples = list((metrics or {}).get("signal_pool_samples", []))
 
-        fallback_rows = density_top5[:3] if density_top5 else [("今日掃描未形成高信心事件", "", 0)]
-        for idx, row in enumerate(fallback_rows, 1):
-            title = str(row[0] if len(row) > 0 else "今日掃描未形成高信心事件").strip() or "今日掃描未形成高信心事件"
-            src_url = str(row[1] if len(row) > 1 else "").strip()
-            score = int(row[2] if len(row) > 2 else 0)
+        if signal_samples:
+            for idx, sample in enumerate(signal_samples[:3], 1):
+                title = str(sample.get("title", "")).strip() or "來源訊號"
+                src_url = str(sample.get("url", "")).strip()
+                body = str(sample.get("body", "")).strip()
+                source_name = str(sample.get("source_name", "")).strip() or "來源平台"
+                score = int(sample.get("density_score", 0) or 0)
+                card = EduNewsCard(
+                    item_id=str(sample.get("item_id", "") or f"signal-sample-{idx}"),
+                    is_valid_news=True,
+                    title_plain=title[:60],
+                    what_happened=(body[:260] if body else f"來源 {source_name} 具可追溯訊號，請檢視原始連結。"),
+                    why_important=(
+                        f"Scan Stats: fetched_total={fetched_total}, event_gate_pass_total={event_gate_pass_total}, "
+                        f"signal_gate_pass_total={signal_gate_pass_total}, sources_total={sources_total}."
+                    ),
+                    source_name=source_name,
+                    source_url=src_url if src_url.startswith("http") else "",
+                    category=str(sample.get("source_category", "") or "tech"),
+                    final_score=max(3.0, min(10.0, round(score / 10.0, 2))),
+                )
+                try:
+                    setattr(card, "event_gate_pass", bool(sample.get("event_gate_pass", False)))
+                    setattr(card, "signal_gate_pass", bool(sample.get("signal_gate_pass", True)))
+                    setattr(card, "density_score", score)
+                    setattr(card, "density_tier", "B")
+                except Exception:
+                    pass
+                cards.append(card)
+        else:
             card = EduNewsCard(
-                item_id=f"fallback-{idx}",
+                item_id="fallback-scan-stats",
                 is_valid_news=True,
-                title_plain=f"低信心事件候選：{title[:40]}",
+                title_plain="來源掃描統計摘要",
                 what_happened=(
-                    f"本次無有效新聞；本次掃描統計：fetched_total={fetched_total}、hard_pass_total={hard_pass_total}、"
-                    f"soft_pass_total={soft_pass_total}、gate_pass_total={gate_pass_total}、sources_total={sources_total}。"
+                    f"Scan Stats: fetched_total={fetched_total}, event_gate_pass_total={event_gate_pass_total}, "
+                    f"signal_gate_pass_total={signal_gate_pass_total}, hard_pass_total={hard_pass_total}, "
+                    f"soft_pass_total={soft_pass_total}, gate_pass_total={gate_pass_total}, sources_total={sources_total}."
                 ),
                 why_important=(
-                    f"此候選來自密度分數保底機制，density_score={score}。"
-                    "建議先列入 WATCH，等待後續來源補強。"
+                    "目前沒有符合事件門檻的項目；請先以 Signal 與 Corp Watch 的可追溯數字進行 WATCH/TEST。"
                 ),
-                source_name="platform",
-                source_url=src_url if src_url.startswith("http") else "",
+                source_name="來源平台",
+                source_url="",
                 category="tech",
-                final_score=max(3.0, min(10.0, round(score / 10.0, 2))),
+                final_score=3.0,
             )
             try:
-                setattr(card, "low_confidence", True)
-                setattr(card, "confidence", "low")
-                setattr(card, "density_score", score)
+                setattr(card, "event_gate_pass", False)
+                setattr(card, "signal_gate_pass", True)
+                setattr(card, "density_score", 0)
                 setattr(card, "density_tier", "B")
             except Exception:
                 pass
             cards.append(card)
-
         total_items = max(total_items, len(cards))
 
     if max_items > 0 and len(cards) > max_items:

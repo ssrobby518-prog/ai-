@@ -73,6 +73,8 @@ class MetricsCollector:
         self.deduped_total: int = 0
         self.enriched_total: int = 0
         self.gate_pass_total: int = 0
+        self.event_gate_pass_total: int = 0
+        self.signal_gate_pass_total: int = 0
         self.hard_pass_total: int = 0
         self.soft_pass_total: int = 0
         self.gate_reject_total: int = 0
@@ -126,6 +128,8 @@ class MetricsCollector:
             "deduped_total": self.deduped_total,
             "enriched_total": self.enriched_total,
             "gate_pass_total": self.gate_pass_total,
+            "event_gate_pass_total": self.event_gate_pass_total,
+            "signal_gate_pass_total": self.signal_gate_pass_total,
             "hard_pass_total": self.hard_pass_total,
             "soft_pass_total": self.soft_pass_total,
             "gate_reject_total": self.gate_reject_total,

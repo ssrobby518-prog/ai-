@@ -63,7 +63,7 @@ def test_filter_items_logs_content_gate_summary(caplog) -> None:
     with caplog.at_level(logging.INFO):
         filter_items([item])
 
-    assert any("ContentGate strict_pass=" in rec.message for rec in caplog.records)
+    assert any("ContentGate fetched_total=" in rec.message for rec in caplog.records)
 
 
 def test_gate_not_starve_pipeline_soft_pass(monkeypatch) -> None:
@@ -83,14 +83,14 @@ def test_gate_not_starve_pipeline_soft_pass(monkeypatch) -> None:
         lang="en",
     )
 
-    monkeypatch.setattr("config.settings.CONTENT_GATE_STRICT_MIN_LEN", 1200)
-    monkeypatch.setattr("config.settings.CONTENT_GATE_STRICT_MIN_SENTENCES", 3)
-    monkeypatch.setattr("config.settings.CONTENT_GATE_RELAXED_MIN_LEN", 500)
-    monkeypatch.setattr("config.settings.CONTENT_GATE_RELAXED_MIN_SENTENCES", 2)
-    monkeypatch.setattr("config.settings.CONTENT_GATE_MIN_KEEP_ITEMS", 1)
+    monkeypatch.setattr("config.settings.EVENT_GATE_MIN_LEN", 1200)
+    monkeypatch.setattr("config.settings.EVENT_GATE_MIN_SENTENCES", 3)
+    monkeypatch.setattr("config.settings.SIGNAL_GATE_MIN_LEN", 300)
+    monkeypatch.setattr("config.settings.SIGNAL_GATE_MIN_SENTENCES", 2)
 
     kept, summary = filter_items([item])
-    assert len(kept) == 1
-    assert summary.kept_count >= 1
-    assert int(summary.gate_stats.get("soft_pass_total", 0)) >= 1
-    assert int(summary.gate_stats.get("after_filter_total", 0)) >= 1
+    assert len(kept) == 0
+    assert summary.kept_count == 0
+    assert len(summary.signal_pool) >= 1
+    assert int(summary.gate_stats.get("event_gate_pass_total", 0)) == 0
+    assert int(summary.gate_stats.get("signal_gate_pass_total", 0)) >= 1
