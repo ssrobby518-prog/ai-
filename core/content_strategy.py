@@ -376,8 +376,8 @@ def build_decision_card(card: EduNewsCard) -> dict[str, list[str] | str]:
     actions: list[str] = []
     if is_index:
         actions = [
-            "確認：保留此來源或降權/移除？",
-            "指派負責人評估此來源的資訊品質",
+            "先整理來源可信度與關鍵數字，建立可追溯檢核清單。",
+            "指派負責人以最小範圍驗證訊號，下一輪再決定是否升級行動。",
         ]
     else:
         for a in (card.action_items or [])[:2]:
@@ -387,7 +387,7 @@ def build_decision_card(card: EduNewsCard) -> dict[str, list[str] | str]:
                     and not _ECHO_RE.search(cleaned)):
                 actions.append(cleaned)
         if not actions:
-            actions.append("確認此事件是否影響現有業務或專案排程")
+            actions.append("追蹤本日高熱度訊號，先確認來源與數字證據，再決定是否 MOVE。")
 
     return {
         "event": event[:22],
@@ -3758,7 +3758,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         for row in base[:3]:
             source_name = _v524_safe_source_name(str(row.get("source_name", "") or ""))
             platform_count = max(int(row.get("platform_count", row.get("source_count", 1)) or 1), 1)
-            heat_score = max(int(row.get("heat_score", 30) or 30), 30)
+            heat_score = min(100, max(int(row.get("heat_score", 40) or 40), 30))
             signal_name = str(row.get("signal_name", row.get("signal_type", "TOOL_ADOPTION")) or "TOOL_ADOPTION").upper()
             label = _V524_SIGNAL_LABEL_ZH.get(signal_name, str(row.get("label", signal_name)))
             signal_text = _v524_to_zh_signal_text(label, source_name, heat_score, platform_count)
@@ -4109,6 +4109,23 @@ def _v532_domain_from_url(url: str) -> str:
         return ""
 
 
+def _v532_is_placeholder_source(source_name: str) -> bool:
+    raw = str(source_name or "").strip()
+    lowered = raw.lower()
+    if lowered in {
+        "",
+        "platform",
+        "source=platform",
+        "unknown",
+        "source=unknown",
+        "scan",
+    }:
+        return True
+    if ("來源" in raw and "平台" in raw) or ("來源" in raw and "未標示" in raw):
+        return True
+    return False
+
+
 def _v532_is_fragment(text: str) -> bool:
     payload = str(text or "").strip()
     if not payload:
@@ -4138,12 +4155,15 @@ def _v532_safe_source(row: dict, card: EduNewsCard | None) -> tuple[str, str]:
         card_url = str(getattr(card, "source_url", "") or "").strip()
         if not source_url and card_url.startswith(("http://", "https://")):
             source_url = card_url
-        if source_name == "靘?撟喳":
-            source_name = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
-    if source_name == "靘?撟喳":
+        card_source = _v524_safe_source_name(str(getattr(card, "source_name", "") or ""))
+        if _v532_is_placeholder_source(source_name) and not _v532_is_placeholder_source(card_source):
+            source_name = card_source
+    if _v532_is_placeholder_source(source_name):
         domain = _v532_domain_from_url(source_url)
         source_name = domain or "scan"
     return source_name, source_url if source_url.startswith(("http://", "https://")) else ""
+
+
 
 
 def _v532_signal_card_pool(cards: list[EduNewsCard]) -> list[EduNewsCard]:
@@ -4199,18 +4219,20 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
     rows: list[dict] = []
     idx = 0
     while len(rows) < 3:
-        row = dict(base_rows[idx]) if idx < len(base_rows) else {}
+        # Avoid cloning the same prebuilt row when signal pool is very small.
+        row = dict(base_rows[idx]) if (idx < len(base_rows) and idx < len(pool)) else {}
         card = pool[idx % len(pool)] if pool else None
+        use_card_title = idx < len(pool)
         signal_name = str(row.get("signal_name", _V532_SIGNAL_NAMES[idx % len(_V532_SIGNAL_NAMES)])).upper()
         label = str(row.get("label", _V532_SIGNAL_LABELS.get(signal_name, signal_name)))
 
         source_name, source_url = _v532_safe_source(row, card)
         platform_count = max(int(row.get("platform_count", row.get("source_count", source_counts.get(source_name, 1) or 1)) or 1), 1)
-        heat_score = max(int(row.get("heat_score", max(30, int(round(float(getattr(card, "final_score", 3.0) or 3.0) * 12)))) or 30), 30)
+        heat_score = min(100, max(int(row.get("heat_score", max(30, int(round(float(getattr(card, "final_score", 3.0) or 3.0) * 12)))) or 30), 30))
         heat = str(row.get("heat", "hot" if heat_score >= 75 else ("warm" if heat_score >= 50 else "cool")))
 
         title = str(row.get("title", "") or "").strip()
-        if not title and card is not None:
+        if not title and use_card_title and card is not None:
             title = str(getattr(card, "title_plain", "") or "").strip()
         if not title:
             title = _V532_SIGNAL_LABELS.get(signal_name, signal_name)
@@ -4241,7 +4263,7 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
 
         snippet = _v532_signal_snippet(
             row=row,
-            card=card,
+            card=card if use_card_title else None,
             source_name=source_name,
             heat_score=heat_score,
             platform_count=platform_count,

@@ -51,6 +51,14 @@ def test_no_event_signals_have_density_fields() -> None:
         assert re.search(r"\b(?:was|is|are|the|and|to|of)\s*$", str(row.get("example_snippet", "")).strip(), re.IGNORECASE) is None
 
 
+def test_signal_summary_not_all_duplicate_when_pool_small() -> None:
+    cards = [_no_event_cards()[0]]
+    rows = build_signal_summary(cards)
+    assert len(rows) >= 3
+    titles = [str(r.get("title", "")).strip() for r in rows[:3]]
+    assert len({t for t in titles if t}) >= 2
+
+
 def test_no_event_corp_watch_has_numeric_scan_stats() -> None:
     metrics = {
         "sources_total": 8,

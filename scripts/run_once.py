@@ -114,6 +114,8 @@ def _select_processing_items(
     signal_pool: list[RawItem],
     *,
     fallback_limit: int = 3,
+    include_signal_context: bool = False,
+    signal_context_limit: int = 0,
 ) -> tuple[list[RawItem], bool]:
     """Select items for downstream Z2/Z3 processing.
 
@@ -123,7 +125,26 @@ def _select_processing_items(
        signal fallback slice to avoid all-empty runs.
     """
     if filtered_items:
-        return list(filtered_items), False
+        selected = list(filtered_items)
+        if include_signal_context and signal_pool:
+            remaining = max(0, int(signal_context_limit))
+            existing_ids = {str(getattr(it, "item_id", "") or "") for it in selected}
+            for item in signal_pool:
+                if remaining <= 0:
+                    break
+                item_id = str(getattr(item, "item_id", "") or "")
+                if item_id and item_id in existing_ids:
+                    continue
+                try:
+                    setattr(item, "event_gate_pass", False)
+                    setattr(item, "signal_gate_pass", True)
+                    setattr(item, "low_confidence", True)
+                except Exception:
+                    pass
+                selected.append(item)
+                existing_ids.add(item_id)
+                remaining -= 1
+        return selected, False
 
     if not signal_pool:
         return [], False
@@ -202,6 +223,8 @@ def run_pipeline() -> None:
         filtered,
         signal_pool,
         fallback_limit=3,
+        include_signal_context=True,
+        signal_context_limit=max(0, 3 - len(filtered)),
     )
     collector.after_filter_total = len(processing_items)
     collector.rejected_reason_top = list(gate_stats.get("rejected_reason_top", []))

@@ -112,6 +112,7 @@ def test_pptx_and_docx_have_no_placeholder_terms(tmp_path: Path) -> None:
         "top links",
         "stay tuned",
         "this shows",
+        "的趨勢，解決方 記",
         "was...",
         "is...",
     ]
