@@ -60,6 +60,37 @@ _DENSITY_MODEL_HINTS = (
     "gemini",
 )
 
+# ---------------------------------------------------------------------------
+# AI topic relevance check
+# ---------------------------------------------------------------------------
+try:
+    from config.settings import AI_TOPIC_KEYWORDS as _AI_KEYWORDS
+except Exception:  # pragma: no cover
+    _AI_KEYWORDS = [
+        "ai", "llm", "agent", "model", "inference", "gpu", "nvidia", "openai",
+        "anthropic", "google", "microsoft", "aws", "meta", "deepseek", "qwen",
+        "rag", "vector", "vllm", "transformer", "multimodal", "copilot",
+        "gemini", "claude", "gpt", "chatgpt", "llama", "mistral",
+    ]
+
+
+def _build_ai_re() -> re.Pattern[str]:
+    """Build a regex that matches AI keywords with word boundaries."""
+    # Sort by length descending so longer keywords match first
+    sorted_kw = sorted(_AI_KEYWORDS, key=len, reverse=True)
+    escaped = [re.escape(kw) for kw in sorted_kw]
+    pattern = r"(?:^|\b| )" + r"(?:" + r"|".join(escaped) + r")" + r"(?:\b| |$)"
+    return re.compile(pattern, re.IGNORECASE)
+
+
+_AI_RE = _build_ai_re()
+
+
+def is_ai_relevant(title: str, body: str) -> bool:
+    """Return True if the content is AI-related (matches at least one keyword)."""
+    combined = f"{title} {body}"
+    return bool(_AI_RE.search(combined))
+
 
 @dataclass(frozen=True)
 class AdaptiveGateStats:
@@ -270,6 +301,10 @@ def apply_adaptive_content_gate(
             hard_rejected[idx] = "fragment_placeholder"
             _set_rejected_reason(item, "fragment_placeholder")
             _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
+        elif not is_ai_relevant(title, body):
+            hard_rejected[idx] = "non_ai_topic"
+            _set_rejected_reason(item, "non_ai_topic")
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
         else:
             candidates.append(idx)
 
@@ -418,6 +453,7 @@ def apply_split_content_gate(
 
     for idx, item in enumerate(items):
         body = _normalize(getattr(item, "body", ""))
+        title = str(getattr(item, "title", "") or "")
         d_score = density_score(body)
 
         hard_reason = _hard_reject_reason(body)
@@ -435,6 +471,17 @@ def apply_split_content_gate(
         if _is_fragment_placeholder(body):
             rejected_map[idx] = "fragment_placeholder"
             _set_rejected_reason(item, "fragment_placeholder")
+            _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", False)
+            except Exception:
+                pass
+            continue
+
+        if not is_ai_relevant(title, body):
+            rejected_map[idx] = "non_ai_topic"
+            _set_rejected_reason(item, "non_ai_topic")
             _set_gate_meta(item, stage="REJECT", level="hard", density=d_score, low_confidence=False)
             try:
                 setattr(item, "event_gate_pass", False)

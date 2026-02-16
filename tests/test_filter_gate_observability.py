@@ -203,7 +203,15 @@ class TestZeroItemsZ5Render:
 
     def test_nonempty_report_no_filter_section(self):
         """When cards exist, the filter empty section should NOT appear."""
-        from tests.test_education_renderer import _render_all
+        import importlib
+        import sys
+
+        test_mod_path = str(Path(__file__).resolve().parent / "test_education_renderer.py")
+        spec = importlib.util.spec_from_file_location("test_education_renderer", test_mod_path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["test_education_renderer"] = mod
+        spec.loader.exec_module(mod)
+        _render_all = mod._render_all
 
         notion_md, _, _ = _render_all()
         assert "本次無有效新聞" not in notion_md

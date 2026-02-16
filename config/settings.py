@@ -166,3 +166,25 @@ EDU_REPORT_INCLUDE_MEDIA_PLACEHOLDERS: bool = os.getenv(
     "EDU_REPORT_INCLUDE_MEDIA_PLACEHOLDERS", "true"
 ).strip().lower() in ("true", "1", "yes")
 EDU_REPORT_LEVEL: str = os.getenv("EDU_REPORT_LEVEL", "adult").strip().lower()  # adult | teen
+
+# ---------------------------------------------------------------------------
+# PPT Theme (light | dark)
+# ---------------------------------------------------------------------------
+PPT_THEME: str = os.getenv("PPT_THEME", "light").strip().lower()
+
+# ---------------------------------------------------------------------------
+# AI Topic Keywords — items must match at least one to pass content gate
+# ---------------------------------------------------------------------------
+_DEFAULT_AI_TOPIC_KEYWORDS = (
+    "ai,llm,agent,model,inference,gpu,nvidia,openai,anthropic,google,microsoft,"
+    "aws,meta,deepseek,qwen,rag,vector,vllm,transformer,multimodal,copilot,"
+    "gemini,claude,gpt,chatgpt,llama,mistral,diffusion,neural,machine learning,"
+    "deep learning,foundation model,generative,chatbot,langchain,cursor,bedrock,"
+    "vertex,azure,huggingface,tensorflow,pytorch,算力,大模型,人工智慧,機器學習,"
+    "深度學習,生成式,語言模型"
+)
+AI_TOPIC_KEYWORDS: list[str] = [
+    k.strip().lower()
+    for k in os.getenv("AI_TOPIC_KEYWORDS", _DEFAULT_AI_TOPIC_KEYWORDS).split(",")
+    if k.strip()
+]

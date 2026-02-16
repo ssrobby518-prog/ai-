@@ -3989,3 +3989,87 @@ def build_ceo_actions(cards: list[EduNewsCard]) -> list[dict]:
             }
         )
     return fallback_actions
+
+
+# ---------------------------------------------------------------------------
+# v5.3 — evidence enrichment for signal rows + corp watch update_type_counts
+# ---------------------------------------------------------------------------
+
+_v53_prev_build_signal_summary = build_signal_summary
+
+
+def _extract_evidence_terms(text: str) -> list[str]:
+    """Extract verifiable proper nouns (companies/models/products/tech names)."""
+    known = {
+        "openai", "google", "microsoft", "amazon", "aws", "meta", "apple", "nvidia",
+        "alibaba", "tencent", "bytedance", "baidu", "huawei",
+        "chatgpt", "gpt", "claude", "gemini", "llama", "deepseek", "qwen", "mistral",
+        "copilot", "langchain", "cursor", "github", "azure", "vertex", "bedrock",
+        "anthropic", "tensorflow", "pytorch", "huggingface",
+    }
+    lowered = text.lower()
+    found = [kw for kw in known if kw in lowered]
+    # Also extract capitalized proper nouns not in stop words
+    caps = set(re.findall(r"\b[A-Z][A-Za-z0-9\-]{2,}\b", text))
+    for c in caps:
+        cl = c.lower()
+        if cl not in _STOP_WORDS and cl not in found:
+            found.append(c)
+    return found[:8]
+
+
+def _extract_evidence_numbers(text: str) -> list[str]:
+    """Extract verifiable numbers (versions/prices/dates/benchmarks/params)."""
+    patterns = [
+        r"\b20\d{2}\b",
+        r"\bv?\d+\.\d+(?:\.\d+)?\b",
+        r"\b\d+(?:\.\d+)?\s*(?:%|x|ms|gb|mb|tb|k|m|b|tokens?)\b",
+        r"[$€¥]\s*\d+(?:\.\d+)?(?:\s*(?:M|B|K|million|billion))?\b",
+        r"\b\d+(?:\.\d+)?\s*(?:usd|dollars?|元|萬|亿|億)\b",
+    ]
+    combined = "|".join(patterns)
+    matches = re.findall(combined, text, re.IGNORECASE)
+    return list(dict.fromkeys(matches))[:6]
+
+
+def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
+    """Enriched signal summary with evidence_terms and evidence_numbers."""
+    rows = list(_v53_prev_build_signal_summary(cards) or [])
+    for row in rows:
+        combined_text = f"{row.get('title', '')} {row.get('example_snippet', '')} {row.get('signal_text', '')}"
+        terms = _extract_evidence_terms(combined_text)
+        nums = _extract_evidence_numbers(combined_text)
+        # Ensure minimum evidence_terms >= 2
+        source_name = str(row.get("source_name", ""))
+        if source_name and source_name not in terms:
+            terms.insert(0, source_name)
+        if len(terms) < 2:
+            terms.append(str(row.get("signal_name", "SIGNAL")))
+        row["evidence_terms"] = terms[:8]
+        row["evidence_numbers"] = nums[:6]
+        if not nums:
+            row["missing_reason"] = "no_verifiable_numbers_in_source"
+    return rows
+
+
+_CORP_UPDATE_TYPES = ("model", "product", "cloud_infra", "ecosystem", "risk_policy")
+
+_v53_prev_build_corp_watch = build_corp_watch_summary
+
+
+def build_corp_watch_summary(
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> dict:
+    """Corp watch with update_type_counts and enriched top_fail_reasons."""
+    result = dict(_v53_prev_build_corp_watch(cards, metrics=metrics) or {})
+
+    # Always include update_type_counts (even if all zeros)
+    if "update_type_counts" not in result:
+        result["update_type_counts"] = {k: 0 for k in _CORP_UPDATE_TYPES}
+
+    # Ensure top_fail_reasons has at least 1 entry
+    if not result.get("top_fail_reasons"):
+        result["top_fail_reasons"] = [{"reason": "no_event_candidates", "count": 1}]
+
+    return result

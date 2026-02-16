@@ -12,8 +12,8 @@ from schemas.models import RawItem
 def _relaxed_candidate(seed: str) -> str:
     # ~700 chars with 2 sentences: fails strict(1200/3), passes relaxed(600/2).
     return (
-        (f"{seed} rollout completed with measurable production impact across regions. " * 5)
-        + (f"{seed} teams validated latency, cost, and rollback controls under load. " * 5)
+        (f"{seed} AI inference rollout completed with measurable production impact across regions. " * 5)
+        + (f"{seed} GPU teams validated latency, cost, and rollback controls under load. " * 5)
     )
 
 
@@ -36,9 +36,9 @@ def test_adaptive_gate_uses_relaxed_when_strict_too_low() -> None:
 
 def test_fragment_placeholder_rejected_even_in_relaxed_mode() -> None:
     items = [
-        SimpleNamespace(body="Last July was..."),
-        SimpleNamespace(body="This migration was..."),
-        SimpleNamespace(body="Valid article body. " * 120),
+        SimpleNamespace(title="AI update", body="Last July was..."),
+        SimpleNamespace(title="AI update", body="This migration was..."),
+        SimpleNamespace(title="AI inference update", body="OpenAI valid article body. " * 120),
     ]
 
     kept, rejected_map, stats = apply_adaptive_content_gate(items, min_keep_items=3)
@@ -51,9 +51,9 @@ def test_fragment_placeholder_rejected_even_in_relaxed_mode() -> None:
 def test_filter_items_logs_content_gate_summary(caplog) -> None:
     item = RawItem(
         item_id="gate-log-001",
-        title="Adaptive gate logging check",
+        title="AI inference gate logging check",
         url="https://example.com/gate-log-001",
-        body=("The team completed rollout validation with clear rollback controls. " * 30),
+        body=("The AI model team completed GPU inference rollout validation with clear rollback controls. " * 30),
         published_at=datetime.now(UTC).isoformat(),
         source_name="test",
         source_category="tech",
@@ -68,13 +68,13 @@ def test_filter_items_logs_content_gate_summary(caplog) -> None:
 
 def test_gate_not_starve_pipeline_soft_pass(monkeypatch) -> None:
     body = (
-        "Short but coherent analysis summary with explicit implications for platform rollout. "
+        "Short but coherent AI model analysis summary with explicit implications for GPU inference rollout. "
         "The update includes customer impact, operational constraints, and mitigation options. "
     ) * 5  # <1200 chars: strict fail, relaxed/soft pass.
 
     item = RawItem(
         item_id="gate-soft-pass-001",
-        title="Short coherent brief",
+        title="Short AI inference brief",
         url="https://example.com/gate-soft-pass-001",
         body=body,
         published_at=datetime.now(UTC).isoformat(),

@@ -47,9 +47,10 @@ def test_accepts_normal_article() -> None:
 def test_adaptive_gate_relaxes_when_kept_too_low() -> None:
     items = [
         SimpleNamespace(
+            title="AI inference update",
             body=(
-                ("Platform migration completed across two regions with staged rollout safeguards. " * 5)
-                + ("Operators validated recovery windows and latency targets. " * 5)
+                ("AI inference migration completed across two regions with staged rollout safeguards. " * 5)
+                + ("GPU operators validated recovery windows and latency targets. " * 5)
             )
         )
         for _ in range(4)
@@ -63,11 +64,12 @@ def test_adaptive_gate_relaxes_when_kept_too_low() -> None:
 
 def test_adaptive_gate_hard_reject_not_relaxed() -> None:
     items = [
-        SimpleNamespace(body="This roundup lists links and quick updates. " * 40),
+        SimpleNamespace(title="AI roundup", body="This roundup lists links and quick AI updates. " * 40),
         SimpleNamespace(
+            title="AI model update",
             body=(
-                ("Engineering teams completed migration planning with clear timelines. " * 12)
-                + ("Customers confirmed readiness for controlled production rollout. " * 12)
+                ("AI engineering teams completed inference migration planning with clear timelines. " * 12)
+                + ("Customers confirmed readiness for controlled GPU production rollout. " * 12)
             )
         ),
     ]
