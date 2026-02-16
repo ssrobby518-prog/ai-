@@ -1504,19 +1504,41 @@ def generate_executive_reports(
         project_root = Path(__file__).resolve().parent.parent
     outputs_dir = project_root / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
+    pptx_target = outputs_dir / "executive_report.pptx"
 
     cards, health, report_time, total_items = _build_cards_and_health(
         results=results, report=report, metrics=metrics,
         deep_analysis_text=deep_analysis_text, max_items=max_items,
     )
 
-    pptx_path = generate_executive_ppt(
-        cards=cards, health=health, report_time=report_time,
-        total_items=total_items,
-        output_path=outputs_dir / "executive_report.pptx",
-        metrics=metrics or {},
-    )
-    log.info("Executive PPTX generated")
+    try:
+        pptx_path = generate_executive_ppt(
+            cards=cards, health=health, report_time=report_time,
+            total_items=total_items,
+            output_path=pptx_target,
+            metrics=metrics or {},
+        )
+        log.info("Executive PPTX generated")
+    except PermissionError as exc:
+        # Desktop/preview tools may hold a lock on the target file.
+        if pptx_target.exists() and pptx_target.stat().st_size > 0:
+            pptx_path = pptx_target
+            log.warning(
+                "Executive PPTX path is locked; keep existing file: %s (%s)",
+                pptx_target,
+                exc,
+            )
+        else:
+            from datetime import UTC, datetime
+
+            alt_pptx = outputs_dir / f"executive_report_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.pptx"
+            pptx_path = generate_executive_ppt(
+                cards=cards, health=health, report_time=report_time,
+                total_items=total_items,
+                output_path=alt_pptx,
+                metrics=metrics or {},
+            )
+            log.warning("Executive PPTX generated at fallback path: %s", pptx_path)
 
     docx_path = generate_executive_docx(
         cards=cards, health=health, report_time=report_time,
