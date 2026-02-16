@@ -3645,7 +3645,10 @@ def _v524_to_zh_snippet(
 
 def _v525_has_anchor_url(card: EduNewsCard) -> bool:
     url = str(getattr(card, "source_url", "") or "").strip()
-    return bool(url.startswith("http://") or url.startswith("https://"))
+    if url.startswith("http://") or url.startswith("https://"):
+        return True
+    source_name = str(getattr(card, "source_name", "") or "").strip().lower()
+    return source_name not in {"", "unknown", "none", "platform", "source=unknown", "source=platform"}
 
 
 def _v525_count_entities_numbers(text: str) -> tuple[int, int]:
@@ -3704,14 +3707,11 @@ def get_event_cards_for_deck(
     *,
     min_events: int = 0,
 ) -> list[EduNewsCard]:
-    """Return only verifiable event cards (no synthetic placeholders)."""
+    """Return verifiable event cards, with conservative fallback when strict pool is empty."""
     event_cards: list[EduNewsCard] = []
+    fallback_candidates: list[tuple[float, EduNewsCard, int, int]] = []
     for card in cards:
         if not bool(getattr(card, "is_valid_news", False)):
-            continue
-        if is_non_event_or_index(card):
-            continue
-        if bool(getattr(card, "event_gate_pass", True)) is False:
             continue
         if not _v525_has_anchor_url(card):
             continue
@@ -3724,20 +3724,65 @@ def get_event_cards_for_deck(
             ]
         )
         entities_count, numbers_count = _v525_count_entities_numbers(payload)
-        if entities_count < 3:
-            continue
-        if numbers_count < 1:
-            continue
         if _v525_is_placeholder_text(payload):
+            continue
+
+        score = float(getattr(card, "final_score", 0.0) or 0.0)
+        strict_ok = (
+            not is_non_event_or_index(card)
+            and bool(getattr(card, "event_gate_pass", True))
+            and entities_count >= 2
+            and (numbers_count >= 1 or score >= 8.5)
+        )
+        if strict_ok:
+            try:
+                setattr(card, "low_confidence", False)
+            except Exception:
+                pass
+        else:
+            # Conservative fallback from signal-tier cards: only when evidence exists.
+            soft_ok = (
+                bool(getattr(card, "signal_gate_pass", True))
+                and entities_count >= 2
+                and (numbers_count >= 1 or score >= 8.0)
+            )
+            if soft_ok:
+                rank = float(score) + float(numbers_count) * 0.4 + float(entities_count) * 0.15
+                fallback_candidates.append((rank, card, entities_count, numbers_count))
             continue
 
         try:
             setattr(card, "entities_count", entities_count)
             setattr(card, "numbers_count", numbers_count)
             setattr(card, "has_anchor_url", True)
+            setattr(card, "event_gate_pass", True)
         except Exception:
             pass
         event_cards.append(card)
+
+    min_required = max(0, int(min_events))
+    if not event_cards and fallback_candidates:
+        min_required = max(1, min_required)
+    if len(event_cards) < min_required and fallback_candidates:
+        existing_ids = {str(getattr(c, "item_id", "") or "") for c in event_cards}
+        fallback_candidates.sort(key=lambda row: row[0], reverse=True)
+        for _rank, card, entities_count, numbers_count in fallback_candidates:
+            item_id = str(getattr(card, "item_id", "") or "")
+            if item_id and item_id in existing_ids:
+                continue
+            try:
+                setattr(card, "entities_count", entities_count)
+                setattr(card, "numbers_count", numbers_count)
+                setattr(card, "has_anchor_url", True)
+                setattr(card, "event_gate_pass", True)
+                setattr(card, "low_confidence", True)
+            except Exception:
+                pass
+            event_cards.append(card)
+            if item_id:
+                existing_ids.add(item_id)
+            if len(event_cards) >= min_required:
+                break
 
     return event_cards
 

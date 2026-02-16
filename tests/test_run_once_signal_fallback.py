@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from scripts.run_once import _select_processing_items
-from schemas.models import RawItem
+from types import SimpleNamespace
+
+from scripts.run_once import _build_quality_cards, _select_processing_items
+from schemas.models import RawItem, SchemaA, SchemaB, SchemaC
 
 
 def _raw(item_id: str) -> RawItem:
@@ -63,3 +65,44 @@ def test_select_processing_items_empty_when_no_candidates() -> None:
     selected, used_fallback = _select_processing_items([], [], fallback_limit=3)
     assert selected == []
     assert used_fallback is False
+
+
+def test_build_quality_cards_uses_cta_url_as_source_url() -> None:
+    merged = SimpleNamespace(
+        item_id="r1",
+        schema_a=SchemaA(
+            item_id="r1",
+            title_zh="OpenAI update",
+            summary_zh="OpenAI shipped GPT update with 35% gain.",
+            category="tech",
+            source_id="HackerNews",
+        ),
+        schema_b=SchemaB(item_id="r1", final_score=8.8),
+        schema_c=SchemaC(item_id="r1", cta_url="https://news.ycombinator.com/item?id=1"),
+        passed_gate=True,
+    )
+
+    cards = _build_quality_cards([merged])
+    assert len(cards) == 1
+    assert cards[0].source_name == "HackerNews"
+    assert cards[0].source_url == "https://news.ycombinator.com/item?id=1"
+
+
+def test_build_quality_cards_falls_back_to_raw_url_when_cta_missing() -> None:
+    merged = SimpleNamespace(
+        item_id="r2",
+        schema_a=SchemaA(
+            item_id="r2",
+            title_zh="Agent update",
+            summary_zh="Model benchmark improved by 22%.",
+            category="tech",
+            source_id="HackerNews",
+        ),
+        schema_b=SchemaB(item_id="r2", final_score=8.2),
+        schema_c=SchemaC(item_id="r2", cta_url=""),
+        passed_gate=True,
+    )
+
+    cards = _build_quality_cards([merged], source_url_map={"r2": "https://example.com/r2"})
+    assert len(cards) == 1
+    assert cards[0].source_url == "https://example.com/r2"

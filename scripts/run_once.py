@@ -52,13 +52,22 @@ def _apply_entity_cleaning(all_results: list) -> None:
         collector.record_entity_cleaning(before, len(result.cleaned))
 
 
-def _build_quality_cards(all_results: list) -> list[EduNewsCard]:
+def _build_quality_cards(
+    all_results: list,
+    source_url_map: dict[str, str] | None = None,
+) -> list[EduNewsCard]:
     """Build lightweight EduNewsCard objects for v5.2 metrics aggregation."""
     cards: list[EduNewsCard] = []
+    source_url_map = source_url_map or {}
     for r in all_results:
         a = r.schema_a
         b = r.schema_b
-        source_url = str(a.source_id or "")
+        c = r.schema_c
+        source_url = str(getattr(c, "cta_url", "") or "").strip()
+        if not source_url.startswith(("http://", "https://")):
+            fallback_url = str(source_url_map.get(str(r.item_id), "") or "").strip()
+            if fallback_url.startswith(("http://", "https://")):
+                source_url = fallback_url
         cards.append(
             EduNewsCard(
                 item_id=str(r.item_id),
@@ -68,7 +77,7 @@ def _build_quality_cards(all_results: list) -> list[EduNewsCard]:
                 what_happened=str(a.summary_zh or ""),
                 why_important=str(a.summary_zh or ""),
                 source_name=str(a.source_id or ""),
-                source_url=source_url if source_url.startswith("http") else "",
+                source_url=source_url if source_url.startswith(("http://", "https://")) else "",
                 category=str(a.category or ""),
                 final_score=float(getattr(b, "final_score", 0.0) or 0.0),
             )
@@ -314,7 +323,11 @@ def run_pipeline() -> None:
     else:
         log.info("Z4: Deep analysis disabled")
 
-    quality_cards = _build_quality_cards(all_results)
+    source_url_map = {
+        str(getattr(item, "item_id", "") or ""): str(getattr(item, "url", "") or "")
+        for item in processing_items
+    }
+    quality_cards = _build_quality_cards(all_results, source_url_map=source_url_map)
     if not quality_cards and signal_pool:
         quality_cards = _build_soft_quality_cards_from_filtered(signal_pool)
     if not quality_cards and filtered:
