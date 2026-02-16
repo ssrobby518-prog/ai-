@@ -178,7 +178,23 @@ if (-not $allExist) {
 }
 
 Write-Host "`n=== All reports generated successfully ===" -ForegroundColor Cyan
-Write-Host "PPT generated successfully: $(Join-Path $projectRoot 'outputs\\executive_report.pptx')" -ForegroundColor Green
+
+function Get-LatestExecutivePptPath {
+    param([string]$Root)
+
+    $outputsDir = Join-Path $Root "outputs"
+    $candidates = Get-ChildItem -Path $outputsDir -Filter "executive_report*.pptx" -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch "smoke" } |
+        Sort-Object LastWriteTime -Descending
+
+    if ($candidates -and $candidates.Count -gt 0) {
+        return $candidates[0].FullName
+    }
+    return (Join-Path $Root "outputs\executive_report.pptx")
+}
+
+$pptxPath = Get-LatestExecutivePptPath -Root $projectRoot
+Write-Host "PPT generated successfully: $pptxPath" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Open PPT (only when shouldOpen = True)
@@ -187,8 +203,6 @@ if (-not $shouldOpen) {
     Write-Host "`n  Headless mode - skipping PPT open." -ForegroundColor DarkGray
     exit 0
 }
-
-$pptxPath = Join-Path $projectRoot "outputs\executive_report.pptx"
 $minOpenBytes = 30720
 if (-not (Test-Path $pptxPath)) {
     Write-Host "ERROR: PPT file not found for auto-open: $pptxPath" -ForegroundColor Red

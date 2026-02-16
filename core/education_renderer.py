@@ -1520,25 +1520,33 @@ def generate_executive_reports(
         )
         log.info("Executive PPTX generated")
     except PermissionError as exc:
-        # Desktop/preview tools may hold a lock on the target file.
-        if pptx_target.exists() and pptx_target.stat().st_size > 0:
-            pptx_path = pptx_target
-            log.warning(
-                "Executive PPTX path is locked; keep existing file: %s (%s)",
-                pptx_target,
-                exc,
-            )
-        else:
-            from datetime import UTC, datetime
+        # Desktop/preview tools may lock the canonical file.
+        # Generate a fresh timestamped artifact so desktop-open does not reuse stale content.
+        from datetime import UTC, datetime
 
-            alt_pptx = outputs_dir / f"executive_report_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.pptx"
+        alt_pptx = outputs_dir / f"executive_report_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}.pptx"
+        try:
             pptx_path = generate_executive_ppt(
                 cards=cards, health=health, report_time=report_time,
                 total_items=total_items,
                 output_path=alt_pptx,
                 metrics=metrics or {},
             )
-            log.warning("Executive PPTX generated at fallback path: %s", pptx_path)
+            log.warning(
+                "Executive PPTX canonical path is locked; generated fallback file: %s (%s)",
+                pptx_path,
+                exc,
+            )
+        except Exception as alt_exc:
+            if pptx_target.exists() and pptx_target.stat().st_size > 0:
+                pptx_path = pptx_target
+                log.warning(
+                    "Executive PPTX lock fallback failed; keep existing file: %s (%s)",
+                    pptx_target,
+                    alt_exc,
+                )
+            else:
+                raise
 
     docx_path = generate_executive_docx(
         cards=cards, health=health, report_time=report_time,

@@ -19,6 +19,8 @@ def test_open_ppt_script_prints_ppt_path_and_calls_generate_openppt() -> None:
 def test_generate_reports_open_contract_has_retry_and_openattempt() -> None:
     text = _read(Path("scripts/generate_reports.ps1"))
 
+    assert "Get-LatestExecutivePptPath" in text
+    assert 'Name -notmatch "smoke"' in text
     assert "OpenAttempt" in text
     assert "Start-Process -FilePath $pptxAbs" in text
     assert "for ($attempt = 1; $attempt -le 5; $attempt++)" in text
