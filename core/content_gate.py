@@ -446,10 +446,19 @@ def apply_split_content_gate(
 
     event_min_len, event_min_sentences = event_level
     signal_min_len, signal_min_sentences = signal_level
+    # Prevent gate starvation on short-but-informative posts while keeping
+    # hard rejects and fragment filtering strict.
+    signal_soft_min_len = max(180, int(signal_min_len * 0.6))
+    signal_soft_min_sentences = max(2, signal_min_sentences - 1)
+    signal_soft_min_density = 30
+    signal_fallback_min_len = max(80, int(signal_min_len * 0.25))
+    signal_fallback_min_sentences = 1
+    signal_fallback_min_density = 16
 
     event_pass_idx: list[int] = []
     signal_pass_idx: list[int] = []
     rejected_map: dict[int, str] = {}
+    signal_fallback_candidates: list[tuple[int, int, str | None]] = []
 
     for idx, item in enumerate(items):
         body = _normalize(getattr(item, "body", ""))
@@ -500,6 +509,8 @@ def apply_split_content_gate(
             content_min_len=signal_min_len,
             min_sentences=signal_min_sentences,
         )
+        sentence_count = _count_sentences(body)
+        body_len = len(body)
 
         if event_ok:
             event_pass_idx.append(idx)
@@ -525,6 +536,34 @@ def apply_split_content_gate(
                 pass
             continue
 
+        # Adaptive soft-pass for signal pool only:
+        # allow shorter snippets when they still contain measurable density.
+        if (
+            signal_reason in {"content_too_short", "insufficient_sentences"}
+            and body_len >= signal_soft_min_len
+            and sentence_count >= signal_soft_min_sentences
+            and d_score >= signal_soft_min_density
+        ):
+            signal_pass_idx.append(idx)
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="SIGNAL_PASS", level="signal_soft", density=d_score, low_confidence=True)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", True)
+                setattr(item, "event_rejected_reason", event_reason or "event_gate_reject")
+                setattr(item, "signal_soft_pass", True)
+            except Exception:
+                pass
+            continue
+
+        if (
+            signal_reason in {"content_too_short", "insufficient_sentences"}
+            and body_len >= signal_fallback_min_len
+            and sentence_count >= signal_fallback_min_sentences
+            and d_score >= signal_fallback_min_density
+        ):
+            signal_fallback_candidates.append((idx, d_score, event_reason))
+
         reason = signal_reason or event_reason or "rejected_by_gate"
         rejected_map[idx] = reason
         _set_rejected_reason(item, reason)
@@ -534,6 +573,24 @@ def apply_split_content_gate(
             setattr(item, "signal_gate_pass", False)
         except Exception:
             pass
+
+    # Starvation guard: when no signal passed, promote top dense short items
+    # (still excluding hard rejects/fragments handled above).
+    if not signal_pass_idx and signal_fallback_candidates:
+        signal_fallback_candidates.sort(key=lambda row: row[1], reverse=True)
+        for idx, d_score, event_reason in signal_fallback_candidates[:3]:
+            signal_pass_idx.append(idx)
+            rejected_map.pop(idx, None)
+            item = items[idx]
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="SIGNAL_PASS", level="signal_fallback", density=d_score, low_confidence=True)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", True)
+                setattr(item, "event_rejected_reason", event_reason or "event_gate_reject")
+                setattr(item, "signal_soft_pass", True)
+            except Exception:
+                pass
 
     event_candidates = [items[idx] for idx in event_pass_idx]
     signal_pool = [items[idx] for idx in signal_pass_idx]

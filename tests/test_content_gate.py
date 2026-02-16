@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from core.content_gate import apply_adaptive_content_gate, is_valid_article
+from core.content_gate import apply_adaptive_content_gate, apply_split_content_gate, is_valid_article
 
 
 def _long_sentence(seed: str, repeats: int = 120) -> str:
@@ -76,3 +76,53 @@ def test_adaptive_gate_hard_reject_not_relaxed() -> None:
     kept, _rejected, stats = apply_adaptive_content_gate(items, min_keep_items=2)
     assert len(kept) == 1
     assert stats.rejected_by_reason.get("rejected_keyword:roundup", 0) == 1
+
+
+def test_split_gate_soft_passes_short_dense_signal_item() -> None:
+    short_dense = (
+        "OpenAI GPT-5.2 rollout for enterprise copilots reached 12 teams in 2026 with 35% latency gains. "
+        "Microsoft Azure benchmark reported 90ms median response and $2.1M annual savings for production support. "
+    )
+    items = [
+        SimpleNamespace(
+            title="OpenAI enterprise rollout update",
+            body=short_dense,
+        ),
+    ]
+
+    event_candidates, signal_pool, rejected_map, stats = apply_split_content_gate(
+        items,
+        event_level=(1200, 3),
+        signal_level=(300, 2),
+    )
+
+    assert len(event_candidates) == 0
+    assert len(signal_pool) == 1
+    assert stats.event_gate_pass_total == 0
+    assert stats.signal_gate_pass_total == 1
+    assert rejected_map == {}
+    assert getattr(signal_pool[0], "gate_level", "") in {"signal", "signal_soft"}
+
+
+def test_split_gate_promotes_fallback_signal_when_pool_empty() -> None:
+    one_sentence_dense = (
+        "OpenAI GPT-5.2 reached 12 enterprise teams in 2026, with Microsoft Azure reporting 35% latency gains and 90ms median response."
+    )
+    weak_item = "AI update available."
+
+    items = [
+        SimpleNamespace(title="Dense short update", body=one_sentence_dense),
+        SimpleNamespace(title="Weak short update", body=weak_item),
+    ]
+
+    event_candidates, signal_pool, rejected_map, stats = apply_split_content_gate(
+        items,
+        event_level=(1200, 3),
+        signal_level=(300, 2),
+    )
+
+    assert len(event_candidates) == 0
+    assert stats.signal_gate_pass_total >= 1
+    assert len(signal_pool) >= 1
+    assert any(getattr(item, "gate_level", "") in {"signal_fallback", "signal_soft"} for item in signal_pool)
+    assert 1 in rejected_map  # weak item remains rejected
