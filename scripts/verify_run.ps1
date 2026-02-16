@@ -276,7 +276,9 @@ Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -F
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
 
 $head = (git rev-parse HEAD 2>$null | Select-Object -First 1)
-$gitStatusSb = (git status -sb 2>$null | Select-Object -First 1)
+$gitStatusSbRaw = (git status -sb 2>$null | Select-Object -First 1)
+$gitStatusSb = if ($null -eq $gitStatusSbRaw) { "" } else { "$gitStatusSbRaw".Trim() }
+if ([string]::IsNullOrWhiteSpace($gitStatusSb)) { $gitStatusSb = "<empty>" }
 $gitPorcelain = (git status --porcelain 2>$null | Out-String).Trim()
 $workingTree = if ([string]::IsNullOrWhiteSpace($gitPorcelain)) { "clean" } else { "dirty" }
 $branchSummary = if ($gitStatusSb -match "^##\s+(.+)\.\.\.(.+)$") {
