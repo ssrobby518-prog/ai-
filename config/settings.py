@@ -74,6 +74,11 @@ EVENT_GATE_MIN_SENTENCES: int = _env_int("EVENT_GATE_MIN_SENTENCES", 3)
 SIGNAL_GATE_MIN_LEN: int = _env_int("SIGNAL_GATE_MIN_LEN", 300)
 SIGNAL_GATE_MIN_SENTENCES: int = _env_int("SIGNAL_GATE_MIN_SENTENCES", 2)
 
+# Backfill gate: minimum items needed to support a non-empty deck
+MIN_EVENTS_FOR_DECK: int = _env_int("MIN_EVENTS_FOR_DECK", 6)
+MIN_SIGNALS_FOR_DECK: int = _env_int("MIN_SIGNALS_FOR_DECK", 6)
+SOFT_PASS_MAX_AGE_DAYS: int = _env_int("SOFT_PASS_MAX_AGE_DAYS", 7)
+
 # Information-density gate (pre-content_strategy)
 INFO_DENSITY_MIN_SCORE_EVENT: int = _env_int("INFO_DENSITY_MIN_SCORE_EVENT", 55)
 INFO_DENSITY_MIN_ENTITY_EVENT: int = _env_int("INFO_DENSITY_MIN_ENTITY_EVENT", 2)

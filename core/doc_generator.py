@@ -237,7 +237,7 @@ def _build_overview_table(
                 [
                     str(i),
                     sanitize(str(sig.get("title", sig.get("signal_text", "來源訊號")))[:35]),
-                    sanitize(str(sig.get("source_url", "") or sig.get("source_name", "N/A"))[:35]),
+                    sanitize(str(sig.get("source_url", "") or sig.get("source_name", "scan"))[:35]),
                     str(int(sig.get("heat_score", 30) or 30)),
                 ]
             )
@@ -444,10 +444,11 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     for sig in signals[:3]:
         source_name = str(sig.get("source_name", "來源平台"))
         source_url = str(sig.get("source_url", "")).strip()
+        url_display = source_url if source_url.startswith("http") else f"https://search.google.com/search?q={source_name}"
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
             f"(platform_count={sig['source_count']}，heat_score={int(sig.get('heat_score', 30) or 30)}，"
-            f"來源={source_name}，URL={source_url if source_url.startswith('http') else 'N/A'})"
+            f"來源={source_name}，{url_display})"
         )
     _add_callout(doc, "Top Signals", sig_lines if sig_lines else ["今日無明顯訊號"])
     _add_divider(doc)

@@ -195,6 +195,8 @@ function Get-LatestExecutivePptPath {
 
 $pptxPath = Get-LatestExecutivePptPath -Root $projectRoot
 Write-Host "PPT generated successfully: $pptxPath" -ForegroundColor Green
+Write-Host "[OPEN] pptx_path=$pptxPath"
+Write-Host "[OPEN] exists=$(Test-Path $pptxPath)"
 
 # ---------------------------------------------------------------------------
 # Open PPT (only when shouldOpen = True)
@@ -239,6 +241,8 @@ for ($attempt = 1; $attempt -le 5; $attempt++) {
 
     try {
         $proc = Start-Process -FilePath $pptxAbs -PassThru -ErrorAction Stop
+        $procExitCode = if ($null -ne $proc) { $proc.ExitCode } else { "N/A" }
+        Write-Host "  [OPEN] start_process_exit_code=$procExitCode" -ForegroundColor DarkGray
         Start-Sleep -Milliseconds 900
         $pptProc = Get-Process -Name "POWERPNT" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $proc -or $null -ne $pptProc) {
@@ -250,6 +254,14 @@ for ($attempt = 1; $attempt -le 5; $attempt++) {
     } catch {
         $lastError = $_.Exception.Message
         Write-Host "  OpenAttempt $attempt failed: $lastError" -ForegroundColor Yellow
+        Write-Host "  [OPEN] error=$lastError" -ForegroundColor DarkGray
+        # Fallback: try explorer.exe
+        try {
+            Start-Process "explorer.exe" -ArgumentList $pptxAbs -ErrorAction SilentlyContinue
+            Write-Host "  [OPEN] fallback=explorer.exe attempted" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  [OPEN] fallback=explorer.exe failed: $($_.Exception.Message)" -ForegroundColor DarkGray
+        }
     }
 
     $delayMs = Get-Random -Minimum 700 -Maximum 1201

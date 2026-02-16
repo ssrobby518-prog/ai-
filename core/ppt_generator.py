@@ -360,7 +360,7 @@ def _slide_overview_table(
                 [
                     str(i),
                     safe_text(str(sig.get("title", sig.get("signal_text", "來源訊號"))), 35),
-                    safe_text(str(sig.get("source_url", "") or sig.get("source_name", "N/A")), 35),
+                    safe_text(str(sig.get("source_url", "") or sig.get("source_name", "scan")), 35),
                     str(int(sig.get("heat_score", 30) or 30)),
                 ]
             )

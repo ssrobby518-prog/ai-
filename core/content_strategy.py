@@ -19,6 +19,7 @@ from collections import Counter
 from urllib.parse import urlparse
 
 from schemas.education_models import EduNewsCard
+from utils.text_quality import trim_trailing_fragment as _trim_trailing
 
 # ---------------------------------------------------------------------------
 # Banned words — sanitize all output text
@@ -83,6 +84,12 @@ _ECHO_RE = re.compile(
     r"基於[「『].*?[」』]|"
     r"事件的潛在影響[：:]|"
     r"\[假說\]\s*若[「『]",
+    re.IGNORECASE,
+)
+
+# Fragment-start patterns that should be removed from output text.
+_FRAGMENT_START_RE = re.compile(
+    r"^Last\s+\w+\s+was\b|^This\s+\w+\s+was\b|^This\s+month\s+was\b",
     re.IGNORECASE,
 )
 
@@ -175,6 +182,8 @@ def sanitize(text: str) -> str:
     result = _HOMEWORK_RE.sub("", result).strip()
     # Remove echo-filler patterns
     result = _ECHO_RE.sub("", result).strip()
+    # Remove fragment-start patterns (e.g., "Last July was...")
+    result = _FRAGMENT_START_RE.sub("", result).strip()
     # Chinese grammar repair: fix dangling connectors at sentence start
     result = re.sub(r"^[了而並且因此所以但是然而]+", "", result)
     result = re.sub(r"(?<=[。！？\n])[了而並且因此所以但是然而]+", "", result)
@@ -196,6 +205,8 @@ def sanitize(text: str) -> str:
     alpha_count = sum(1 for c in result if c.isalnum())
     if alpha_count < max(3, len(result) * 0.3):
         return ""
+    # Trim trailing fragments (dangling connectors/particles)
+    result = _trim_trailing(result)
     return result
 
 
@@ -4323,6 +4334,11 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
             str(row.get("signal_text", "") or ""),
             f"{label}：來源 {source_name}，heat_score={heat_score}，platform_count={platform_count}。",
         )
+
+        # Guard: signal_text must NOT be a signal_type enum or its Chinese label.
+        _signal_type_tokens = set(_V532_SIGNAL_NAMES) | set(_V532_SIGNAL_LABELS.values())
+        if signal_text.strip() in _signal_type_tokens or signal_name == signal_text.strip().upper().replace(" ", "_"):
+            signal_text = title if title else f"{label}：{source_name} heat_score={heat_score}。"
 
         rows.append(
             {

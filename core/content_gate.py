@@ -127,6 +127,9 @@ class SplitGateStats:
     rejected_total: int
     rejected_by_reason: dict[str, int]
     rejected_reason_top: list[tuple[str, int]]
+    backfill_used_total: int = 0
+    hard_pass_total: int = 0
+    soft_pass_total: int = 0
 
 
 def _normalize(text: str) -> str:
@@ -509,12 +512,6 @@ def apply_split_content_gate(
                 setattr(item, "signal_gate_pass", False)
             except Exception:
                 pass
-            if (
-                body_len >= signal_soft_min_len
-                and sentence_count >= signal_soft_min_sentences
-                and d_score >= non_ai_signal_min_density
-            ):
-                signal_fallback_candidates.append((idx, d_score, "non_ai_topic"))
             continue
 
         event_ok, event_reason = is_valid_article(
@@ -655,6 +652,94 @@ def apply_split_content_gate(
             if promoted >= 2:
                 break
 
+    # ---- Backfill: if event or signal pools are too thin, promote soft-pass items ----
+    try:
+        from config.settings import MIN_EVENTS_FOR_DECK, MIN_SIGNALS_FOR_DECK
+    except Exception:
+        MIN_EVENTS_FOR_DECK = 6
+        MIN_SIGNALS_FOR_DECK = 6
+
+    _EVIDENCE_NUM_RE = re.compile(
+        r"(?:\b20\d{2}\b)|(?:\bv?\d+(?:\.\d+)?)|(?:[$¥€]\s*\d+)",
+        re.IGNORECASE,
+    )
+    _EVIDENCE_TERM_RE = re.compile(r"\b[A-Z][A-Za-z0-9\-_]{2,}\b")
+
+    backfill_count = 0
+    existing_event_set = set(event_pass_idx)
+    existing_signal_set = set(signal_pass_idx)
+
+    # Collect backfill candidates from rejected items (only soft-reject reasons).
+    backfill_candidates: list[tuple[int, int]] = []  # (idx, density_score)
+    for idx, reason in list(rejected_map.items()):
+        if reason not in {"content_too_short", "insufficient_sentences"}:
+            continue
+        item = items[idx]
+        body = _normalize(getattr(item, "body", ""))
+        title = str(getattr(item, "title", "") or "")
+        url = str(getattr(item, "url", "") or getattr(item, "link", "") or "")
+        if not url.startswith(("http://", "https://")):
+            continue
+        combined = f"{title} {body}"
+        terms = _EVIDENCE_TERM_RE.findall(combined)
+        nums = _EVIDENCE_NUM_RE.findall(combined)
+        if len(terms) < 2 or len(nums) < 1:
+            continue
+        # Passes soft_pass requirements
+        d_score = density_score(body)
+        backfill_candidates.append((idx, d_score))
+
+    backfill_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # Backfill events
+    if len(event_pass_idx) < MIN_EVENTS_FOR_DECK:
+        needed = MIN_EVENTS_FOR_DECK - len(event_pass_idx)
+        for idx, d_score in backfill_candidates:
+            if idx in existing_event_set:
+                continue
+            event_pass_idx.append(idx)
+            existing_event_set.add(idx)
+            if idx not in existing_signal_set:
+                signal_pass_idx.append(idx)
+                existing_signal_set.add(idx)
+            rejected_map.pop(idx, None)
+            item = items[idx]
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="BACKFILL", level="soft_backfill", density=d_score, low_confidence=True)
+            try:
+                setattr(item, "event_gate_pass", True)
+                setattr(item, "signal_gate_pass", True)
+                setattr(item, "backfill_pass", True)
+            except Exception:
+                pass
+            backfill_count += 1
+            needed -= 1
+            if needed <= 0:
+                break
+
+    # Backfill signals
+    if len(signal_pass_idx) < MIN_SIGNALS_FOR_DECK:
+        needed = MIN_SIGNALS_FOR_DECK - len(signal_pass_idx)
+        for idx, d_score in backfill_candidates:
+            if idx in existing_signal_set:
+                continue
+            signal_pass_idx.append(idx)
+            existing_signal_set.add(idx)
+            rejected_map.pop(idx, None)
+            item = items[idx]
+            _clear_rejected_reason(item)
+            _set_gate_meta(item, stage="BACKFILL", level="signal_backfill", density=d_score, low_confidence=True)
+            try:
+                setattr(item, "event_gate_pass", False)
+                setattr(item, "signal_gate_pass", True)
+                setattr(item, "backfill_pass", True)
+            except Exception:
+                pass
+            backfill_count += 1
+            needed -= 1
+            if needed <= 0:
+                break
+
     event_candidates = [items[idx] for idx in event_pass_idx]
     signal_pool = [items[idx] for idx in signal_pass_idx]
 
@@ -667,5 +752,8 @@ def apply_split_content_gate(
         rejected_total=len(rejected_map),
         rejected_by_reason=rejected_by_reason,
         rejected_reason_top=rejected_reason_top,
+        backfill_used_total=backfill_count,
+        hard_pass_total=len([i for i in event_pass_idx if not getattr(items[i], "backfill_pass", False) and not getattr(items[i], "event_soft_pass", False)]),
+        soft_pass_total=len([i for i in signal_pass_idx if getattr(items[i], "signal_soft_pass", False) or getattr(items[i], "backfill_pass", False)]),
     )
     return event_candidates, signal_pool, rejected_map, stats

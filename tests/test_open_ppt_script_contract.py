@@ -28,3 +28,14 @@ def test_generate_reports_open_contract_has_retry_and_openattempt() -> None:
     assert "exit 2" in text
     assert "exit 3" in text
     assert "PPT_PATH=$pptxAbs" in text
+
+    # Observable diagnostics markers (v5.4)
+    assert "[OPEN] pptx_path=" in text
+    assert "[OPEN] exists=" in text
+    assert "PPT generated successfully:" in text
+
+
+def test_generate_reports_has_fallback_explorer() -> None:
+    text = _read(Path("scripts/generate_reports.ps1"))
+    assert "explorer.exe" in text
+    assert "[OPEN] fallback=" in text or "[OPEN] start_process_exit_code=" in text
