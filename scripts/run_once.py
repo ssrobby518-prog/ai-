@@ -29,6 +29,7 @@ from core.info_density import apply_density_gate
 from core.notifications import send_all_notifications
 from core.storage import get_existing_item_ids, init_db, save_items, save_results
 from schemas.education_models import EduNewsCard
+from schemas.models import RawItem
 from utils.entity_cleaner import clean_entities
 from utils.logger import setup_logger
 from utils.metrics import get_collector, reset_collector
@@ -108,6 +109,37 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
     return cards
 
 
+def _select_processing_items(
+    filtered_items: list[RawItem],
+    signal_pool: list[RawItem],
+    *,
+    fallback_limit: int = 3,
+) -> tuple[list[RawItem], bool]:
+    """Select items for downstream Z2/Z3 processing.
+
+    Priority:
+    1) event-gate-passed `filtered_items`
+    2) when event gate is empty but signal gate has candidates, use a small
+       signal fallback slice to avoid all-empty runs.
+    """
+    if filtered_items:
+        return list(filtered_items), False
+
+    if not signal_pool:
+        return [], False
+
+    limit = max(1, int(fallback_limit))
+    selected = list(signal_pool[:limit])
+    for item in selected:
+        try:
+            setattr(item, "event_gate_pass", False)
+            setattr(item, "signal_gate_pass", True)
+            setattr(item, "low_confidence", True)
+        except Exception:
+            pass
+    return selected, True
+
+
 def run_pipeline() -> None:
     """Execute the full pipeline once."""
     log = setup_logger(settings.LOG_PATH)
@@ -166,7 +198,12 @@ def run_pipeline() -> None:
     collector.soft_pass_total = int(gate_stats.get("soft_pass_total", gate_stats.get("passed_relaxed", max(collector.signal_gate_pass_total - collector.event_gate_pass_total, 0))))
     collector.gate_reject_total = int(gate_stats.get("gate_reject_total", 0))
     collector.rejected_total = int(gate_stats.get("rejected_total", collector.gate_reject_total))
-    collector.after_filter_total = len(filtered)
+    processing_items, used_signal_fallback = _select_processing_items(
+        filtered,
+        signal_pool,
+        fallback_limit=3,
+    )
+    collector.after_filter_total = len(processing_items)
     collector.rejected_reason_top = list(gate_stats.get("rejected_reason_top", []))
     collector.density_score_top5 = list(gate_stats.get("density_score_top5", []))
     log.info(
@@ -187,22 +224,29 @@ def run_pipeline() -> None:
     )
 
     # Build filter_summary dict for Z5
+    if used_signal_fallback:
+        log.warning(
+            "Event gate kept 0 items; using %d signal-gate items for downstream processing.",
+            len(processing_items),
+        )
+
     filter_summary_dict: dict = {
         "input_count": filter_summary.input_count,
         "kept_count": filter_summary.kept_count,
+        "processing_count": len(processing_items),
         "dropped_by_reason": dict(filter_summary.dropped_by_reason),
     }
 
     all_results: list = []
     digest_path = None
 
-    if filtered:
+    if processing_items:
         # Save raw items to DB
-        save_items(settings.DB_PATH, filtered)
+        save_items(settings.DB_PATH, processing_items)
 
         # Z2: AI Core (batch processing)
         log.info("--- Z2: AI Core ---")
-        for batch_num, batch in enumerate(batch_items(filtered), 1):
+        for batch_num, batch in enumerate(batch_items(processing_items), 1):
             log.info("Processing batch %d (%d items)", batch_num, len(batch))
             results = process_batch(batch)
             all_results.extend(results)
@@ -226,7 +270,7 @@ def run_pipeline() -> None:
         push_to_notion(all_results)
         push_to_feishu(all_results)
     else:
-        log.warning("No items passed filters — skipping Z2/Z3, proceeding to Z4/Z5.")
+        log.warning("No items passed event/signal gates — skipping Z2/Z3, proceeding to Z4/Z5.")
         digest_path = write_digest([])
         print_console_summary([])
 
