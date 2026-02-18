@@ -228,7 +228,7 @@ def _add_table_slide(prs: Presentation, title: str,
     tbl = table_shape.table
     for ci, h in enumerate(headers):
         cell = tbl.cell(0, ci)
-        cell.text = safe_text(h)
+        cell.text = safe_text(h) or h
         for p in cell.text_frame.paragraphs:
             p.font.size = Pt(_coerce_font_size(10))
             p.font.bold = True
@@ -239,7 +239,7 @@ def _add_table_slide(prs: Presentation, title: str,
     for ri, row_data in enumerate(rows):
         for ci, val in enumerate(row_data):
             cell = tbl.cell(ri + 1, ci)
-            cell.text = safe_text(val)
+            cell.text = safe_text(val) or val
             for p in cell.text_frame.paragraphs:
                 p.font.size = Pt(_coerce_font_size(9))
                 p.font.color.rgb = TEXT_WHITE

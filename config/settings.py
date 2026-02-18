@@ -200,3 +200,19 @@ AI_TOPIC_KEYWORDS: list[str] = [
     for k in os.getenv("AI_TOPIC_KEYWORDS", _DEFAULT_AI_TOPIC_KEYWORDS).split(",")
     if k.strip()
 ]
+
+# ---------------------------------------------------------------------------
+# Executive PPT per-slide acceptance thresholds (HARD; all configurable via env)
+# ---------------------------------------------------------------------------
+EXEC_SLIDE_MIN_TEXT_CHARS: int = _env_int("EXEC_SLIDE_MIN_TEXT_CHARS", 160)
+EXEC_TABLE_MIN_NONEMPTY_RATIO: float = _env_float("EXEC_TABLE_MIN_NONEMPTY_RATIO", 0.60)
+EXEC_BLOCK_MIN_SENTENCES: int = _env_int("EXEC_BLOCK_MIN_SENTENCES", 2)
+EXEC_BLOCK_MIN_EVIDENCE_TERMS: int = _env_int("EXEC_BLOCK_MIN_EVIDENCE_TERMS", 2)
+EXEC_BLOCK_MIN_EVIDENCE_NUMBERS: int = _env_int("EXEC_BLOCK_MIN_EVIDENCE_NUMBERS", 1)
+EXEC_REQUIRED_SLIDE_DENSITY: int = _env_int("EXEC_REQUIRED_SLIDE_DENSITY", 80)
+# Forbidden fragment phrases — any slide text containing these → hard fail
+EXEC_FORBIDDEN_FRAGMENTS: list[str] = ["Last July was"]
+# Regex for connector/trailing-token endings that indicate broken sentences
+EXEC_FRAGMENT_TRAILING_TOKENS_RE: str = (
+    r"(but|as|and|or|to|of|for|with|in|on|at|by|from|that|this|these|those|,|，)$"
+)

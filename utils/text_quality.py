@@ -38,10 +38,11 @@ _EVIDENCE_TERM_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Number patterns: dollar amounts, percentages, versions, counts.
+# Number patterns: dollar amounts, percentages, versions, counts, ratios (e.g. 4/5).
 _EVIDENCE_NUM_RE = re.compile(
     r"\$[\d,.]+[BMKbmk]?|\d+%|\bv?\d+\.\d+|"
-    r"\d{2,}[\s]*(billion|million|thousand|M|B|K|GB|TB|萬|億|兆)",
+    r"\d{2,}[\s]*(billion|million|thousand|M|B|K|GB|TB|萬|億|兆)|"
+    r"\d+/\d+",
     re.IGNORECASE,
 )
 
@@ -95,6 +96,10 @@ def is_fragment(text: str) -> bool:
             return False
         if _HAS_URL_RE.search(s):
             return False
+        # String starting with a Chinese particle is a fragment even if it
+        # contains 2+ CJK chars that would otherwise look like an entity.
+        if s and s[0] in _TRAILING_ZH:
+            return True
         if _HAS_ENTITY_RE.search(s):
             return False
         return True

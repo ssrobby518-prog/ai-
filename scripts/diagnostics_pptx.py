@@ -123,6 +123,111 @@ def diagnose_pptx(path: Path) -> PptxDiagResult:
     return result
 
 
+def slide_density_audit(path: Path) -> list[dict]:
+    """Per-slide density metrics for a PPTX file.
+
+    For each slide returns:
+      slide_index, title, text_chars, nonempty_shapes,
+      table_cells_total, table_cells_nonempty,
+      terms, numbers, sentences, density_score, all_text (truncated to 600 chars).
+
+    Density score ∈ [0, 100] (deterministic):
+      text_score  = min(40, text_chars / EXEC_SLIDE_MIN_TEXT_CHARS * 40)
+      table_score = (nonempty_ratio / EXEC_TABLE_MIN_NONEMPTY_RATIO).clamp(0,1)*30
+                    or 30 when no table exists
+      ev_score    = (terms>=T + nums>=N + sents>=S) / 3 * 30
+      density     = round(text_score + table_score + ev_score)
+    """
+    from pptx import Presentation
+    from utils.text_quality import count_evidence_terms, count_evidence_numbers, count_sentences
+
+    # Load thresholds — fall back to hardcoded defaults if settings not available.
+    try:
+        import config.settings as _s
+        min_text_chars = _s.EXEC_SLIDE_MIN_TEXT_CHARS
+        table_ratio_min = _s.EXEC_TABLE_MIN_NONEMPTY_RATIO
+        min_terms = _s.EXEC_BLOCK_MIN_EVIDENCE_TERMS
+        min_nums = _s.EXEC_BLOCK_MIN_EVIDENCE_NUMBERS
+        min_sents = _s.EXEC_BLOCK_MIN_SENTENCES
+    except (ImportError, AttributeError):
+        min_text_chars = 160
+        table_ratio_min = 0.60
+        min_terms = 2
+        min_nums = 1
+        min_sents = 2
+
+    prs = Presentation(str(path))
+    results: list[dict] = []
+
+    for idx, slide in enumerate(prs.slides, 1):
+        text_parts: list[str] = []
+        table_cells_total = 0
+        table_cells_nonempty = 0
+        nonempty_shapes = 0
+        slide_title = ""
+
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                shape_texts: list[str] = []
+                for para in shape.text_frame.paragraphs:
+                    t = para.text.strip()
+                    if t:
+                        shape_texts.append(t)
+                        text_parts.append(t)
+                if shape_texts:
+                    nonempty_shapes += 1
+                    if not slide_title and len(shape_texts[0]) > 3:
+                        slide_title = shape_texts[0][:60]
+            if shape.has_table:
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        table_cells_total += 1
+                        t = cell.text.strip()
+                        if t:
+                            table_cells_nonempty += 1
+                            text_parts.append(t)
+
+        full_text = " ".join(text_parts)
+        # text_chars: non-whitespace character count
+        text_chars = len(full_text.replace(" ", ""))
+
+        # ---- Density score calculation ----
+        text_score = min(40.0, (text_chars / max(min_text_chars, 1)) * 40.0)
+
+        if table_cells_total > 0:
+            ratio = table_cells_nonempty / table_cells_total
+            table_score = min(1.0, ratio / max(table_ratio_min, 0.01)) * 30.0
+        else:
+            table_score = 30.0  # no table → no penalty
+
+        terms = count_evidence_terms(full_text)
+        numbers = count_evidence_numbers(full_text)
+        sentences = count_sentences(full_text)
+
+        t_ok = terms >= min_terms
+        n_ok = numbers >= min_nums
+        s_ok = sentences >= min_sents
+        evidence_score = ((int(t_ok) + int(n_ok) + int(s_ok)) / 3.0) * 30.0
+
+        density_score = round(text_score + table_score + evidence_score)
+
+        results.append({
+            "slide_index": idx,
+            "title": slide_title,
+            "text_chars": text_chars,
+            "nonempty_shapes": nonempty_shapes,
+            "table_cells_total": table_cells_total,
+            "table_cells_nonempty": table_cells_nonempty,
+            "terms": terms,
+            "numbers": numbers,
+            "sentences": sentences,
+            "density_score": density_score,
+            "all_text": full_text[:600],
+        })
+
+    return results
+
+
 def diagnose_docx(path: Path) -> PptxDiagResult:
     """Parse DOCX and return diagnostic results (same structure)."""
     from docx import Document

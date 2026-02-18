@@ -271,6 +271,60 @@ if (-not $v3Pass) {
 }
 Write-Host "  Executive Output v3 guard passed." -ForegroundColor Green
 
+# ---------------------------------------------------------------------------
+# Executive Slide Density Audit (post-step-9; hard gate for 3 key slides)
+# ---------------------------------------------------------------------------
+Write-Host "`n[Density Audit] Executive Slide Density Audit..." -ForegroundColor Yellow
+$densityRaw = & $py -c "
+import sys, json
+from pathlib import Path
+sys.path.insert(0, str(Path('.').resolve()))
+from scripts.diagnostics_pptx import slide_density_audit
+try:
+    res = slide_density_audit(Path('outputs/executive_report.pptx'))
+    print(json.dumps(res))
+except Exception as ex:
+    print(json.dumps([]))
+" 2>$null
+
+$densityAuditPass = $true
+$keyPatterns = @('Overview', '總覽', 'Event Ranking', '排行', 'Pending', '待決')
+$forbiddenFragments = @('Last July was')
+$requiredDensity = 80   # EXEC_REQUIRED_SLIDE_DENSITY (configurable)
+
+if ($densityRaw) {
+    try { $densityData = $densityRaw | ConvertFrom-Json } catch { $densityData = @() }
+    foreach ($s in $densityData) {
+        $tbl = "$($s.table_cells_nonempty)/$($s.table_cells_total)"
+        Write-Host ("[DENSITY] slide={0:D2} title=`"{1}`" chars={2} table={3} terms={4} nums={5} sents={6} score={7}" -f $s.slide_index, ($s.title -replace '"', "'"), $s.text_chars, $tbl, $s.terms, $s.numbers, $s.sentences, $s.density_score)
+    }
+    foreach ($s in $densityData) {
+        # Forbidden fragment check (all slides)
+        foreach ($frag in $forbiddenFragments) {
+            if ($s.all_text -match [regex]::Escape($frag)) {
+                Write-Host "  [DENSITY FAIL] Forbidden fragment '$frag' in slide=$($s.slide_index) title=`"$($s.title)`"" -ForegroundColor Red
+                $densityAuditPass = $false
+            }
+        }
+        # Hard density gate: only applies to key slides with substantial text
+        $isKey = $false
+        foreach ($pat in $keyPatterns) { if ($s.title -like "*$pat*") { $isKey = $true; break } }
+        if ($isKey -and $s.text_chars -ge 60) {
+            if ($s.density_score -lt $requiredDensity) {
+                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" score={2} < required={3}" -f $s.slide_index, $s.title, $s.density_score, $requiredDensity) -ForegroundColor Red
+                $densityAuditPass = $false
+            }
+        }
+    }
+    if (-not $densityAuditPass) {
+        Write-Host "  Executive Slide Density Audit FAILED" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Executive Slide Density Audit PASSED" -ForegroundColor Green
+} else {
+    Write-Host "  [Density Audit] Skipped (pptx parser returned no output)" -ForegroundColor Yellow
+}
+
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
