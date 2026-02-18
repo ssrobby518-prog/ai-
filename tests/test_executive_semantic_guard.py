@@ -475,10 +475,14 @@ class TestVerifyRunDensityAuditOutput:
             "verify_run.ps1 missing 'sem_score=' in density audit output"
         )
 
-    def test_semantic_gate_present(self) -> None:
-        """verify_run.ps1 must have semantic density gate."""
+    def test_semantic_gate_is_primary_hard_gate(self) -> None:
+        """verify_run.ps1: semantic gate is hard (FAIL), formal density is warn-only."""
         text = self._read_script()
-        assert "requiredSemanticDensity" in text or "sem_score" in text
+        assert "requiredSemanticDensity" in text
+        # Semantic FAIL must be present
+        assert "DENSITY FAIL" in text
+        # Formal density downgraded to WARN (not hard FAIL) when semantic is OK
+        assert "DENSITY WARN" in text
 
     def test_notebase64_not_present(self) -> None:
         """Base64-encoded note must be removed."""

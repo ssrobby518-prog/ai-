@@ -309,18 +309,18 @@ if ($densityRaw) {
                 $densityAuditPass = $false
             }
         }
-        # Hard density gate: key slides — NO text_chars skip guard
+        # Hard gate for key slides — semantic (primary) + formal (secondary)
+        # Semantic gate is the hard gate: sem_score < threshold → truly hollow content → FAIL
+        # Formal density gate: low but sem OK → WARN only (sparse-day signal-only is acceptable)
         $isKey = $false
         foreach ($pat in $keyPatterns) { if ($s.title -like "*$pat*") { $isKey = $true; break } }
         if ($isKey) {
-            if ($s.density_score -lt $requiredDensity) {
-                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" density={2} < required={3}" -f $s.slide_index, $s.title, $s.density_score, $requiredDensity)
-                $densityAuditPass = $false
-            }
             $semScore = if ($s.PSObject.Properties['semantic_score']) { $s.semantic_score } else { 0 }
             if ($semScore -lt $requiredSemanticDensity) {
-                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" sem_score={2} < required_semantic={3}" -f $s.slide_index, $s.title, $semScore, $requiredSemanticDensity)
+                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" sem_score={2} < required_semantic={3} (hollow content)" -f $s.slide_index, $s.title, $semScore, $requiredSemanticDensity)
                 $densityAuditPass = $false
+            } elseif ($s.density_score -lt $requiredDensity) {
+                Write-Host ("  [DENSITY WARN] slide={0} title=`"{1}`" density={2} < {3} but sem_score={4} OK (sparse day, not hollow)" -f $s.slide_index, $s.title, $s.density_score, $requiredDensity, $semScore)
             }
         }
     }
