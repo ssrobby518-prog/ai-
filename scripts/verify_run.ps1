@@ -277,9 +277,7 @@ Write-Host "      To share, use file transfer or CI release artifacts." -Foregro
 
 $head = (git rev-parse HEAD 2>$null | Select-Object -First 1)
 $gitStatusSbLines = @(git status -sb 2>$null)
-$gitStatusSbFull = if ($gitStatusSbLines.Count -gt 0) { ($gitStatusSbLines -join "`n").Trim() } else { "<empty>" }
-$gitStatusSbRaw = if ($gitStatusSbLines.Count -gt 0) { $gitStatusSbLines[0] } else { $null }
-$gitStatusSb = if ($null -eq $gitStatusSbRaw) { "" } else { "$gitStatusSbRaw".Trim() }
+$gitStatusSb = if ($gitStatusSbLines.Count -gt 0) { "$($gitStatusSbLines[0])".Trim() } else { "" }
 if ([string]::IsNullOrWhiteSpace($gitStatusSb)) { $gitStatusSb = "<empty>" }
 $gitPorcelain = (git status --porcelain 2>$null | Out-String).Trim()
 $workingTree = if ([string]::IsNullOrWhiteSpace($gitPorcelain)) { "clean" } else { "dirty" }
@@ -313,7 +311,13 @@ Write-Host "verify_run: 9/9 PASS"
 Write-Host "Working tree: $workingTree"
 Write-Host "Branch: $branchSummary"
 Write-Host "git status -sb:"
-Write-Host $gitStatusSbFull
+if ($gitStatusSbLines.Count -gt 0) {
+    foreach ($ln in $gitStatusSbLines) {
+        Write-Host $ln
+    }
+} else {
+    Write-Host "<empty>"
+}
 $noteBase64 = "Tm90ZTog5pys57O757Wx5L+d6K2J6Ly45Ye65LiN54K656m677yI6LOH6KiK5a+G5bqm6ZaA5qq7ICsg5pW45a2X5YyWIGZhbGxiYWNr77yJ77yM5L2G5LiN5L+d6K2J5q+P5pel5LiA5a6a5pyJ44CM55yf5LqL5Lu244CN77yb6Iul5LqL5Lu2PTDvvIzlsIfku6UgU2lnbmFsL0NvcnAg55qE5Y+v6L+95rqv57Wx6KiI6KOc6Laz5rG6562W6LOH6KiK6YeP44CC"
 $note = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($noteBase64))
 Write-Host $note
