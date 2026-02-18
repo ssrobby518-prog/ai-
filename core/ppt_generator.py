@@ -28,6 +28,7 @@ from core.content_strategy import (
     build_structured_executive_summary,
     compute_market_heat,
     is_non_event_or_index,
+    quality_guard_block,
     sanitize,
     score_event_impact,
 )
@@ -876,6 +877,15 @@ def generate_executive_ppt(
 
     # Event pool: only verifiable event cards (no synthetic placeholders).
     event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+
+    # Quality guard: ensure per-card text density meets thresholds.
+    for ec in event_cards:
+        for attr in ("what_happened", "why_important"):
+            val = getattr(ec, attr, None)
+            if val:
+                guarded, _m = quality_guard_block(val, card=ec)
+                if guarded and guarded != val:
+                    object.__setattr__(ec, attr, guarded)
 
     # 5. Key Takeaways
     _slide_key_takeaways(prs, cards, total_items, metrics=metrics, event_cards=event_cards)

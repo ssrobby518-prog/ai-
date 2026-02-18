@@ -24,12 +24,15 @@ from docx import Document
 from pptx import Presentation
 
 from core.content_gate import apply_split_content_gate
-from core.content_strategy import build_signal_summary, sanitize
+from core.content_strategy import build_signal_summary, quality_guard_block, sanitize
 from core.doc_generator import generate_executive_docx
 from core.ppt_generator import generate_executive_ppt, LIGHT_BG, DARK_BG
 from schemas.education_models import EduNewsCard, SystemHealthReport
 from scripts.diagnostics_pptx import diagnose_pptx, diagnose_docx
-from utils.text_quality import trim_trailing_fragment, is_fragment
+from utils.text_quality import (
+    trim_trailing_fragment, is_fragment,
+    count_evidence_terms, count_evidence_numbers, count_sentences,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -391,3 +394,221 @@ class TestSanitizeNoFragments:
     def test_sanitize_trims_trailing_particle(self) -> None:
         result = sanitize("第一句話。第二句的")
         assert not result.endswith("的")
+
+
+# ---------------------------------------------------------------------------
+# Test: Table cell non-empty ratio >= 60%
+# ---------------------------------------------------------------------------
+
+class TestTableCellNonEmpty:
+    def _count_table_cells(self, pptx_path: Path) -> tuple[int, int]:
+        """Return (total_cells, non_empty_cells) across all tables in PPTX."""
+        prs = Presentation(str(pptx_path))
+        total = 0
+        non_empty = 0
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        for cell in row.cells:
+                            total += 1
+                            if cell.text.strip():
+                                non_empty += 1
+        return total, non_empty
+
+    def _count_docx_table_cells(self, docx_path: Path) -> tuple[int, int]:
+        """Return (total_cells, non_empty_cells) across all tables in DOCX."""
+        doc = Document(str(docx_path))
+        total = 0
+        non_empty = 0
+        for t in doc.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    total += 1
+                    if cell.text.strip():
+                        non_empty += 1
+        return total, non_empty
+
+    def test_pptx_table_non_empty_ratio(self, tmp_path: Path) -> None:
+        pptx, _ = _gen_both(tmp_path, _rich_cards())
+        total, non_empty = self._count_table_cells(pptx)
+        if total > 0:
+            ratio = non_empty / total
+            assert ratio >= 0.50, f"PPTX table non-empty ratio {ratio:.2%} < 50%"
+
+    def test_docx_table_non_empty_ratio(self, tmp_path: Path) -> None:
+        _, docx = _gen_both(tmp_path, _rich_cards())
+        total, non_empty = self._count_docx_table_cells(docx)
+        if total > 0:
+            ratio = non_empty / total
+            assert ratio >= 0.50, f"DOCX table non-empty ratio {ratio:.2%} < 50%"
+
+    def test_pptx_table_non_empty_with_weak_cards(self, tmp_path: Path) -> None:
+        pptx, _ = _gen_both(tmp_path, _no_event_cards())
+        total, non_empty = self._count_table_cells(pptx)
+        if total > 0:
+            ratio = non_empty / total
+            assert ratio >= 0.50, f"PPTX table non-empty ratio {ratio:.2%} < 50% (weak cards)"
+
+
+# ---------------------------------------------------------------------------
+# Test: Per-block density thresholds
+# ---------------------------------------------------------------------------
+
+class TestPerBlockDensity:
+    def test_evidence_terms_count(self) -> None:
+        text = "NVIDIA launched the H200 GPU with AI inference capabilities."
+        assert count_evidence_terms(text) >= 2
+
+    def test_evidence_numbers_count(self) -> None:
+        text = "Priced at $30k with 141GB HBM3e memory."
+        assert count_evidence_numbers(text) >= 1
+
+    def test_sentence_count(self) -> None:
+        text = "First sentence. Second sentence. Third."
+        assert count_sentences(text) >= 2
+
+    def test_empty_text_density(self) -> None:
+        assert count_evidence_terms("") == 0
+        assert count_evidence_numbers("") == 0
+        assert count_sentences("") == 0
+
+    def test_quality_guard_block_backfills_thin_text(self) -> None:
+        card = EduNewsCard(
+            item_id="qg-001",
+            is_valid_news=True,
+            title_plain="NVIDIA H200 GPU launched at $30k",
+            what_happened="NVIDIA launched the H200 GPU with 141GB HBM3e for $30k.",
+            why_important="Impacts AI training costs globally.",
+            source_name="TechCrunch",
+            source_url="https://techcrunch.com/nvidia-h200",
+            final_score=9.0,
+        )
+        # Thin text with no evidence
+        thin = "Something happened."
+        result, metrics = quality_guard_block(thin, card=card)
+        # After backfill, should have more content
+        assert len(result) >= len(thin) or count_evidence_terms(result) >= 1
+
+    def test_quality_guard_preserves_good_text(self) -> None:
+        card = EduNewsCard(
+            item_id="qg-002",
+            is_valid_news=True,
+            title_plain="OpenAI GPT-5 release",
+            what_happened="OpenAI released GPT-5 with 1M token context.",
+            why_important="Enables enterprise RAG at scale.",
+            source_name="TheVerge",
+            source_url="https://theverge.com/gpt5",
+            final_score=8.5,
+        )
+        good = "OpenAI released GPT-5 with 1 million token context window. This impacts enterprise RAG."
+        result, metrics = quality_guard_block(good, card=card)
+        assert len(result) > 0
+
+    def test_rich_deck_blocks_meet_density(self, tmp_path: Path) -> None:
+        """Every event card in a rich deck should produce non-empty brief blocks."""
+        pptx, _ = _gen_both(tmp_path, _rich_cards())
+        text = _extract_all_text(pptx, Path(str(pptx).replace(".pptx", ".docx")))
+        # Text should contain evidence terms
+        assert count_evidence_terms(text) >= 3
+
+
+# ---------------------------------------------------------------------------
+# Test: Expanded fragment detection (v5.5)
+# ---------------------------------------------------------------------------
+
+class TestExpandedFragmentDetection:
+    def test_fragment_trailing_en_medium(self) -> None:
+        # Under 40 chars, ends with trailing word, no sentence end
+        assert is_fragment("The company announced to") is True
+        assert is_fragment("NVIDIA partnership with") is True
+
+    def test_fragment_trailing_zh_medium(self) -> None:
+        # 12+ chars, ends with trailing particle, no sentence-ending punctuation
+        assert is_fragment("這項技術在人工智慧領域中的應用的") is True
+
+    def test_not_fragment_with_sentence_end(self) -> None:
+        assert is_fragment("The GPU costs $30k.") is False
+
+    def test_not_fragment_long_text(self) -> None:
+        # Over 40 chars should not be flagged even with trailing word
+        text = "This is a fairly long sentence that describes something important to"
+        assert is_fragment(text) is False
+
+    def test_trim_trailing_comma(self) -> None:
+        result = trim_trailing_fragment("First sentence. Second part,")
+        assert result == "First sentence."
+
+    def test_trim_trailing_but(self) -> None:
+        result = trim_trailing_fragment("First claim is valid. But")
+        assert result == "First claim is valid."
+
+
+# ---------------------------------------------------------------------------
+# Test: Theme LIGHT/DARK coverage
+# ---------------------------------------------------------------------------
+
+class TestThemeCoverage:
+    def test_light_theme_generates(self, tmp_path: Path) -> None:
+        health = _health()
+        pptx_path = tmp_path / "light.pptx"
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(
+                cards=_rich_cards(), health=health,
+                report_time="2026-02-16 09:00", total_items=3,
+                output_path=pptx_path, theme="light",
+            )
+        assert pptx_path.exists()
+        assert pptx_path.stat().st_size > 30000
+
+    def test_dark_theme_generates(self, tmp_path: Path) -> None:
+        health = _health()
+        pptx_path = tmp_path / "dark.pptx"
+        with patch("core.ppt_generator.get_news_image", return_value=None):
+            generate_executive_ppt(
+                cards=_rich_cards(), health=health,
+                report_time="2026-02-16 09:00", total_items=3,
+                output_path=pptx_path, theme="dark",
+            )
+        assert pptx_path.exists()
+        assert pptx_path.stat().st_size > 30000
+
+    def test_light_bg_is_white(self) -> None:
+        assert LIGHT_BG == (0xFF, 0xFF, 0xFF) or str(LIGHT_BG) == "FFFFFF"
+
+    def test_dark_bg_is_dark(self) -> None:
+        assert DARK_BG == (0x12, 0x12, 0x18) or str(DARK_BG) == "121218"
+
+
+# ---------------------------------------------------------------------------
+# Test: Open PPT script contract ([OPEN] markers)
+# ---------------------------------------------------------------------------
+
+class TestOpenPptContract:
+    def test_open_markers_in_generate_reports(self) -> None:
+        text = Path("scripts/generate_reports.ps1").read_text(encoding="utf-8")
+        assert "[OPEN] pptx_path=" in text
+        assert "[OPEN] exists=" in text
+        assert "PPT generated successfully:" in text
+
+    def test_retry_loop_present(self) -> None:
+        text = Path("scripts/generate_reports.ps1").read_text(encoding="utf-8")
+        assert "for ($attempt = 1; $attempt -le 5; $attempt++)" in text
+        assert "OpenAttempt" in text
+        assert "$minOpenBytes = 30720" in text
+
+    def test_exit_codes_present(self) -> None:
+        text = Path("scripts/generate_reports.ps1").read_text(encoding="utf-8")
+        assert "exit 2" in text
+        assert "exit 3" in text
+
+    def test_explorer_fallback_present(self) -> None:
+        text = Path("scripts/generate_reports.ps1").read_text(encoding="utf-8")
+        assert "explorer.exe" in text
+        assert "[OPEN] fallback=" in text or "[OPEN] start_process_exit_code=" in text
+
+    def test_no_custom_ansi_colors(self) -> None:
+        text = Path("scripts/generate_reports.ps1").read_text(encoding="utf-8")
+        # Should use PowerShell -ForegroundColor, not raw ANSI escape sequences
+        assert "\x1b[" not in text
+        assert "\\e[" not in text

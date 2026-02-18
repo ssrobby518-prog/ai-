@@ -4482,3 +4482,160 @@ def build_structured_executive_summary(
         cleaned[key] = lines
 
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# ReportQualityGuard — per-block density checking (v5.5)
+# ---------------------------------------------------------------------------
+
+from utils.text_quality import (
+    count_evidence_terms,
+    count_evidence_numbers,
+    count_sentences,
+    is_fragment as _is_fragment,
+    trim_trailing_fragment as _trim_frag,
+)
+
+import logging as _logging_qg
+_logger_qg = _logging_qg.getLogger("quality_guard")
+
+
+def _block_density(text: str) -> dict:
+    """Return density metrics for a single text block."""
+    return {
+        "evidence_terms": count_evidence_terms(text),
+        "evidence_numbers": count_evidence_numbers(text),
+        "sentences": count_sentences(text),
+    }
+
+
+def quality_guard_block(
+    text: str,
+    *,
+    card: EduNewsCard | None = None,
+    min_terms: int = 2,
+    min_numbers: int = 1,
+    min_sentences: int = 2,
+) -> tuple[str, dict]:
+    """Check a text block's density; backfill from card if too thin.
+
+    Returns (improved_text, metrics_dict).
+    """
+    from config.settings import (
+        PER_BLOCK_MIN_TERMS,
+        PER_BLOCK_MIN_NUMBERS,
+        PER_BLOCK_MIN_SENTENCES,
+    )
+    min_terms = min_terms or PER_BLOCK_MIN_TERMS
+    min_numbers = min_numbers or PER_BLOCK_MIN_NUMBERS
+    min_sentences = min_sentences or PER_BLOCK_MIN_SENTENCES
+
+    # Trim fragments first.
+    text = _trim_frag(sanitize(text)) if text else ""
+
+    density_before = _block_density(text)
+    filled_fields: list[str] = []
+    trimmed = 0
+
+    # Backfill from card data if density is insufficient.
+    if card is not None:
+        parts = [text] if text else []
+
+        if density_before["evidence_terms"] < min_terms:
+            title = getattr(card, "title_plain", "") or ""
+            what = getattr(card, "what_happened", "") or ""
+            for supplement in [title, what]:
+                supplement = sanitize(supplement)
+                if supplement and supplement not in text:
+                    parts.append(supplement)
+                    filled_fields.append("title/what")
+                    break
+
+        if density_before["evidence_numbers"] < min_numbers:
+            why = getattr(card, "why_important", "") or ""
+            why = sanitize(why)
+            if why and why not in text:
+                parts.append(why)
+                filled_fields.append("why_important")
+
+        if density_before["sentences"] < min_sentences:
+            what = getattr(card, "what_happened", "") or ""
+            what = sanitize(what)
+            if what and what not in text:
+                parts.append(what)
+                filled_fields.append("what_happened")
+
+        text = " ".join(p for p in parts if p)
+
+    # Final fragment trim.
+    text = _trim_frag(text)
+    if _is_fragment(text):
+        trimmed += 1
+        text = ""
+
+    density_after = _block_density(text)
+
+    metrics = {
+        "density_before": density_before,
+        "density_after": density_after,
+        "filled_fields": filled_fields,
+        "trimmed_fragments": trimmed,
+    }
+    return text, metrics
+
+
+def apply_quality_guard(
+    cards: list[EduNewsCard],
+    blocks: list[dict],
+) -> tuple[list[dict], dict]:
+    """Apply quality guard across all blocks for a deck.
+
+    Each block dict is expected to have string values that can be density-checked.
+    Returns (improved_blocks, aggregate_stats).
+    """
+    total_filled = 0
+    total_trimmed = 0
+    total_blocks = 0
+    passed_blocks = 0
+
+    card_lookup = {c.item_id: c for c in cards}
+
+    improved: list[dict] = []
+    for block in blocks:
+        card_id = block.get("item_id", "")
+        card = card_lookup.get(card_id)
+        new_block = dict(block)
+        block_passed = True
+
+        for key in ["what_happened", "why_important", "body", "text"]:
+            if key not in new_block:
+                continue
+            val = new_block[key]
+            if not isinstance(val, str):
+                continue
+            guarded, metrics = quality_guard_block(val, card=card)
+            new_block[key] = guarded
+            total_filled += len(metrics["filled_fields"])
+            total_trimmed += metrics["trimmed_fragments"]
+            if not guarded:
+                block_passed = False
+
+        total_blocks += 1
+        if block_passed:
+            passed_blocks += 1
+        improved.append(new_block)
+
+    stats = {
+        "total_blocks": total_blocks,
+        "passed_blocks": passed_blocks,
+        "total_filled": total_filled,
+        "total_trimmed": total_trimmed,
+    }
+    _logger_qg.info(
+        "QUALITY_GUARD filled_fields=%d trimmed_fragments=%d "
+        "density_before=%d/%d density_after=%d/%d",
+        total_filled, total_trimmed,
+        total_blocks - passed_blocks, total_blocks,
+        passed_blocks, total_blocks,
+    )
+    return improved, stats

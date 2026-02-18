@@ -178,6 +178,13 @@ EDU_REPORT_LEVEL: str = os.getenv("EDU_REPORT_LEVEL", "adult").strip().lower()  
 PPT_THEME: str = os.getenv("PPT_THEME", "light").strip().lower()
 
 # ---------------------------------------------------------------------------
+# Per-block density thresholds for ReportQualityGuard
+# ---------------------------------------------------------------------------
+PER_BLOCK_MIN_TERMS: int = _env_int("PER_BLOCK_MIN_TERMS", 2)
+PER_BLOCK_MIN_NUMBERS: int = _env_int("PER_BLOCK_MIN_NUMBERS", 1)
+PER_BLOCK_MIN_SENTENCES: int = _env_int("PER_BLOCK_MIN_SENTENCES", 2)
+
+# ---------------------------------------------------------------------------
 # AI Topic Keywords — items must match at least one to pass content gate
 # ---------------------------------------------------------------------------
 _DEFAULT_AI_TOPIC_KEYWORDS = (
