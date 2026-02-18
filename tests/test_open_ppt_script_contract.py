@@ -39,3 +39,8 @@ def test_generate_reports_has_fallback_explorer() -> None:
     text = _read(Path("scripts/generate_reports.ps1"))
     assert "explorer.exe" in text
     assert "[OPEN] fallback=" in text or "[OPEN] start_process_exit_code=" in text
+
+
+def test_verify_run_evidence_has_git_status_line_count() -> None:
+    text = _read(Path("scripts/verify_run.ps1"))
+    assert "git status -sb (lines=" in text

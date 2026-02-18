@@ -311,6 +311,7 @@ Write-Host "verify_run: 9/9 PASS"
 Write-Host "Working tree: $workingTree"
 Write-Host "Branch: $branchSummary"
 Write-Host "git status -sb:"
+Write-Host ("git status -sb (lines={0}):" -f $gitStatusSbLines.Count)
 if ($gitStatusSbLines.Count -gt 0) {
     foreach ($ln in $gitStatusSbLines) {
         Write-Host $ln
