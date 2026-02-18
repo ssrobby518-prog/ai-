@@ -292,37 +292,45 @@ $keyPatterns = @('Overview', '總覽', 'Event Ranking', '排行', 'Pending', '�
 $forbiddenFragments = @('Last July was')
 $requiredDensity = 80   # EXEC_REQUIRED_SLIDE_DENSITY (configurable)
 
+$requiredSemanticDensity = 40   # EXEC_SEMANTIC_THRESHOLDS default
+
 if ($densityRaw) {
     try { $densityData = $densityRaw | ConvertFrom-Json } catch { $densityData = @() }
     foreach ($s in $densityData) {
         $tbl = "$($s.table_cells_nonempty)/$($s.table_cells_total)"
-        Write-Host ("[DENSITY] slide={0:D2} title=`"{1}`" chars={2} table={3} terms={4} nums={5} sents={6} score={7}" -f $s.slide_index, ($s.title -replace '"', "'"), $s.text_chars, $tbl, $s.terms, $s.numbers, $s.sentences, $s.density_score)
+        $semScore = if ($s.PSObject.Properties['semantic_score']) { $s.semantic_score } else { 0 }
+        Write-Host ("[DENSITY] slide={0:D2} title=`"{1}`" chars={2} table={3} terms={4} nums={5} sents={6} score={7} sem_score={8}" -f $s.slide_index, ($s.title -replace '"', "'"), $s.text_chars, $tbl, $s.terms, $s.numbers, $s.sentences, $s.density_score, $semScore)
     }
     foreach ($s in $densityData) {
         # Forbidden fragment check (all slides)
         foreach ($frag in $forbiddenFragments) {
             if ($s.all_text -match [regex]::Escape($frag)) {
-                Write-Host "  [DENSITY FAIL] Forbidden fragment '$frag' in slide=$($s.slide_index) title=`"$($s.title)`"" -ForegroundColor Red
+                Write-Host "  [DENSITY FAIL] Forbidden fragment '$frag' in slide=$($s.slide_index) title=`"$($s.title)`""
                 $densityAuditPass = $false
             }
         }
-        # Hard density gate: only applies to key slides with substantial text
+        # Hard density gate: key slides — NO text_chars skip guard
         $isKey = $false
         foreach ($pat in $keyPatterns) { if ($s.title -like "*$pat*") { $isKey = $true; break } }
-        if ($isKey -and $s.text_chars -ge 60) {
+        if ($isKey) {
             if ($s.density_score -lt $requiredDensity) {
-                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" score={2} < required={3}" -f $s.slide_index, $s.title, $s.density_score, $requiredDensity) -ForegroundColor Red
+                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" density={2} < required={3}" -f $s.slide_index, $s.title, $s.density_score, $requiredDensity)
+                $densityAuditPass = $false
+            }
+            $semScore = if ($s.PSObject.Properties['semantic_score']) { $s.semantic_score } else { 0 }
+            if ($semScore -lt $requiredSemanticDensity) {
+                Write-Host ("  [DENSITY FAIL] slide={0} title=`"{1}`" sem_score={2} < required_semantic={3}" -f $s.slide_index, $s.title, $semScore, $requiredSemanticDensity)
                 $densityAuditPass = $false
             }
         }
     }
     if (-not $densityAuditPass) {
-        Write-Host "  Executive Slide Density Audit FAILED" -ForegroundColor Red
+        Write-Host "  Executive Slide Density Audit FAILED"
         exit 1
     }
-    Write-Host "  Executive Slide Density Audit PASSED" -ForegroundColor Green
+    Write-Host "  Executive Slide Density Audit PASSED"
 } else {
-    Write-Host "  [Density Audit] Skipped (pptx parser returned no output)" -ForegroundColor Yellow
+    Write-Host "  [Density Audit] Skipped (pptx parser returned no output)"
 }
 
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan

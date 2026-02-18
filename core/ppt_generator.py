@@ -31,6 +31,7 @@ from core.content_strategy import (
     quality_guard_block,
     sanitize,
     score_event_impact,
+    semantic_guard_text,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
@@ -349,10 +350,12 @@ def _slide_overview_table(
     rows = []
     if event_cards:
         for i, c in enumerate(event_cards[:8], 1):
+            what_cell = safe_text(c.what_happened or "", 80)
+            what_cell = semantic_guard_text(what_cell, c)
             rows.append([
                 str(i), safe_text(c.title_plain, 35),
                 c.category or "綜合", f"{c.final_score:.1f}",
-                safe_text(c.what_happened or "", 80),
+                what_cell,
             ])
     else:
         signals = build_signal_summary(cards or [])
@@ -478,7 +481,14 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
                  color=HIGHLIGHT_YELLOW)
     y += 1.0
     actions = brief.get("q3_actions", [])
-    action_lines = [f"{i}. {safe_text(a, 60)}" for i, a in enumerate(actions[:3], 1)]
+    # Filter out empty / hollow action lines (prevents "1. " bullets)
+    action_lines = [
+        f"{i}. {safe_text(a, 60)}"
+        for i, a in enumerate(actions[:3], 1)
+        if safe_text(a, 60)
+    ]
+    if not action_lines:
+        action_lines = ["追蹤來源，確認數字證據後決定行動方向。"]
     _add_multiline_textbox(
         slide, Cm(3), Cm(y), Cm(28), Cm(2.5),
         action_lines, font_size=12, color=TEXT_WHITE, line_spacing=1.4,
@@ -744,12 +754,13 @@ def _slide_event_ranking(
         for rank, (c, imp) in enumerate(scored, 1):
             dc = build_decision_card(c)
             action = dc["actions"][0] if dc["actions"] else "待確認"
+            action = semantic_guard_text(safe_text(action, 25), c, context="action")
             rows.append([
                 str(rank),
                 f"{imp['impact']}/5 {imp['label']}",
                 safe_text(c.title_plain, 25),
                 c.category or "綜合",
-                safe_text(action, 25),
+                action[:25],
             ])
     else:
         signals = build_signal_summary(cards or [])
@@ -826,12 +837,14 @@ def _slide_pending_decisions(prs: Presentation, event_cards: list[EduNewsCard]) 
     for i, c in enumerate(event_cards[:5], 1):
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
+        # Semantic guard: ensure action is not hollow
+        action = semantic_guard_text(safe_text(action, 55), c, context="action")
         owner = dc["owner"]
         impact_data = score_event_impact(c)
         impact = impact_data.get("impact", 3) if isinstance(impact_data, dict) else 3
         why_snippet = safe_text(c.why_important or "", 40) or safe_text(c.title_plain or "", 30) or ""
         items.append(
-            f"{i}. {safe_text(action, 55)} → Owner: {owner} "
+            f"{i}. {action[:55]} → Owner: {owner} "
             f"| Due: T+7 | Metric: impact={impact}/5 | {why_snippet}"
         )
 

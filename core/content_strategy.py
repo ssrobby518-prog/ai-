@@ -4639,3 +4639,51 @@ def apply_quality_guard(
         passed_blocks, total_blocks,
     )
     return improved, stats
+
+
+# ---------------------------------------------------------------------------
+# Semantic guard — last-mile hollow-content prevention
+# ---------------------------------------------------------------------------
+
+
+def semantic_guard_text(
+    text: str,
+    card: "EduNewsCard",
+    *,
+    context: str = "",
+) -> str:
+    """Return semantically sound text, backfilling from card if text is hollow.
+
+    If *text* is a placeholder/fragment or too short (< 15 non-space chars):
+      1. Try card.why_important (for context="action") or card.what_happened first
+      2. Fall back through why_important → what_happened → title
+      3. Final guaranteed fallback: "{title}（來源：{source}）— 需進一步確認。"
+
+    Never returns empty string or a fragment.
+    Does NOT modify the card schema.
+    """
+    from utils.semantic_quality import is_placeholder_or_fragment
+
+    s = (text or "").strip()
+    # Fast-pass: text is good
+    if s and not is_placeholder_or_fragment(s) and len(s.replace(" ", "")) >= 15:
+        return s
+
+    # Build backfill candidates from card (all run through sanitize)
+    what = sanitize(card.what_happened or "")
+    why = sanitize(card.why_important or "")
+    title = sanitize(card.title_plain or "")
+    source = (card.source_name or "來源").strip()
+
+    candidates = [why, what, title] if context == "action" else [what, why, title]
+
+    for cand in candidates:
+        cand_s = cand.strip()
+        if (cand_s
+                and not is_placeholder_or_fragment(cand_s)
+                and len(cand_s.replace(" ", "")) >= 15):
+            return cand_s[:100]
+
+    # Guaranteed structured fallback (always has title + source → always readable)
+    title_short = (card.title_plain or "").strip()[:40]
+    return f"{title_short}（來源：{source}）— 需進一步確認。"

@@ -140,6 +140,7 @@ def slide_density_audit(path: Path) -> list[dict]:
     """
     from pptx import Presentation
     from utils.text_quality import count_evidence_terms, count_evidence_numbers, count_sentences
+    from utils.semantic_quality import semantic_density_score as _sem_score
 
     # Load thresholds — fall back to hardcoded defaults if settings not available.
     try:
@@ -211,6 +212,8 @@ def slide_density_audit(path: Path) -> list[dict]:
 
         density_score = round(text_score + table_score + evidence_score)
 
+        semantic_score = _sem_score(full_text)
+
         results.append({
             "slide_index": idx,
             "title": slide_title,
@@ -222,6 +225,7 @@ def slide_density_audit(path: Path) -> list[dict]:
             "numbers": numbers,
             "sentences": sentences,
             "density_score": density_score,
+            "semantic_score": semantic_score,
             "all_text": full_text[:600],
         })
 

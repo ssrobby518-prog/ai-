@@ -220,6 +220,22 @@ EXEC_DENSITY_THRESHOLDS: dict[str, int] = {
 PENDING_MIN_TERMS: int = _env_int("PENDING_MIN_TERMS", 2)
 PENDING_MIN_NUMBERS: int = _env_int("PENDING_MIN_NUMBERS", 1)
 PENDING_MIN_SENTENCES: int = _env_int("PENDING_MIN_SENTENCES", 1)
+# Semantic density thresholds — per-slide-type, applied AFTER formal density gate
+# Uses utils.semantic_quality.semantic_density_score() (0-100, meaning-bearing content)
+EXEC_SEMANTIC_THRESHOLDS: dict[str, int] = {
+    "overview": _env_int("EXEC_SEMANTIC_OVERVIEW", 40),
+    "ranking": _env_int("EXEC_SEMANTIC_RANKING", 40),
+    "pending": _env_int("EXEC_SEMANTIC_PENDING", 40),
+}
+# Minimum non-empty cell ratio for ANY table in key slides
+PER_CELL_MIN_NONEMPTY_RATIO: float = _env_float("PER_CELL_MIN_NONEMPTY_RATIO", 0.85)
+# Placeholder patterns that must NOT appear in key slide text (regex strings)
+PLACEHOLDER_PATTERNS: list[str] = [
+    r"Last\s+\w+\s+was\b",   # template remnant
+    r"解決方\s*[記表]",        # truncation artifact
+    r"WHY IT MATTERS:\s*$",   # unclosed template tag
+    r"^\s*[0-9]+[.)]\s*$",    # lone sequence number "2."
+]
 # Forbidden fragment phrases — any slide text containing these → hard fail
 EXEC_FORBIDDEN_FRAGMENTS: list[str] = ["Last July was"]
 # Regex for connector/trailing-token endings that indicate broken sentences

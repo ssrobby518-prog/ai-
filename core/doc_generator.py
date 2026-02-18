@@ -34,6 +34,7 @@ from core.content_strategy import (
     quality_guard_block,
     sanitize,
     score_event_impact,
+    semantic_guard_text,
 )
 from core.image_helper import get_news_image
 from schemas.education_models import (
@@ -607,6 +608,8 @@ def _build_conclusion_section(doc: Document, event_cards: list[EduNewsCard]) -> 
     for i, c in enumerate(event_cards[:5], 1):
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
+        # Semantic guard: ensure no hollow/fragment action text
+        action = semantic_guard_text(action, c, context="action")
         items.append(f"{i}. {action} → Owner: {dc['owner']}")
 
     if not items:
@@ -721,8 +724,15 @@ def _build_structured_summary(
         ("Opportunities & Risks", summary.get("opportunities_risks", [])),
         ("Recommended Actions", summary.get("recommended_actions", [])),
     ]
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag
     for sec_title, items in section_map:
-        _add_callout(doc, sec_title, [sanitize(it) for it in items[:3]])
+        cleaned = [
+            it for it in (sanitize(x) for x in items[:3])
+            if it and not _is_frag(it)
+        ]
+        if not cleaned:
+            cleaned = ["本節目前無足夠資料，將在下一次掃描更新。"]
+        _add_callout(doc, sec_title, cleaned)
     _add_divider(doc)
 
 
