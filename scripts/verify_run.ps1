@@ -335,6 +335,18 @@ $gitStatusSb = if ($gitStatusSbLines.Count -gt 0) { "$($gitStatusSbLines[0])".Tr
 if ([string]::IsNullOrWhiteSpace($gitStatusSb)) { $gitStatusSb = "<empty>" }
 $gitPorcelain = (git status --porcelain 2>$null | Out-String).Trim()
 $workingTree = if ([string]::IsNullOrWhiteSpace($gitPorcelain)) { "clean" } else { "dirty" }
+
+# EVIDENCE GATE: working tree must be clean and status -sb must be exactly 1 line
+if ($gitStatusSbLines.Count -ne 1) {
+    Write-Host "EVIDENCE-GATE FAIL: git status -sb returned $($gitStatusSbLines.Count) lines (expected 1)." -ForegroundColor Red
+    Write-Host "Commit or stash all changes before generating delivery evidence." -ForegroundColor Red
+    exit 1
+}
+if ($workingTree -eq "dirty") {
+    Write-Host "EVIDENCE-GATE FAIL: Working tree is dirty. Commit all changes first." -ForegroundColor Red
+    exit 1
+}
+
 $branchSummary = if ($gitStatusSb -match "^##\s+(.+)\.\.\.(.+)$") {
     "$($Matches[1]) -> $($Matches[2]) up-to-date"
 } elseif ($gitStatusSb -match "^##\s+(.+)$") {
@@ -373,7 +385,4 @@ if ($gitStatusSbLines.Count -gt 0) {
 } else {
     Write-Host "<empty>"
 }
-$noteBase64 = "Tm90ZTog5pys57O757Wx5L+d6K2J6Ly45Ye65LiN54K656m677yI6LOH6KiK5a+G5bqm6ZaA5qq7ICsg5pW45a2X5YyWIGZhbGxiYWNr77yJ77yM5L2G5LiN5L+d6K2J5q+P5pel5LiA5a6a5pyJ44CM55yf5LqL5Lu244CN77yb6Iul5LqL5Lu2PTDvvIzlsIfku6UgU2lnbmFsL0NvcnAg55qE5Y+v6L+95rqv57Wx6KiI6KOc6Laz5rG6562W6LOH6KiK6YeP44CC"
-$note = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($noteBase64))
-Write-Host $note
 Write-Host "=======================================" -ForegroundColor Cyan

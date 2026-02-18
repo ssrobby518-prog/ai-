@@ -210,6 +210,16 @@ EXEC_BLOCK_MIN_SENTENCES: int = _env_int("EXEC_BLOCK_MIN_SENTENCES", 2)
 EXEC_BLOCK_MIN_EVIDENCE_TERMS: int = _env_int("EXEC_BLOCK_MIN_EVIDENCE_TERMS", 2)
 EXEC_BLOCK_MIN_EVIDENCE_NUMBERS: int = _env_int("EXEC_BLOCK_MIN_EVIDENCE_NUMBERS", 1)
 EXEC_REQUIRED_SLIDE_DENSITY: int = _env_int("EXEC_REQUIRED_SLIDE_DENSITY", 80)
+# Per-slide-type configurable density thresholds (no skip allowed)
+EXEC_DENSITY_THRESHOLDS: dict[str, int] = {
+    "overview": _env_int("EXEC_DENSITY_OVERVIEW", 80),
+    "ranking": _env_int("EXEC_DENSITY_RANKING", 80),
+    "pending": _env_int("EXEC_DENSITY_PENDING", 80),
+}
+# Pending Decisions minimum evidence requirements
+PENDING_MIN_TERMS: int = _env_int("PENDING_MIN_TERMS", 2)
+PENDING_MIN_NUMBERS: int = _env_int("PENDING_MIN_NUMBERS", 1)
+PENDING_MIN_SENTENCES: int = _env_int("PENDING_MIN_SENTENCES", 1)
 # Forbidden fragment phrases — any slide text containing these → hard fail
 EXEC_FORBIDDEN_FRAGMENTS: list[str] = ["Last July was"]
 # Regex for connector/trailing-token endings that indicate broken sentences

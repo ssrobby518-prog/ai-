@@ -132,9 +132,10 @@ class TestSlideDensityAuditContract:
 # ---------------------------------------------------------------------------
 
 class TestKeySlidesDensity:
-    """Overview / Event Ranking / Pending Decisions must meet EXEC_REQUIRED_SLIDE_DENSITY."""
+    """Overview / Event Ranking / Pending Decisions must meet per-type density thresholds.
 
-    _THRESHOLD = settings.EXEC_REQUIRED_SLIDE_DENSITY
+    No text_chars skip is allowed — all three slides must pass unconditionally.
+    """
 
     def _find(self, results: list[dict], *patterns: str) -> dict | None:
         for r in results:
@@ -144,34 +145,43 @@ class TestKeySlidesDensity:
         return None
 
     def test_overview_density(self, tmp_path: Path) -> None:
+        threshold = settings.EXEC_DENSITY_THRESHOLDS["overview"]
         pptx = _gen_pptx(tmp_path, _rich_cards())
         results = slide_density_audit(pptx)
         slide = self._find(results, "Overview", "總覽")
         assert slide is not None, "Overview slide not found in density audit"
-        if slide["text_chars"] >= 150:  # skip for navigation/header slides (sparse by design)
-            assert slide["density_score"] >= self._THRESHOLD, (
-                f"Overview density={slide['density_score']} < required={self._THRESHOLD}"
-            )
+        assert slide["density_score"] >= threshold, (
+            f"Overview density={slide['density_score']} < required={threshold}"
+        )
 
     def test_event_ranking_density(self, tmp_path: Path) -> None:
+        threshold = settings.EXEC_DENSITY_THRESHOLDS["ranking"]
         pptx = _gen_pptx(tmp_path, _rich_cards())
         results = slide_density_audit(pptx)
         slide = self._find(results, "Event Ranking", "排行")
         assert slide is not None, "Event Ranking slide not found in density audit"
-        if slide["text_chars"] >= 60:
-            assert slide["density_score"] >= self._THRESHOLD, (
-                f"Event Ranking density={slide['density_score']} < required={self._THRESHOLD}"
-            )
+        assert slide["density_score"] >= threshold, (
+            f"Event Ranking density={slide['density_score']} < required={threshold}"
+        )
 
     def test_pending_decisions_density(self, tmp_path: Path) -> None:
+        threshold = settings.EXEC_DENSITY_THRESHOLDS["pending"]
         pptx = _gen_pptx(tmp_path, _rich_cards())
         results = slide_density_audit(pptx)
         slide = self._find(results, "Pending", "待決")
         assert slide is not None, "Pending Decisions slide not found"
-        if slide["text_chars"] >= 120:  # skip for action-item slides with concise text
-            assert slide["density_score"] >= self._THRESHOLD, (
-                f"Pending Decisions density={slide['density_score']} < required={self._THRESHOLD}"
-            )
+        assert slide["density_score"] >= threshold, (
+            f"Pending Decisions density={slide['density_score']} < required={threshold}"
+        )
+
+    def test_no_text_chars_skip_in_key_slide_density_tests(self) -> None:
+        """Confirm no text_chars skip guards remain in this test file."""
+        source = Path(__file__).read_text(encoding="utf-8")
+        # Build pattern at runtime so this assertion doesn't self-match
+        guard = "if slide[" + '"text_chars"' + "]"
+        assert guard not in source, (
+            "text_chars skip guard detected — unconditional density assertions are required"
+        )
 
     def test_overview_table_nonempty_ratio(self, tmp_path: Path) -> None:
         """Overview table must have ≥ EXEC_TABLE_MIN_NONEMPTY_RATIO non-empty cells."""
@@ -269,3 +279,11 @@ class TestFragmentDetectionUnit:
         assert settings.EXEC_BLOCK_MIN_EVIDENCE_TERMS == 2
         assert settings.EXEC_BLOCK_MIN_EVIDENCE_NUMBERS == 1
         assert settings.EXEC_REQUIRED_SLIDE_DENSITY == 80
+        # Per-type thresholds
+        assert settings.EXEC_DENSITY_THRESHOLDS["overview"] == 80
+        assert settings.EXEC_DENSITY_THRESHOLDS["ranking"] == 80
+        assert settings.EXEC_DENSITY_THRESHOLDS["pending"] == 80
+        # Pending evidence minimums
+        assert settings.PENDING_MIN_TERMS == 2
+        assert settings.PENDING_MIN_NUMBERS == 1
+        assert settings.PENDING_MIN_SENTENCES == 1

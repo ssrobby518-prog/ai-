@@ -345,13 +345,14 @@ def _slide_overview_table(
     event_cards: list[EduNewsCard],
     cards: list[EduNewsCard] | None = None,
 ) -> None:
-    headers = ["#", "標題", "類別", "評分"]
+    headers = ["#", "標題", "類別", "評分", "事件"]
     rows = []
     if event_cards:
         for i, c in enumerate(event_cards[:8], 1):
             rows.append([
                 str(i), safe_text(c.title_plain, 35),
                 c.category or "綜合", f"{c.final_score:.1f}",
+                safe_text(c.what_happened or "", 80),
             ])
     else:
         signals = build_signal_summary(cards or [])
@@ -826,7 +827,13 @@ def _slide_pending_decisions(prs: Presentation, event_cards: list[EduNewsCard]) 
         dc = build_decision_card(c)
         action = dc["actions"][0] if dc["actions"] else "待確認"
         owner = dc["owner"]
-        items.append(f"{i}. {safe_text(action, 80)} → Owner: {owner}")
+        impact_data = score_event_impact(c)
+        impact = impact_data.get("impact", 3) if isinstance(impact_data, dict) else 3
+        why_snippet = safe_text(c.why_important or "", 40) or safe_text(c.title_plain or "", 30) or ""
+        items.append(
+            f"{i}. {safe_text(action, 55)} → Owner: {owner} "
+            f"| Due: T+7 | Metric: impact={impact}/5 | {why_snippet}"
+        )
 
     if not items:
         items.append("1. 本日無待決事項")

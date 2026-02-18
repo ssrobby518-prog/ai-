@@ -44,3 +44,19 @@ def test_generate_reports_has_fallback_explorer() -> None:
 def test_verify_run_evidence_has_git_status_line_count() -> None:
     text = _read(Path("scripts/verify_run.ps1"))
     assert "git status -sb (lines=" in text
+
+
+def test_verify_run_evidence_gate_checks_lines_count() -> None:
+    """Evidence gate must fail when status -sb returns != 1 line."""
+    text = _read(Path("scripts/verify_run.ps1"))
+    assert "gitStatusSbLines.Count -ne 1" in text, (
+        "Evidence gate missing: verify_run.ps1 must exit 1 when git status -sb != 1 line"
+    )
+
+
+def test_verify_run_no_base64_note() -> None:
+    """Base64-encoded note must be removed (was dirty→clean messaging)."""
+    text = _read(Path("scripts/verify_run.ps1"))
+    assert "noteBase64" not in text, (
+        "noteBase64 still present — remove the Base64-encoded note block"
+    )
