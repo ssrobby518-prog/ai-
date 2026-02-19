@@ -501,10 +501,13 @@ def run_pipeline() -> None:
     try:
         import json as _json
         _too_old = int((filter_summary.dropped_by_reason or {}).get("too_old", 0))
-        _dr_top5 = sorted(
-            (filter_summary.dropped_by_reason or {}).items(),
-            key=lambda kv: kv[1], reverse=True,
-        )[:5]
+        _dr_top5 = [
+            {"reason": k, "count": v}
+            for k, v in sorted(
+                (filter_summary.dropped_by_reason or {}).items(),
+                key=lambda kv: kv[1], reverse=True,
+            )[:5]
+        ]
         # Try to read exec_selected_total from exec_selection.meta.json (written by Z5)
         _exec_sel_total = 0
         _exec_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_selection.meta.json"
