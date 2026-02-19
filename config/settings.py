@@ -244,3 +244,19 @@ EXEC_FORBIDDEN_FRAGMENTS: list[str] = ["Last July was"]
 EXEC_FRAGMENT_TRAILING_TOKENS_RE: str = (
     r"(but|as|and|or|to|of|for|with|in|on|at|by|from|that|this|these|those|,|，)$"
 )
+
+# ---------------------------------------------------------------------------
+# Z0 Collector — online pre-fetch stage (optional, offline-safe default)
+# ---------------------------------------------------------------------------
+# When Z0_ENABLED=True AND Z0_INPUT_PATH file exists, run_once.py will load
+# items from the JSONL file instead of calling fetch_all_feeds() online.
+# Defaults to False so the existing offline pipeline is completely unchanged.
+Z0_ENABLED: bool = os.getenv("Z0_ENABLED", "0").strip() in ("1", "true", "yes", "True")
+Z0_INPUT_PATH: Path = _resolve(
+    os.getenv("Z0_INPUT_PATH", ""),
+    r".\data\raw\z0\latest.jsonl",
+)
+Z0_CONFIG_PATH: Path = _resolve(
+    os.getenv("Z0_CONFIG_PATH", ""),
+    r".\config\z0_sources.json",
+)

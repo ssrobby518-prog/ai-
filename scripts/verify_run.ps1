@@ -393,4 +393,35 @@ if ($gitStatusSbLines.Count -gt 0) {
 } else {
     Write-Host "<empty>"
 }
+
+# Z0 Collector Evidence (optional — only printed when meta file exists)
+$z0MetaPath = Join-Path $PSScriptRoot "..\data\raw\z0\latest.meta.json"
+if (Test-Path $z0MetaPath) {
+    try {
+        $z0Meta = Get-Content $z0MetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "Z0 COLLECTOR EVIDENCE:"
+        Write-Host ("  collected_at   : {0}" -f $z0Meta.collected_at)
+        Write-Host ("  total_items    : {0}" -f $z0Meta.total_items)
+        Write-Host ("  frontier_ge_70 : {0}" -f $z0Meta.frontier_ge_70)
+        Write-Host ("  frontier_ge_85 : {0}" -f $z0Meta.frontier_ge_85)
+        if ($z0Meta.by_platform) {
+            Write-Host "  by_platform:"
+            $z0Meta.by_platform.PSObject.Properties | Sort-Object Value -Descending | ForEach-Object {
+                Write-Host ("    {0}: {1}" -f $_.Name, $_.Value)
+            }
+        }
+        # Optional gate: Z0_MIN_FRONTIER85 (e.g. set $env:Z0_MIN_FRONTIER85=5)
+        if ($env:Z0_MIN_FRONTIER85) {
+            $minF85 = [int]$env:Z0_MIN_FRONTIER85
+            if ($z0Meta.frontier_ge_85 -lt $minF85) {
+                Write-Host ("Z0 GATE FAIL: frontier_ge_85={0} < required={1}" -f $z0Meta.frontier_ge_85, $minF85)
+                exit 1
+            }
+            Write-Host ("  Z0 gate OK: frontier_ge_85={0} >= {1}" -f $z0Meta.frontier_ge_85, $minF85)
+        }
+    } catch {
+        Write-Host "  Z0 meta parse error (non-fatal): $_"
+    }
+}
 Write-Host "=======================================" -ForegroundColor Cyan

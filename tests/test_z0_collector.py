@@ -1,0 +1,354 @@
+"""Tests for core/z0_collector.py — no network, pure parse functions."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+# Module under test
+from core.z0_collector import (
+    _extract_domain,
+    _item_id,
+    _parse_pubdate,
+    _strip_html,
+    compute_frontier_score,
+    parse_feed,
+)
+
+# ---------------------------------------------------------------------------
+# Inline RSS 2.0 sample
+# ---------------------------------------------------------------------------
+
+RSS_SAMPLE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>AI Test Feed</title>
+    <link>https://example.com</link>
+    <description>Test AI news</description>
+    <item>
+      <title>OpenAI releases GPT-5 model with 10x improvements</title>
+      <link>https://example.com/gpt5-release</link>
+      <pubDate>Wed, 19 Feb 2026 09:00:00 +0000</pubDate>
+      <description>OpenAI has launched GPT-5, a new LLM with 10x inference speed
+        and improved benchmark scores on MMLU, HumanEval, and MATH.</description>
+    </item>
+    <item>
+      <title>NVIDIA H200 GPU benchmark results published</title>
+      <link>https://example.com/h200-benchmark</link>
+      <pubDate>Tue, 18 Feb 2026 14:00:00 +0000</pubDate>
+      <description>NVIDIA published H200 GPU performance benchmarks showing
+        40% improvement over H100 in AI training workloads at $30k/unit.</description>
+    </item>
+    <item>
+      <title>Weekly AI digest - subscribe now</title>
+      <link>https://example.com/digest</link>
+      <pubDate>Mon, 17 Feb 2026 08:00:00 +0000</pubDate>
+      <description>Subscribe to our AI digest for weekly roundups.</description>
+    </item>
+  </channel>
+</rss>
+"""
+
+# ---------------------------------------------------------------------------
+# Inline Atom 1.0 sample
+# ---------------------------------------------------------------------------
+
+ATOM_SAMPLE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>GitHub Releases — transformers</title>
+  <id>https://github.com/huggingface/transformers/releases</id>
+  <entry>
+    <id>https://github.com/huggingface/transformers/releases/tag/v4.40.0</id>
+    <title>transformers v4.40.0 — new vision-language models</title>
+    <link rel="alternate" href="https://github.com/huggingface/transformers/releases/tag/v4.40.0"/>
+    <published>2026-02-18T10:00:00Z</published>
+    <updated>2026-02-18T10:05:00Z</updated>
+    <summary>Release v4.40.0 adds LLaVA-Next, PaliGemma, and Idefics3.
+      Benchmark improvements across vision-language tasks up to 15%.</summary>
+  </entry>
+  <entry>
+    <id>https://github.com/huggingface/transformers/releases/tag/v4.39.3</id>
+    <title>transformers v4.39.3 — bug fixes and performance patch</title>
+    <link rel="alternate" href="https://github.com/huggingface/transformers/releases/tag/v4.39.3"/>
+    <published>2026-02-10T08:00:00Z</published>
+    <updated>2026-02-10T08:00:00Z</updated>
+    <summary>Fixes critical inference bug in generation pipeline.
+      Performance improvement 5% for batch inference scenarios.</summary>
+  </entry>
+</feed>
+"""
+
+# ---------------------------------------------------------------------------
+# Inline Atom without namespace (GitHub-style variant)
+# ---------------------------------------------------------------------------
+
+ATOM_NO_NS_SAMPLE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<feed>
+  <title>GitHub Commits — vllm</title>
+  <entry>
+    <id>https://github.com/vllm-project/vllm/commit/abc123</id>
+    <title>feat: add PagedAttention v3 for 2x throughput</title>
+    <link rel="alternate" href="https://github.com/vllm-project/vllm/commit/abc123"/>
+    <updated>2026-02-17T12:00:00Z</updated>
+    <summary>Implements PagedAttention v3 achieving 2x inference throughput
+      on A100 GPUs with 40GB VRAM.</summary>
+  </entry>
+</feed>
+"""
+
+_RSS_FEED_CFG = {
+    "name": "Test RSS Feed",
+    "url": "https://example.com/rss",
+    "platform": "openai",
+    "tag": "official",
+}
+
+_ATOM_FEED_CFG = {
+    "name": "HuggingFace Releases",
+    "url": "https://github.com/huggingface/transformers/releases.atom",
+    "platform": "huggingface",
+    "tag": "github_releases",
+}
+
+_ATOM_NO_NS_CFG = {
+    "name": "vllm Commits",
+    "url": "https://github.com/vllm-project/vllm/commits/main.atom",
+    "platform": "vllm",
+    "tag": "github_commits",
+}
+
+
+# ---------------------------------------------------------------------------
+# parse_feed — RSS
+# ---------------------------------------------------------------------------
+
+class TestParseFeedRSS:
+    def test_returns_at_least_two_items(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        assert len(items) >= 2, f"Expected >= 2 items, got {len(items)}"
+
+    def test_title_parsed(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        titles = [it["title"] for it in items]
+        assert any("GPT-5" in t or "OpenAI" in t for t in titles), titles
+
+    def test_url_is_valid_http(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        for it in items:
+            assert it["url"].startswith("http"), f"Bad URL: {it['url']}"
+
+    def test_summary_non_empty(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        # At least one item should have a non-empty summary
+        assert any(it["summary"] for it in items)
+
+    def test_source_fields_set(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        for it in items:
+            assert it["source"]["platform"] == "openai"
+            assert it["source"]["feed_name"] == "Test RSS Feed"
+            assert it["source"]["tag"] == "official"
+
+    def test_frontier_score_is_int_0_to_100(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        for it in items:
+            s = it["frontier_score"]
+            assert isinstance(s, int), f"frontier_score not int: {s}"
+            assert 0 <= s <= 100, f"frontier_score out of range: {s}"
+
+    def test_id_is_hex_string(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG)
+        for it in items:
+            assert len(it["id"]) == 16
+            assert all(c in "0123456789abcdef" for c in it["id"])
+
+    def test_empty_xml_returns_empty(self):
+        assert parse_feed("", _RSS_FEED_CFG) == []
+
+    def test_malformed_xml_returns_empty(self):
+        assert parse_feed("<broken><</broken>", _RSS_FEED_CFG) == []
+
+    def test_max_items_limit(self):
+        items = parse_feed(RSS_SAMPLE, _RSS_FEED_CFG, max_items=1)
+        assert len(items) <= 1
+
+
+# ---------------------------------------------------------------------------
+# parse_feed — Atom with namespace
+# ---------------------------------------------------------------------------
+
+class TestParseFeedAtom:
+    def test_returns_two_items(self):
+        items = parse_feed(ATOM_SAMPLE, _ATOM_FEED_CFG)
+        assert len(items) == 2, f"Expected 2, got {len(items)}"
+
+    def test_title_contains_version(self):
+        items = parse_feed(ATOM_SAMPLE, _ATOM_FEED_CFG)
+        titles = [it["title"] for it in items]
+        assert any("v4.40" in t for t in titles), titles
+
+    def test_url_is_github(self):
+        items = parse_feed(ATOM_SAMPLE, _ATOM_FEED_CFG)
+        for it in items:
+            assert "github.com" in it["url"], it["url"]
+
+    def test_published_at_is_iso(self):
+        items = parse_feed(ATOM_SAMPLE, _ATOM_FEED_CFG)
+        for it in items:
+            if it["published_at"]:
+                # Should parse as ISO datetime
+                dt = datetime.fromisoformat(it["published_at"].replace("Z", "+00:00"))
+                assert dt.year >= 2020
+
+    def test_platform_propagated(self):
+        items = parse_feed(ATOM_SAMPLE, _ATOM_FEED_CFG)
+        for it in items:
+            assert it["source"]["platform"] == "huggingface"
+
+
+# ---------------------------------------------------------------------------
+# parse_feed — Atom without namespace
+# ---------------------------------------------------------------------------
+
+class TestParseFeedAtomNoNS:
+    def test_returns_one_item(self):
+        items = parse_feed(ATOM_NO_NS_SAMPLE, _ATOM_NO_NS_CFG)
+        assert len(items) >= 1
+
+    def test_title_contains_feat(self):
+        items = parse_feed(ATOM_NO_NS_SAMPLE, _ATOM_NO_NS_CFG)
+        assert any("PagedAttention" in it["title"] or "feat" in it["title"].lower() for it in items)
+
+
+# ---------------------------------------------------------------------------
+# compute_frontier_score
+# ---------------------------------------------------------------------------
+
+class TestFrontierScore:
+    def _make_item(self, platform: str = "openai", pub_hours_ago: float = 12.0,
+                   title: str = "GPT-5 release benchmark", summary: str = "") -> dict:
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        pub = (now - timedelta(hours=pub_hours_ago)).isoformat()
+        return {
+            "title": title,
+            "summary": summary,
+            "published_at": pub,
+            "source": {"platform": platform, "feed_name": "test", "feed_url": "", "tag": "official"},
+        }
+
+    def test_recent_official_ai_high_score(self):
+        item = self._make_item(platform="openai", pub_hours_ago=2,
+                               title="OpenAI releases GPT-5 model inference benchmark")
+        score = compute_frontier_score(item)
+        assert score >= 70, f"Expected >= 70, got {score}"
+
+    def test_old_unknown_low_score(self):
+        item = self._make_item(platform="unknown", pub_hours_ago=200,
+                               title="Some random article")
+        score = compute_frontier_score(item)
+        assert score <= 40, f"Expected <= 40, got {score}"
+
+    def test_score_range(self):
+        item = self._make_item()
+        score = compute_frontier_score(item)
+        assert 0 <= score <= 100
+
+    def test_no_published_still_returns_int(self):
+        item = self._make_item()
+        item["published_at"] = None
+        score = compute_frontier_score(item)
+        assert isinstance(score, int)
+        assert 0 <= score <= 100
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
+
+class TestHelpers:
+    def test_strip_html_removes_tags(self):
+        assert "<b>" not in _strip_html("<b>hello</b>")
+        assert "hello" in _strip_html("<b>hello</b>")
+
+    def test_strip_html_unescape(self):
+        result = _strip_html("&lt;b&gt;OpenAI&amp;NVIDIA&lt;/b&gt;")
+        assert "&lt;" not in result
+        assert "OpenAI" in result
+
+    def test_strip_html_empty(self):
+        assert _strip_html("") == ""
+        assert _strip_html(None) == ""  # type: ignore[arg-type]
+
+    def test_extract_domain(self):
+        assert _extract_domain("https://www.openai.com/blog/gpt5") == "openai.com"
+        assert _extract_domain("https://huggingface.co/blog/feed.xml") == "huggingface.co"
+
+    def test_item_id_deterministic(self):
+        a = _item_id("Test Title", "https://example.com/1")
+        b = _item_id("Test Title", "https://example.com/1")
+        assert a == b
+
+    def test_item_id_different_inputs(self):
+        a = _item_id("Title A", "https://example.com/1")
+        b = _item_id("Title B", "https://example.com/1")
+        assert a != b
+
+    def test_parse_pubdate_rfc2822(self):
+        result = _parse_pubdate("Wed, 19 Feb 2026 09:00:00 +0000")
+        assert "2026" in result
+
+    def test_parse_pubdate_iso(self):
+        result = _parse_pubdate("2026-02-19T09:00:00Z")
+        assert "2026" in result
+
+    def test_parse_pubdate_empty(self):
+        assert _parse_pubdate("") == ""
+
+
+# ---------------------------------------------------------------------------
+# collect_all (offline: empty config, no network needed)
+# ---------------------------------------------------------------------------
+
+class TestCollectAllOffline:
+    def test_empty_config_produces_valid_output(self, tmp_path: Path):
+        """collect_all with zero feeds must still write valid files."""
+        from core.z0_collector import collect_all
+
+        config = {
+            "collector": {
+                "locale": {"hl": "en-US", "gl": "US", "ceid": "US:en"},
+                "time_window_days": 7,
+                "http_timeout_sec": 1,
+                "polite_delay_ms": 0,
+                "max_items_per_feed": 5,
+                "enable_fulltext_fetch": False,
+                "user_agent": "test",
+            },
+            "official_feeds": [],
+            "community_feeds": [],
+            "github_watch": {"feeds": [], "repos": [], "wiki_probe": {"enabled": False}},
+            "google_news_queries": [],
+        }
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
+        out_dir = tmp_path / "out"
+
+        meta = collect_all(cfg_path, out_dir)
+
+        assert (out_dir / "latest.jsonl").exists()
+        assert (out_dir / "latest.meta.json").exists()
+        assert isinstance(meta["total_items"], int)
+        assert meta["total_items"] == 0
+
+    def test_missing_config_returns_error_meta(self, tmp_path: Path):
+        from core.z0_collector import collect_all
+
+        meta = collect_all(tmp_path / "nonexistent.json", tmp_path / "out")
+        assert "error" in meta

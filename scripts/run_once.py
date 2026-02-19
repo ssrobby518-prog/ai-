@@ -190,7 +190,21 @@ def run_pipeline() -> None:
 
     # Z1: Ingestion & Preprocessing
     log.info("--- Z1: Ingestion & Preprocessing ---")
-    raw_items = fetch_all_feeds()
+    # Z0 mode: load from local JSONL when Z0_ENABLED=True and file exists
+    _z0_enabled = bool(getattr(settings, "Z0_ENABLED", False))
+    _z0_path = Path(getattr(settings, "Z0_INPUT_PATH", settings.PROJECT_ROOT / "data/raw/z0/latest.jsonl"))
+    if not Path(_z0_path).is_absolute():
+        _z0_path = Path(settings.PROJECT_ROOT) / _z0_path
+    if _z0_enabled and Path(_z0_path).exists():
+        try:
+            from core.z0_loader import load_z0_items
+            raw_items = load_z0_items(Path(_z0_path))
+            log.info("Z0 mode: loaded %d items from %s", len(raw_items), _z0_path)
+        except Exception as _z0_exc:
+            log.warning("Z0 load failed (%s); falling back to online fetch", _z0_exc)
+            raw_items = fetch_all_feeds()
+    else:
+        raw_items = fetch_all_feeds()
     log.info("Fetched %d total raw items", len(raw_items))
     collector.fetched_total = len(raw_items)
     # fetch_all_feeds() already returns normalized + enrichment-applied items.
