@@ -516,4 +516,41 @@ if (Test-Path $execMetaPath) {
         Write-Host "  exec_selection meta parse error (non-fatal): $_"
     }
 }
+
+# Pipeline Flow Counts (optional — only printed when file exists)
+$flowCountsPath = Join-Path $PSScriptRoot "..\outputs\flow_counts.meta.json"
+if (Test-Path $flowCountsPath) {
+    try {
+        $fc = Get-Content $flowCountsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "PIPELINE FLOW COUNTS:"
+        Write-Host ("  z0_loaded_total            : {0}" -f $fc.z0_loaded_total)
+        Write-Host ("  after_dedupe_total         : {0}" -f $fc.after_dedupe_total)
+        Write-Host ("  after_too_old_filter_total : {0}" -f $fc.after_too_old_filter_total)
+        Write-Host ("  event_gate_pass_total      : {0}" -f $fc.event_gate_pass_total)
+        Write-Host ("  signal_gate_pass_total     : {0}" -f $fc.signal_gate_pass_total)
+        Write-Host ("  exec_candidates_total      : {0}" -f $fc.exec_candidates_total)
+        Write-Host ("  exec_selected_total        : {0}" -f $fc.exec_selected_total)
+        Write-Host ("  extra_cards_total          : {0}" -f $fc.extra_cards_total)
+        if ($fc.drop_reasons_top5) {
+            $drJson = $fc.drop_reasons_top5 | ConvertTo-Json -Compress
+            Write-Host ("  drop_reasons_top5          : {0}" -f $drJson)
+        }
+    } catch {
+        Write-Host "  flow_counts meta parse error (non-fatal): $_"
+    }
+}
+
+# Git sync: show behind/ahead counts; prompt if ahead > 0
+$aheadBehind = (git rev-list --left-right --count "origin/main...HEAD" 2>$null | Out-String).Trim()
+if ($aheadBehind) {
+    $ab = ($aheadBehind -split "\s+")
+    if ($ab.Count -ge 2) {
+        Write-Host ""
+        Write-Host ("Git sync: behind={0} ahead={1}" -f $ab[0], $ab[1])
+        if ([int]$ab[1] -gt 0) {
+            Write-Host "  >> Branch is ahead of origin. Run: git push origin main" -ForegroundColor Yellow
+        }
+    }
+}
 Write-Host "=======================================" -ForegroundColor Cyan

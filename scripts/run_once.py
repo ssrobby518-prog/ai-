@@ -283,6 +283,9 @@ def run_pipeline() -> None:
         "dropped_by_reason": dict(filter_summary.dropped_by_reason),
     }
 
+    # Z0 extra cards pool (B) — built from high-frontier signal_pool items; populated later
+    z0_exec_extra_cards: list[EduNewsCard] = []
+
     all_results: list = []
     digest_path = None
 
@@ -408,6 +411,23 @@ def run_pipeline() -> None:
     collector.stop()
     metrics_path = collector.write_json()
 
+    # (B) Build Z0 extra cards: inject high-frontier signal_pool items into the
+    # executive deck so select_executive_items() has enough candidates to meet
+    # product/tech/business quotas (fixes events_total=1 bottleneck).
+    _z0_exec_min_frontier = int(getattr(settings, "Z0_EXEC_MIN_FRONTIER", 65))
+    _z0_exec_max_extra = int(getattr(settings, "Z0_EXEC_MAX_EXTRA", 50))
+    if _z0_enabled and signal_pool:
+        _frontier_items = sorted(
+            [it for it in signal_pool if int(getattr(it, "z0_frontier_score", 0) or 0) >= _z0_exec_min_frontier],
+            key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0),
+            reverse=True,
+        )[:_z0_exec_max_extra]
+        z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_frontier_items)
+        log.info(
+            "Z0_EXEC_EXTRA: %d items with frontier_score>=%d → %d soft cards for exec deck",
+            len(_frontier_items), _z0_exec_min_frontier, len(z0_exec_extra_cards),
+        )
+
     # Z5: Education Renderer (non-blocking, always runs)
     if settings.EDU_REPORT_ENABLED:
         try:
@@ -456,6 +476,7 @@ def run_pipeline() -> None:
                     metrics=metrics_dict,
                     deep_analysis_text=z5_text,
                     max_items=settings.EDU_REPORT_MAX_ITEMS,
+                    extra_cards=z0_exec_extra_cards or None,
                 )
                 log.info("Executive PPTX generated: %s", pptx_path)
                 log.info("Executive DOCX generated: %s", docx_path)
@@ -475,6 +496,41 @@ def run_pipeline() -> None:
                 log.error("Z5: 連錯誤報告都寫不出來")
     else:
         log.info("Z5: Education report disabled")
+
+    # (A) Write flow_counts.meta.json — pipeline funnel audit for KPI visibility
+    try:
+        import json as _json
+        _too_old = int((filter_summary.dropped_by_reason or {}).get("too_old", 0))
+        _dr_top5 = sorted(
+            (filter_summary.dropped_by_reason or {}).items(),
+            key=lambda kv: kv[1], reverse=True,
+        )[:5]
+        # Try to read exec_selected_total from exec_selection.meta.json (written by Z5)
+        _exec_sel_total = 0
+        _exec_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_selection.meta.json"
+        if _exec_meta_path.exists():
+            try:
+                _exec_sel_data = _json.loads(_exec_meta_path.read_text(encoding="utf-8"))
+                _exec_sel_total = int(_exec_sel_data.get("events_total", 0))
+            except Exception:
+                pass
+        _flow_counts = {
+            "z0_loaded_total": collector.fetched_total,
+            "after_dedupe_total": collector.deduped_total,
+            "after_too_old_filter_total": max(0, collector.deduped_total - _too_old),
+            "event_gate_pass_total": collector.event_gate_pass_total,
+            "signal_gate_pass_total": collector.signal_gate_pass_total,
+            "exec_candidates_total": len(processing_items),
+            "exec_selected_total": _exec_sel_total,
+            "extra_cards_total": len(z0_exec_extra_cards),
+            "drop_reasons_top5": _dr_top5,
+        }
+        _fc_path = Path(settings.PROJECT_ROOT) / "outputs" / "flow_counts.meta.json"
+        _fc_path.parent.mkdir(parents=True, exist_ok=True)
+        _fc_path.write_text(_json.dumps(_flow_counts, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("flow_counts.meta.json written: %s", _fc_path)
+    except Exception as _fc_exc:
+        log.warning("flow_counts.meta.json write failed (non-blocking): %s", _fc_exc)
 
     elapsed = time.time() - t_start
     passed = sum(1 for r in all_results if r.passed_gate)

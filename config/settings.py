@@ -260,3 +260,7 @@ Z0_CONFIG_PATH: Path = _resolve(
     os.getenv("Z0_CONFIG_PATH", ""),
     r".\config\z0_sources.json",
 )
+# Minimum Z0 frontier score for items injected as extra exec-deck cards (B fix)
+Z0_EXEC_MIN_FRONTIER: int = int(os.getenv("Z0_EXEC_MIN_FRONTIER", "65"))
+# Maximum number of Z0 extra cards injected into the executive deck
+Z0_EXEC_MAX_EXTRA: int = int(os.getenv("Z0_EXEC_MAX_EXTRA", "50"))

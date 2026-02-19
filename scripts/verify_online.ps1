@@ -84,13 +84,24 @@ if (Test-Path $metaPath) {
 Write-Output "[2/3] Setting Z0_ENABLED=1 (pipeline will read local JSONL)..."
 $env:Z0_ENABLED = "1"
 
+# (C) Set EXEC KPI gates — enabled by default; override with env vars before calling this script
+if (-not $env:EXEC_MIN_EVENTS)   { $env:EXEC_MIN_EVENTS   = "6" }
+if (-not $env:EXEC_MIN_PRODUCT)  { $env:EXEC_MIN_PRODUCT  = "2" }
+if (-not $env:EXEC_MIN_TECH)     { $env:EXEC_MIN_TECH     = "2" }
+if (-not $env:EXEC_MIN_BUSINESS) { $env:EXEC_MIN_BUSINESS = "2" }
+Write-Output "[verify_online] EXEC KPI gates: MIN_EVENTS=$($env:EXEC_MIN_EVENTS) MIN_PRODUCT=$($env:EXEC_MIN_PRODUCT) MIN_TECH=$($env:EXEC_MIN_TECH) MIN_BUSINESS=$($env:EXEC_MIN_BUSINESS)"
+
 # ---- Step 3: Run verify_run.ps1 ----
 Write-Output "[3/3] Running verify_run.ps1 (offline, reads Z0 JSONL)..."
 Write-Output ""
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1")
 $exitCode = $LASTEXITCODE
 
-$env:Z0_ENABLED = $null
+$env:Z0_ENABLED        = $null
+$env:EXEC_MIN_EVENTS   = $null
+$env:EXEC_MIN_PRODUCT  = $null
+$env:EXEC_MIN_TECH     = $null
+$env:EXEC_MIN_BUSINESS = $null
 
 if ($exitCode -ne 0) {
     Write-Output "[verify_online] verify_run.ps1 FAILED (exit $exitCode)."

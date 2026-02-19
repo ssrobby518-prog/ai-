@@ -1489,10 +1489,15 @@ def generate_executive_reports(
     deep_analysis_text: str | None = None,
     max_items: int = 0,
     project_root: Path | None = None,
+    extra_cards: "list[EduNewsCard] | None" = None,
 ) -> tuple[Path, Path, Path, Path]:
     """Generate all 4 executive output files.
 
     Returns (pptx_path, docx_path, notion_path, xmind_path).
+
+    extra_cards: optional Z0 high-frontier soft cards to inject into the deck
+    so that get_event_cards_for_deck() has enough candidates to meet KPI quotas.
+    Duplicates (by item_id) are silently dropped.
     """
     from core.doc_generator import generate_executive_docx
     from core.notion_generator import generate_notion_page
@@ -1510,6 +1515,20 @@ def generate_executive_reports(
         results=results, report=report, metrics=metrics,
         deep_analysis_text=deep_analysis_text, max_items=max_items,
     )
+
+    # Merge extra Z0 high-frontier cards — dedup by item_id so AI-processed
+    # cards (which may share an id) always take priority.
+    if extra_cards:
+        existing_ids = {str(getattr(c, "item_id", "") or "") for c in cards}
+        merged_count = 0
+        for ec in extra_cards:
+            ec_id = str(getattr(ec, "item_id", "") or "")
+            if not ec_id or ec_id in existing_ids:
+                continue
+            cards.append(ec)
+            existing_ids.add(ec_id)
+            merged_count += 1
+        log.info("Z5: merged %d extra Z0 cards into deck (total cards=%d)", merged_count, len(cards))
 
     try:
         pptx_path = generate_executive_ppt(
