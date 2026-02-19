@@ -488,21 +488,21 @@ def run_pipeline() -> None:
         _z0_inject_after_channel_gate_total = len(_channel_passed)
         _z0_inject_dropped_by_channel_gate = _z0_inject_after_frontier_total - _z0_inject_after_channel_gate_total
 
-        # Step 3: Quota-aware selection (no dev backfill).
+        # Step 3: Supplement selection (no dev backfill).
         # _channel_passed is ordered Track A first (frontier >= 65), Track B last (frontier < 65).
-        # Challenge: naively taking the top max_extra by frontier excludes all Track B items
-        # when Track A alone fills the budget (business=0). But front-loading all Track B items
-        # displaces Track A product/dev diversity (product=0).
-        # Fix: reserve a small, capped number of slots for Track B items (2× business quota=4),
-        # then fill the remaining budget with Track A items (high-quality, diverse channels).
-        _Z0_BIZ_RESERVE = 4  # 2× exec business quota; enough to survive relevance-gate filtering
+        # Strategy: Track A gets its FULL max_extra budget (maintains product/tech/dev diversity),
+        # then Track B (business) items are APPENDED as a supplement (up to _Z0_BIZ_RESERVE).
+        # Rationale: sharing the budget (Track A: max_extra - biz_reserve, Track B: biz_reserve)
+        # displaced the tail Track A product items, yielding product=0/1.  Additive supplement
+        # lets select_executive_items see both the full product/tech set AND business candidates.
+        _Z0_BIZ_RESERVE = 4  # business supplement: 2× exec business quota target
         _track_b_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_b}
         _ch_pass_b = [_it2 for _it2 in _channel_passed
                       if str(getattr(_it2, "item_id", "") or id(_it2)) in _track_b_id_set]
         _ch_pass_a = [_it2 for _it2 in _channel_passed
                       if str(getattr(_it2, "item_id", "") or id(_it2)) not in _track_b_id_set]
-        _biz_slots = min(len(_ch_pass_b), _Z0_BIZ_RESERVE)
-        _selected_items = _ch_pass_b[:_biz_slots] + _ch_pass_a[:_z0_exec_max_extra - _biz_slots]
+        # Track A fills full budget; Track B appended as supplement (total may exceed max_extra)
+        _selected_items = _ch_pass_a[:_z0_exec_max_extra] + _ch_pass_b[:_Z0_BIZ_RESERVE]
         _z0_inject_selected_total = len(_selected_items)
 
         z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)
