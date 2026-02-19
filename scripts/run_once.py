@@ -488,8 +488,18 @@ def run_pipeline() -> None:
         _z0_inject_after_channel_gate_total = len(_channel_passed)
         _z0_inject_dropped_by_channel_gate = _z0_inject_after_frontier_total - _z0_inject_after_channel_gate_total
 
-        # Step 3: take top max_extra (no dev backfill)
-        _selected_items = _channel_passed[:_z0_exec_max_extra]
+        # Step 3: Quota-aware selection (no dev backfill).
+        # _channel_passed is ordered Track A first (frontier >= 65), Track B last (frontier < 65).
+        # Naively taking the top max_extra by frontier would exclude all Track B items when
+        # Track A alone fills the budget — leaving zero business candidates for
+        # select_executive_items().  Fix: put Track B items first so they're always included.
+        _track_b_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_b}
+        _ch_pass_b = [_it2 for _it2 in _channel_passed
+                      if str(getattr(_it2, "item_id", "") or id(_it2)) in _track_b_id_set]
+        _ch_pass_a = [_it2 for _it2 in _channel_passed
+                      if str(getattr(_it2, "item_id", "") or id(_it2)) not in _track_b_id_set]
+        # Track B (business) items come first; Track A fills remaining budget.
+        _selected_items = (_ch_pass_b + _ch_pass_a)[:_z0_exec_max_extra]
         _z0_inject_selected_total = len(_selected_items)
 
         z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)
