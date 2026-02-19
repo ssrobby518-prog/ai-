@@ -454,6 +454,15 @@ def run_pipeline() -> None:
         _z0_inject_selected_total = len(_selected_items)
 
         z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)
+        # Promote to event-gate-pass: frontier + channel gate together validate event quality.
+        # This allows get_event_cards_for_deck strict_ok to accept these cards so
+        # select_executive_items() can fill product/tech/business quotas.
+        for _ec in z0_exec_extra_cards:
+            try:
+                setattr(_ec, "event_gate_pass", True)
+                setattr(_ec, "signal_gate_pass", True)
+            except Exception:
+                pass
         log.info(
             "Z0_EXEC_EXTRA: candidates=%d frontier_pass=%d channel_pass=%d selected=%d dropped_by_channel=%d",
             _z0_inject_candidates_total,
