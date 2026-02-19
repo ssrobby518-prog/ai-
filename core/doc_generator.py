@@ -572,9 +572,14 @@ def _build_recommended_moves(doc: Document, cards: list[EduNewsCard]) -> None:
         p.runs[0].font.size = Pt(11)
         return
 
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_mv
     for act in actions[:6]:
+        detail_text = sanitize(act["detail"])
+        # Guard (D): skip fragment/placeholder detail lines
+        if not detail_text or _is_frag_mv(detail_text):
+            detail_text = "持續監控此事件發展（T+7）"
         lines = [
-            f"{sanitize(act['detail'])}",
+            detail_text,
             f"Owner: {act['owner']}",
         ]
         _add_callout(doc, f"[{act['action_type']}] {act['title']}", lines)

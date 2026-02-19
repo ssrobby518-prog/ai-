@@ -1661,10 +1661,15 @@ def build_ceo_actions(cards: list[EduNewsCard]) -> list[dict]:
             color_tag = "gray"
 
         action_detail = dc["actions"][0] if dc["actions"] else "持續監控此事件發展"
+        action_detail = _clean_text(action_detail, 60)
+        # Guard (D): drop fragment/placeholder detail bullets
+        from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_act
+        if not action_detail or _is_frag_act(action_detail):
+            action_detail = "持續監控此事件發展（T+7）"
         results.append({
             "action_type": action_type,
             "title": _smart_truncate(sanitize(card.title_plain or ""), 25),
-            "detail": _clean_text(action_detail, 60),
+            "detail": action_detail,
             "owner": dc["owner"],
             "color_tag": color_tag,
         })
@@ -3726,7 +3731,14 @@ def get_event_cards_for_deck(
     *,
     min_events: int = 0,
 ) -> list[EduNewsCard]:
-    """Return verifiable event cards, with conservative fallback when strict pool is empty."""
+    """Return verifiable event cards, with conservative fallback when strict pool is empty.
+
+    Applies relevance gate (building/non-AI hard reject) and quota-based
+    topic selection (product/tech/business/dev) before returning the final pool.
+    Writes audit meta to outputs/exec_selection.meta.json as a non-breaking side effect.
+    """
+    from utils.topic_router import is_relevant_ai as _is_relevant_ai
+
     event_cards: list[EduNewsCard] = []
     fallback_candidates: list[tuple[float, EduNewsCard, int, int]] = []
     for card in cards:
@@ -3744,6 +3756,12 @@ def get_event_cards_for_deck(
         )
         entities_count, numbers_count = _v525_count_entities_numbers(payload)
         if _v525_is_placeholder_text(payload):
+            continue
+
+        # Relevance gate (B): hard-reject building/non-AI noise
+        src_url = str(getattr(card, "source_url", "") or "")
+        _relevant, _rej_reasons = _is_relevant_ai(payload, src_url)
+        if not _relevant:
             continue
 
         score = float(getattr(card, "final_score", 0.0) or 0.0)
@@ -3803,7 +3821,14 @@ def get_event_cards_for_deck(
             if len(event_cards) >= min_required:
                 break
 
-    return event_cards
+    # Quota-based topic selection (C) + audit meta write (E)
+    try:
+        selected, sel_meta = select_executive_items(event_cards)
+        write_exec_selection_meta(sel_meta)
+        return selected
+    except Exception:
+        # If quota selection fails for any reason, return unfiltered pool
+        return event_cards
 
 
 def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
@@ -4728,3 +4753,148 @@ def semantic_guard_text(
         f"{title_safe}（{source}，影響評分 {score_val:.1f}/10）。"
         f"建議相關負責人於 T+7 日內評估確認。"
     )
+
+
+# ---------------------------------------------------------------------------
+# Executive selection: quota-based topic routing (B + C)
+# ---------------------------------------------------------------------------
+
+_EXEC_QUOTA: dict[str, int] = {"product": 2, "tech": 2, "business": 2, "dev": 1}
+_EXEC_MAX_TOTAL: int = 12
+_EXEC_SPARSE_THRESHOLD: int = 6
+
+
+def select_executive_items(
+    candidates: list[EduNewsCard],
+) -> tuple[list[EduNewsCard], dict]:
+    """Quota-based selection with relevance gate for executive events.
+
+    Returns (selected_items, selection_meta_dict).
+
+    Flow:
+      1. Classify each candidate via topic_router (channel scores + relevance gate)
+      2. Hard-reject building/non-AI noise
+      3. Bucket candidates by best channel
+      4. Fill quota from each bucket (product>=2, tech>=2, business>=2, dev>=1)
+      5. Backfill with remaining relevant items up to _EXEC_MAX_TOTAL
+      6. If total < _EXEC_SPARSE_THRESHOLD → mark sparse_day=True (WARN-OK)
+    """
+    from utils.topic_router import classify_channels, is_relevant_ai
+
+    quota = dict(_EXEC_QUOTA)
+    buckets: dict[str, list[tuple[float, EduNewsCard]]] = {k: [] for k in quota}
+    rejected_irrelevant: list[EduNewsCard] = []
+    rejected_top_reasons: list[str] = []
+
+    for card in candidates:
+        text = " ".join(filter(None, [
+            str(getattr(card, "title_plain", "") or ""),
+            str(getattr(card, "what_happened", "") or ""),
+            str(getattr(card, "why_important", "") or ""),
+        ]))
+        url = str(getattr(card, "source_url", "") or "")
+
+        relevant, reasons = is_relevant_ai(text, url)
+        if not relevant:
+            rejected_irrelevant.append(card)
+            if reasons:
+                rejected_top_reasons.extend(reasons[:1])
+            continue
+
+        ch = classify_channels(text, url)
+        best = ch["best_channel"]
+        # Combine channel score (primary) + final_score (secondary) for ranking
+        ch_score = max(
+            ch["product_score"], ch["tech_score"],
+            ch["business_score"], ch["dev_score"],
+        )
+        final_s = float(getattr(card, "final_score", 0.0) or 0.0)
+        rank = ch_score * 0.7 + final_s * 3.0
+
+        if best in buckets:
+            buckets[best].append((rank, card))
+        else:
+            buckets["dev"].append((rank, card))
+
+    # Sort each bucket by rank descending
+    for b in buckets:
+        buckets[b].sort(key=lambda x: x[0], reverse=True)
+
+    selected: list[EduNewsCard] = []
+    used_ids: set[str] = set()
+
+    def _add(card: EduNewsCard) -> bool:
+        iid = str(getattr(card, "item_id", "") or id(card))
+        if iid in used_ids:
+            return False
+        selected.append(card)
+        used_ids.add(iid)
+        return True
+
+    # First pass: quota fill per bucket
+    for bucket, target in quota.items():
+        filled = 0
+        for _rank, card in buckets[bucket]:
+            if filled >= target:
+                break
+            if _add(card):
+                filled += 1
+
+    # Second pass: backfill with remaining ranked candidates
+    all_remaining: list[tuple[float, EduNewsCard]] = []
+    for b in buckets:
+        for rank, card in buckets[b]:
+            iid = str(getattr(card, "item_id", "") or id(card))
+            if iid not in used_ids:
+                all_remaining.append((rank, card))
+    all_remaining.sort(key=lambda x: x[0], reverse=True)
+    for _rank, card in all_remaining:
+        if len(selected) >= _EXEC_MAX_TOTAL:
+            break
+        _add(card)
+
+    # Compute per-bucket count on selected items
+    by_bucket: dict[str, int] = {k: 0 for k in quota}
+    for card in selected:
+        text = " ".join(filter(None, [
+            str(getattr(card, "title_plain", "") or ""),
+            str(getattr(card, "what_happened", "") or ""),
+        ]))
+        url = str(getattr(card, "source_url", "") or "")
+        ch = classify_channels(text, url)
+        b = ch["best_channel"]
+        if b in by_bucket:
+            by_bucket[b] += 1
+        else:
+            by_bucket["dev"] += 1
+
+    quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
+    sparse_day = len(selected) < _EXEC_SPARSE_THRESHOLD
+
+    selection_meta: dict = {
+        "events_total": len(selected),
+        "events_by_bucket": dict(by_bucket),
+        "rejected_irrelevant_count": len(rejected_irrelevant),
+        "rejected_top_reasons": list(dict.fromkeys(rejected_top_reasons))[:5],
+        "quota_target": dict(quota),
+        "quota_pass": quota_pass,
+        "sparse_day": sparse_day,
+    }
+    return selected, selection_meta
+
+
+def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) -> None:
+    """Write exec_selection.meta.json to outputs/ — non-breaking side effect."""
+    import json
+    from pathlib import Path
+
+    try:
+        root = project_root or Path(__file__).resolve().parent.parent
+        out_dir = root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "exec_selection.meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # audit write must never break the pipeline

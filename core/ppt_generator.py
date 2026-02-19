@@ -804,8 +804,14 @@ def _slide_recommended_moves(prs: Presentation, cards: list[EduNewsCard]) -> Non
                      color=TEXT_WHITE)
         return
 
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_ppt
     for act in actions[:6]:
         tag_color = type_colors.get(act["action_type"], SUBTLE_GRAY)
+
+        # Guard (D): replace fragment detail with safe fallback
+        detail_text = act["detail"]
+        if not detail_text or _is_frag_ppt(detail_text):
+            detail_text = "持續監控此事件發展（T+7）"
 
         # Action type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(4), Cm(0.9),
@@ -816,7 +822,7 @@ def _slide_recommended_moves(prs: Presentation, cards: list[EduNewsCard]) -> Non
                      act["title"], font_size=12, color=TEXT_WHITE)
         # Detail
         _add_textbox(slide, Cm(6.5), Cm(y + 0.8), Cm(20), Cm(0.7),
-                     act["detail"], font_size=10, color=SUBTLE_GRAY)
+                     detail_text, font_size=10, color=SUBTLE_GRAY)
         # Owner
         _add_textbox(slide, Cm(27), Cm(y), Cm(5), Cm(0.9),
                      act["owner"], font_size=10, color=SUBTLE_GRAY,

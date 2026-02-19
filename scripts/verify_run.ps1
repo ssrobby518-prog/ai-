@@ -455,4 +455,65 @@ if (Test-Path $z0MetaPath) {
         Write-Host "  Z0 meta parse error (non-fatal): $_"
     }
 }
+
+# Executive Selection Meta Evidence (optional - only printed when file exists)
+$execMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_selection.meta.json"
+if (Test-Path $execMetaPath) {
+    try {
+        $execMeta = Get-Content $execMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "EXECUTIVE SELECTION EVIDENCE:"
+        Write-Host ("  events_total              : {0}" -f $execMeta.events_total)
+        if ($execMeta.PSObject.Properties['events_by_bucket']) {
+            $bucketJson = $execMeta.events_by_bucket | ConvertTo-Json -Compress
+            Write-Host ("  events_by_bucket          : {0}" -f $bucketJson)
+        }
+        Write-Host ("  rejected_irrelevant_count : {0}" -f $execMeta.rejected_irrelevant_count)
+        if ($execMeta.PSObject.Properties['rejected_top_reasons'] -and $execMeta.rejected_top_reasons) {
+            Write-Host ("  rejected_top_reasons      : {0}" -f ($execMeta.rejected_top_reasons -join "; "))
+        }
+        Write-Host ("  quota_pass                : {0}" -f $execMeta.quota_pass)
+        Write-Host ("  sparse_day                : {0}" -f $execMeta.sparse_day)
+        if ($execMeta.PSObject.Properties['quota_target']) {
+            $qtJson = $execMeta.quota_target | ConvertTo-Json -Compress
+            Write-Host ("  quota_target              : {0}" -f $qtJson)
+        }
+        # Optional ENV gates
+        if ($env:EXEC_MIN_EVENTS) {
+            $minEv = [int]$env:EXEC_MIN_EVENTS
+            $actualEv = [int]$execMeta.events_total
+            if ($actualEv -lt $minEv) {
+                Write-Host ("EXEC GATE FAIL: events_total={0} < required={1}" -f $actualEv, $minEv)
+                exit 1
+            }
+            Write-Host ("  EXEC gate OK: events_total={0} >= {1}" -f $actualEv, $minEv)
+        }
+        if ($env:EXEC_MIN_PRODUCT) {
+            $minP = [int]$env:EXEC_MIN_PRODUCT
+            $actP = if ($execMeta.events_by_bucket.PSObject.Properties['product']) { [int]$execMeta.events_by_bucket.product } else { 0 }
+            if ($actP -lt $minP) {
+                Write-Host ("EXEC GATE FAIL: product={0} < required={1}" -f $actP, $minP)
+                exit 1
+            }
+        }
+        if ($env:EXEC_MIN_TECH) {
+            $minT = [int]$env:EXEC_MIN_TECH
+            $actT = if ($execMeta.events_by_bucket.PSObject.Properties['tech']) { [int]$execMeta.events_by_bucket.tech } else { 0 }
+            if ($actT -lt $minT) {
+                Write-Host ("EXEC GATE FAIL: tech={0} < required={1}" -f $actT, $minT)
+                exit 1
+            }
+        }
+        if ($env:EXEC_MIN_BUSINESS) {
+            $minB = [int]$env:EXEC_MIN_BUSINESS
+            $actB = if ($execMeta.events_by_bucket.PSObject.Properties['business']) { [int]$execMeta.events_by_bucket.business } else { 0 }
+            if ($actB -lt $minB) {
+                Write-Host ("EXEC GATE FAIL: business={0} < required={1}" -f $actB, $minB)
+                exit 1
+            }
+        }
+    } catch {
+        Write-Host "  exec_selection meta parse error (non-fatal): $_"
+    }
+}
 Write-Host "=======================================" -ForegroundColor Cyan
