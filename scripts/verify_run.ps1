@@ -401,17 +401,24 @@ if (Test-Path $z0MetaPath) {
         $z0Meta = Get-Content $z0MetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Write-Host ""
         Write-Host "Z0 COLLECTOR EVIDENCE:"
-        Write-Host ("  collected_at   : {0}" -f $z0Meta.collected_at)
-        Write-Host ("  total_items    : {0}" -f $z0Meta.total_items)
-        Write-Host ("  frontier_ge_70 : {0}" -f $z0Meta.frontier_ge_70)
-        Write-Host ("  frontier_ge_85 : {0}" -f $z0Meta.frontier_ge_85)
+        Write-Host ("  collected_at      : {0}" -f $z0Meta.collected_at)
+        Write-Host ("  total_items       : {0}" -f $z0Meta.total_items)
+        Write-Host ("  frontier_ge_70    : {0}" -f $z0Meta.frontier_ge_70)
+        Write-Host ("  frontier_ge_85    : {0}" -f $z0Meta.frontier_ge_85)
+        # New 72h granular stats (present in updated collector)
+        if ($z0Meta.PSObject.Properties['frontier_ge_70_72h']) {
+            Write-Host ("  frontier_ge_70_72h: {0}" -f $z0Meta.frontier_ge_70_72h)
+        }
+        if ($z0Meta.PSObject.Properties['frontier_ge_85_72h']) {
+            Write-Host ("  frontier_ge_85_72h: {0}" -f $z0Meta.frontier_ge_85_72h)
+        }
         if ($z0Meta.by_platform) {
             Write-Host "  by_platform:"
             $z0Meta.by_platform.PSObject.Properties | Sort-Object Value -Descending | ForEach-Object {
                 Write-Host ("    {0}: {1}" -f $_.Name, $_.Value)
             }
         }
-        # Optional gate: Z0_MIN_FRONTIER85 (e.g. set $env:Z0_MIN_FRONTIER85=5)
+        # Optional gate: Z0_MIN_FRONTIER85 (checks total; e.g. set $env:Z0_MIN_FRONTIER85=5)
         if ($env:Z0_MIN_FRONTIER85) {
             $minF85 = [int]$env:Z0_MIN_FRONTIER85
             if ($z0Meta.frontier_ge_85 -lt $minF85) {
@@ -419,6 +426,16 @@ if (Test-Path $z0MetaPath) {
                 exit 1
             }
             Write-Host ("  Z0 gate OK: frontier_ge_85={0} >= {1}" -f $z0Meta.frontier_ge_85, $minF85)
+        }
+        # Optional gate: Z0_MIN_FRONTIER85_72H (checks 72h window; e.g. set $env:Z0_MIN_FRONTIER85_72H=3)
+        if ($env:Z0_MIN_FRONTIER85_72H) {
+            $minF85_72h = [int]$env:Z0_MIN_FRONTIER85_72H
+            $actual72h = if ($z0Meta.PSObject.Properties['frontier_ge_85_72h']) { [int]$z0Meta.frontier_ge_85_72h } else { 0 }
+            if ($actual72h -lt $minF85_72h) {
+                Write-Host ("Z0 GATE FAIL: frontier_ge_85_72h={0} < required={1}" -f $actual72h, $minF85_72h)
+                exit 1
+            }
+            Write-Host ("  Z0 gate OK: frontier_ge_85_72h={0} >= {1}" -f $actual72h, $minF85_72h)
         }
     } catch {
         Write-Host "  Z0 meta parse error (non-fatal): $_"

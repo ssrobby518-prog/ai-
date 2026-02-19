@@ -32,10 +32,16 @@ $metaPath = Join-Path $repoRoot "data\raw\z0\latest.meta.json"
 if (Test-Path $metaPath) {
     $meta = Get-Content $metaPath -Raw | ConvertFrom-Json
     Write-Output "Z0 COLLECTOR EVIDENCE:"
-    Write-Output "  collected_at  : $($meta.collected_at)"
-    Write-Output "  total_items   : $($meta.total_items)"
-    Write-Output "  frontier_ge_70: $($meta.frontier_ge_70)"
-    Write-Output "  frontier_ge_85: $($meta.frontier_ge_85)"
+    Write-Output "  collected_at      : $($meta.collected_at)"
+    Write-Output "  total_items       : $($meta.total_items)"
+    Write-Output "  frontier_ge_70    : $($meta.frontier_ge_70)"
+    Write-Output "  frontier_ge_85    : $($meta.frontier_ge_85)"
+    if ($meta.PSObject.Properties['frontier_ge_70_72h']) {
+        Write-Output "  frontier_ge_70_72h: $($meta.frontier_ge_70_72h)"
+    }
+    if ($meta.PSObject.Properties['frontier_ge_85_72h']) {
+        Write-Output "  frontier_ge_85_72h: $($meta.frontier_ge_85_72h)"
+    }
     Write-Output "  by_platform:"
     if ($meta.by_platform) {
         $meta.by_platform.PSObject.Properties | Sort-Object Value -Descending | ForEach-Object {
@@ -44,7 +50,7 @@ if (Test-Path $metaPath) {
     }
     Write-Output ""
 
-    # Optional Z0 gate
+    # Optional Z0 gate: total frontier_ge_85
     if ($env:Z0_MIN_FRONTIER85) {
         $minF85 = [int]$env:Z0_MIN_FRONTIER85
         if ($meta.frontier_ge_85 -lt $minF85) {
@@ -52,6 +58,16 @@ if (Test-Path $metaPath) {
             exit 1
         }
         Write-Output "[verify_online] Z0 gate OK: frontier_ge_85=$($meta.frontier_ge_85) >= $minF85"
+    }
+    # Optional Z0 gate: 72h window frontier_ge_85
+    if ($env:Z0_MIN_FRONTIER85_72H) {
+        $minF85_72h = [int]$env:Z0_MIN_FRONTIER85_72H
+        $actual72h = if ($meta.PSObject.Properties['frontier_ge_85_72h']) { [int]$meta.frontier_ge_85_72h } else { 0 }
+        if ($actual72h -lt $minF85_72h) {
+            Write-Output "[verify_online] Z0 GATE FAIL: frontier_ge_85_72h=$actual72h < required=$minF85_72h"
+            exit 1
+        }
+        Write-Output "[verify_online] Z0 gate OK: frontier_ge_85_72h=$actual72h >= $minF85_72h"
     }
 }
 
