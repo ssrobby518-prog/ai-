@@ -449,15 +449,20 @@ def run_pipeline() -> None:
                 _track_a_ids.add(_iid)
                 _track_a.append(_it)
 
-        # Track B: business-relaxed frontier (lower threshold, best_channel=="business" only)
+        # Track B: business-relaxed frontier — search FULL deduped pool (not just signal_pool).
+        # Rationale: google_news business articles typically have short RSS summaries
+        # (<300 chars) that fail the body-length signal gate, so they never reach
+        # signal_pool.  deduped contains all z0 items that survived DB dedup, including
+        # those filtered for body_too_short, and all items have z0_frontier_score set.
         _track_b: list = []
-        for _it in signal_pool:
+        _z0_deduped_biz_pool = deduped  # all z0 items after DB dedup
+        for _it in _z0_deduped_biz_pool:
             _fs = int(getattr(_it, "z0_frontier_score", 0) or 0)
+            if _fs < _z0_exec_min_frontier_biz:
+                continue  # below relaxed threshold
             _iid = str(getattr(_it, "item_id", "") or id(_it))
             if _iid in _track_a_ids:
                 continue  # already in Track A
-            if _fs < _z0_exec_min_frontier_biz:
-                continue  # below relaxed threshold
             _text = f"{getattr(_it, 'title', '') or ''} {getattr(_it, 'body', '') or ''}"
             _url = str(getattr(_it, "url", "") or "")
             _ch_b = _classify_channels(_text, _url)
