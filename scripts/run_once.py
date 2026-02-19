@@ -414,8 +414,16 @@ def run_pipeline() -> None:
     # (B) Build Z0 extra cards: inject high-frontier signal_pool items into the
     # executive deck so select_executive_items() has enough candidates to meet
     # product/tech/business quotas (fixes events_total=1 bottleneck).
-    # Channel gate added: only inject product/tech/business content; dev commentary excluded.
+    # Two-track channel gate:
+    #   Track A (standard): frontier >= Z0_EXEC_MIN_FRONTIER (65) — any channel
+    #   Track B (business-relaxed): frontier >= Z0_EXEC_MIN_FRONTIER_BIZ (45)
+    #           — only when best_channel=="business" AND business_score >= threshold
+    #     Rationale: business news from aggregators (google_news) gets +4 platform
+    #     bonus vs +20 for official feeds, so fresh funding/M&A articles cap out at
+    #     ~64 frontier and are silently excluded by Track A alone.  Track B ensures
+    #     the business quota in select_executive_items() can be filled reliably.
     _z0_exec_min_frontier = int(getattr(settings, "Z0_EXEC_MIN_FRONTIER", 65))
+    _z0_exec_min_frontier_biz = int(getattr(settings, "Z0_EXEC_MIN_FRONTIER_BIZ", 45))
     _z0_exec_max_extra = int(getattr(settings, "Z0_EXEC_MAX_EXTRA", 50))
     _z0_exec_min_channel = int(getattr(settings, "Z0_EXEC_MIN_CHANNEL", 55))
     # Audit counters — written to z0_injection.meta.json at end of block
@@ -430,15 +438,41 @@ def run_pipeline() -> None:
 
         _z0_inject_candidates_total = len(signal_pool)
 
-        # Step 1: frontier filter (full sorted list, no top-N slice yet)
-        _frontier_pool = sorted(
-            [it for it in signal_pool if int(getattr(it, "z0_frontier_score", 0) or 0) >= _z0_exec_min_frontier],
-            key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0),
-            reverse=True,
-        )
+        # Step 1: Two-track frontier pool construction
+        # Track A: any channel, strict frontier
+        _track_a_ids: set[str] = set()
+        _track_a: list = []
+        for _it in signal_pool:
+            _fs = int(getattr(_it, "z0_frontier_score", 0) or 0)
+            if _fs >= _z0_exec_min_frontier:
+                _iid = str(getattr(_it, "item_id", "") or id(_it))
+                _track_a_ids.add(_iid)
+                _track_a.append(_it)
+
+        # Track B: business-relaxed frontier (lower threshold, best_channel=="business" only)
+        _track_b: list = []
+        for _it in signal_pool:
+            _fs = int(getattr(_it, "z0_frontier_score", 0) or 0)
+            _iid = str(getattr(_it, "item_id", "") or id(_it))
+            if _iid in _track_a_ids:
+                continue  # already in Track A
+            if _fs < _z0_exec_min_frontier_biz:
+                continue  # below relaxed threshold
+            _text = f"{getattr(_it, 'title', '') or ''} {getattr(_it, 'body', '') or ''}"
+            _url = str(getattr(_it, "url", "") or "")
+            _ch_b = _classify_channels(_text, _url)
+            if _ch_b["best_channel"] == "business" and _ch_b["business_score"] >= _z0_exec_min_channel:
+                _track_b.append(_it)
+
+        # Merge tracks: sort each by frontier descending, Track A first (higher quality)
+        _track_a.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+        _track_b.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+        _frontier_pool = _track_a + _track_b
         _z0_inject_after_frontier_total = len(_frontier_pool)
 
         # Step 2: channel gate — max(product, tech, business) >= threshold; dev excluded
+        # Track B items already satisfy business_score >= threshold but we run the same
+        # gate for consistency (they will pass).
         def _passes_channel_gate(it) -> bool:
             text = f"{getattr(it, 'title', '') or ''} {getattr(it, 'body', '') or ''}"
             url = str(getattr(it, "url", "") or "")

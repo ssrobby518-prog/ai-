@@ -268,3 +268,11 @@ Z0_EXEC_MAX_EXTRA: int = int(os.getenv("Z0_EXEC_MAX_EXTRA", "50"))
 # Only items where max(product_score, tech_score, business_score) >= this threshold
 # are injected; prevents dev-commentary / vague-opinion dilution.
 Z0_EXEC_MIN_CHANNEL: int = int(os.getenv("Z0_EXEC_MIN_CHANNEL", "55"))
+# Relaxed frontier threshold for business-best-channel items.
+# Business news from aggregators (e.g. google_news) gets lower platform bonuses
+# (+4) than official feeds (+20), so frontier < 65 is common even for fresh, high-
+# quality funding/M&A articles.  Track B admits items with frontier >= this value
+# when classify_channels() returns best_channel=="business" AND business_score >=
+# Z0_EXEC_MIN_CHANNEL.  Defaults to 45 (allows articles up to ~72 h old from
+# aggregator sources while the standard Track A still requires frontier >= 65).
+Z0_EXEC_MIN_FRONTIER_BIZ: int = int(os.getenv("Z0_EXEC_MIN_FRONTIER_BIZ", "45"))

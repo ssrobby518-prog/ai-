@@ -126,18 +126,44 @@ class _MockItem:
 def _simulate_injection_gate(
     items: list,
     frontier_min: int = 65,
+    frontier_min_biz: int = 45,
     channel_min: int = 55,
     max_extra: int = 50,
 ) -> dict:
-    """Replicate the run_once.py Z0 injection gate logic and return audit counts."""
+    """Replicate the run_once.py Z0 injection gate logic (two-track) and return audit counts.
+
+    Track A (standard): frontier >= frontier_min — any channel
+    Track B (business-relaxed): frontier >= frontier_min_biz AND best_channel=="business"
+                                 AND business_score >= channel_min
+    """
     candidates_total = len(items)
 
-    # Frontier filter (sorted descending, no top-N yet)
-    frontier_passed = sorted(
-        [it for it in items if int(getattr(it, "z0_frontier_score", 0) or 0) >= frontier_min],
-        key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0),
-        reverse=True,
-    )
+    # Track A: standard frontier (any channel)
+    track_a_ids: set[str] = set()
+    track_a: list = []
+    for it in items:
+        fs = int(getattr(it, "z0_frontier_score", 0) or 0)
+        if fs >= frontier_min:
+            iid = str(getattr(it, "item_id", "") or id(it))
+            track_a_ids.add(iid)
+            track_a.append(it)
+
+    # Track B: business-relaxed frontier
+    track_b: list = []
+    for it in items:
+        fs = int(getattr(it, "z0_frontier_score", 0) or 0)
+        iid = str(getattr(it, "item_id", "") or id(it))
+        if iid in track_a_ids or fs < frontier_min_biz:
+            continue
+        text = f"{getattr(it, 'title', '') or ''} {getattr(it, 'body', '') or ''}"
+        url = str(getattr(it, "url", "") or "")
+        ch = classify_channels(text, url)
+        if ch["best_channel"] == "business" and ch["business_score"] >= channel_min:
+            track_b.append(it)
+
+    track_a.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+    track_b.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+    frontier_passed = track_a + track_b
     after_frontier_total = len(frontier_passed)
 
     # Channel gate: max(product, tech, business) >= threshold
@@ -266,3 +292,76 @@ class TestMetaFieldsPresent:
         assert meta["z0_inject_after_channel_gate_total"] == 0
         assert meta["z0_inject_selected_total"] == 0
         assert meta["z0_inject_dropped_by_channel_gate"] == 0
+
+
+# ---------------------------------------------------------------------------
+# TestBusinessRelaxedTrack — Track B (frontier >= 45, best_channel == "business")
+# ---------------------------------------------------------------------------
+
+
+class TestBusinessRelaxedTrack:
+    """Track B: business articles with frontier 45-64 pass via the relaxed gate."""
+
+    def _biz_item(self, frontier: int) -> _MockItem:
+        """A pure business-best_channel item at the given frontier score."""
+        return _MockItem(
+            title="AI startup raises $200M Series C funding round from investors",
+            body=(
+                "The company closed a $200M Series C led by top investors, "
+                "pushing the valuation to $2B.  ARR has grown 3× year-over-year. "
+                "CEO announced expansion into enterprise customer markets."
+            ),
+            url="https://news.google.com/articles/ai-startup-series-c",
+            frontier_score=frontier,
+        )
+
+    def test_business_item_at_frontier_60_passes_track_b(self):
+        """frontier=60 < 65 (Track A) but >= 45 (Track B) — should be admitted."""
+        item = self._biz_item(frontier=60)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] >= 1, (
+            "Business item with frontier=60 should pass via Track B"
+        )
+
+    def test_business_item_at_frontier_45_passes_track_b(self):
+        """frontier exactly at Track B threshold should be admitted."""
+        item = self._biz_item(frontier=45)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] >= 1, (
+            "Business item with frontier=45 should pass via Track B"
+        )
+
+    def test_business_item_below_biz_threshold_rejected(self):
+        """frontier=44 < 45 (Track B) — should be rejected even if best_channel=business."""
+        item = self._biz_item(frontier=44)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] == 0, (
+            "Business item with frontier=44 < frontier_min_biz=45 must be rejected"
+        )
+
+    def test_non_business_item_at_frontier_60_rejected_by_track_a(self):
+        """frontier=60 with best_channel=tech (not business) must NOT pass Track B."""
+        tech_item = _MockItem(
+            title="New LLM benchmark: MMLU 90% on 70B model weights checkpoint",
+            body=(
+                "Researchers release model weights and arXiv paper. "
+                "Benchmark suite shows 90% on MMLU with 70B parameter architecture. "
+                "Fine-tuning recipe and inference latency results included."
+            ),
+            url="https://arxiv.org/abs/2402.12345",
+            frontier_score=60,
+        )
+        meta = _simulate_injection_gate([tech_item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        # tech_item has frontier=60 (Track A needs 65, so fails Track A).
+        # classify_channels should return best_channel=tech, NOT business → fails Track B.
+        assert meta["z0_inject_selected_total"] == 0, (
+            "Tech item with frontier=60 should NOT pass Track B (Track B is business-only)"
+        )
+
+    def test_business_track_b_item_counted_in_after_frontier_total(self):
+        """Items admitted via Track B must be counted in z0_inject_after_frontier_total."""
+        item = self._biz_item(frontier=55)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_after_frontier_total"] >= 1, (
+            "Track B item should be included in z0_inject_after_frontier_total"
+        )
