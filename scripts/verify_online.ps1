@@ -108,5 +108,23 @@ if ($exitCode -ne 0) {
     exit $exitCode
 }
 
+# Z0 Injection Gate Evidence (printed after pipeline run writes the file)
+$z0InjMetaOnlinePath = Join-Path $repoRoot "outputs\z0_injection.meta.json"
+if (Test-Path $z0InjMetaOnlinePath) {
+    try {
+        $z0InjOnline = Get-Content $z0InjMetaOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Output ""
+        Write-Output "Z0 INJECTION GATE EVIDENCE:"
+        Write-Output ("  z0_inject_candidates_total        : {0}" -f $z0InjOnline.z0_inject_candidates_total)
+        Write-Output ("  z0_inject_after_frontier_total    : {0}" -f $z0InjOnline.z0_inject_after_frontier_total)
+        Write-Output ("  z0_inject_after_channel_gate_total: {0}" -f $z0InjOnline.z0_inject_after_channel_gate_total)
+        Write-Output ("  z0_inject_selected_total          : {0}" -f $z0InjOnline.z0_inject_selected_total)
+        Write-Output ("  z0_inject_dropped_by_channel_gate : {0}" -f $z0InjOnline.z0_inject_dropped_by_channel_gate)
+        Write-Output ("  z0_inject_channel_gate_threshold  : {0}" -f $z0InjOnline.z0_inject_channel_gate_threshold)
+    } catch {
+        Write-Output "  z0_injection meta parse error (non-fatal): $_"
+    }
+}
+
 Write-Output ""
 Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="

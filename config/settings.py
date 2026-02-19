@@ -264,3 +264,7 @@ Z0_CONFIG_PATH: Path = _resolve(
 Z0_EXEC_MIN_FRONTIER: int = int(os.getenv("Z0_EXEC_MIN_FRONTIER", "65"))
 # Maximum number of Z0 extra cards injected into the executive deck
 Z0_EXEC_MAX_EXTRA: int = int(os.getenv("Z0_EXEC_MAX_EXTRA", "50"))
+# Minimum topic-router channel score for Z0 extra card injection channel gate.
+# Only items where max(product_score, tech_score, business_score) >= this threshold
+# are injected; prevents dev-commentary / vague-opinion dilution.
+Z0_EXEC_MIN_CHANNEL: int = int(os.getenv("Z0_EXEC_MIN_CHANNEL", "55"))

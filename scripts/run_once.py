@@ -414,19 +414,74 @@ def run_pipeline() -> None:
     # (B) Build Z0 extra cards: inject high-frontier signal_pool items into the
     # executive deck so select_executive_items() has enough candidates to meet
     # product/tech/business quotas (fixes events_total=1 bottleneck).
+    # Channel gate added: only inject product/tech/business content; dev commentary excluded.
     _z0_exec_min_frontier = int(getattr(settings, "Z0_EXEC_MIN_FRONTIER", 65))
     _z0_exec_max_extra = int(getattr(settings, "Z0_EXEC_MAX_EXTRA", 50))
+    _z0_exec_min_channel = int(getattr(settings, "Z0_EXEC_MIN_CHANNEL", 55))
+    # Audit counters — written to z0_injection.meta.json at end of block
+    _z0_inject_candidates_total = 0
+    _z0_inject_after_frontier_total = 0
+    _z0_inject_after_channel_gate_total = 0
+    _z0_inject_selected_total = 0
+    _z0_inject_dropped_by_channel_gate = 0
+
     if _z0_enabled and signal_pool:
-        _frontier_items = sorted(
+        from utils.topic_router import classify_channels as _classify_channels
+
+        _z0_inject_candidates_total = len(signal_pool)
+
+        # Step 1: frontier filter (full sorted list, no top-N slice yet)
+        _frontier_pool = sorted(
             [it for it in signal_pool if int(getattr(it, "z0_frontier_score", 0) or 0) >= _z0_exec_min_frontier],
             key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0),
             reverse=True,
-        )[:_z0_exec_max_extra]
-        z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_frontier_items)
-        log.info(
-            "Z0_EXEC_EXTRA: %d items with frontier_score>=%d → %d soft cards for exec deck",
-            len(_frontier_items), _z0_exec_min_frontier, len(z0_exec_extra_cards),
         )
+        _z0_inject_after_frontier_total = len(_frontier_pool)
+
+        # Step 2: channel gate — max(product, tech, business) >= threshold; dev excluded
+        def _passes_channel_gate(it) -> bool:
+            text = f"{getattr(it, 'title', '') or ''} {getattr(it, 'body', '') or ''}"
+            url = str(getattr(it, "url", "") or "")
+            ch = _classify_channels(text, url)
+            return max(ch["product_score"], ch["tech_score"], ch["business_score"]) >= _z0_exec_min_channel
+
+        _channel_passed = [it for it in _frontier_pool if _passes_channel_gate(it)]
+        _z0_inject_after_channel_gate_total = len(_channel_passed)
+        _z0_inject_dropped_by_channel_gate = _z0_inject_after_frontier_total - _z0_inject_after_channel_gate_total
+
+        # Step 3: take top max_extra (no dev backfill)
+        _selected_items = _channel_passed[:_z0_exec_max_extra]
+        _z0_inject_selected_total = len(_selected_items)
+
+        z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)
+        log.info(
+            "Z0_EXEC_EXTRA: candidates=%d frontier_pass=%d channel_pass=%d selected=%d dropped_by_channel=%d",
+            _z0_inject_candidates_total,
+            _z0_inject_after_frontier_total,
+            _z0_inject_after_channel_gate_total,
+            _z0_inject_selected_total,
+            _z0_inject_dropped_by_channel_gate,
+        )
+
+    # Write Z0 injection audit meta (always — even when Z0 is disabled / no signal_pool)
+    try:
+        import json as _z0_inj_json
+        _z0_inj_meta = {
+            "z0_inject_candidates_total": _z0_inject_candidates_total,
+            "z0_inject_after_frontier_total": _z0_inject_after_frontier_total,
+            "z0_inject_after_channel_gate_total": _z0_inject_after_channel_gate_total,
+            "z0_inject_selected_total": _z0_inject_selected_total,
+            "z0_inject_dropped_by_channel_gate": _z0_inject_dropped_by_channel_gate,
+            "z0_inject_channel_gate_threshold": _z0_exec_min_channel,
+        }
+        _z0_inj_path = Path(settings.PROJECT_ROOT) / "outputs" / "z0_injection.meta.json"
+        _z0_inj_path.parent.mkdir(parents=True, exist_ok=True)
+        _z0_inj_path.write_text(
+            _z0_inj_json.dumps(_z0_inj_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        log.info("z0_injection.meta.json written: %s", _z0_inj_path)
+    except Exception as _z0_inj_exc:
+        log.warning("z0_injection.meta.json write failed (non-blocking): %s", _z0_inj_exc)
 
     # Z5: Education Renderer (non-blocking, always runs)
     if settings.EDU_REPORT_ENABLED:

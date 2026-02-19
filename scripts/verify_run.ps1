@@ -541,6 +541,24 @@ if (Test-Path $flowCountsPath) {
     }
 }
 
+# Z0 Injection Gate Evidence (optional -- only printed when file exists)
+$z0InjMetaPath = Join-Path $PSScriptRoot "..\outputs\z0_injection.meta.json"
+if (Test-Path $z0InjMetaPath) {
+    try {
+        $z0Inj = Get-Content $z0InjMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "Z0 INJECTION GATE EVIDENCE:"
+        Write-Host ("  z0_inject_candidates_total        : {0}" -f $z0Inj.z0_inject_candidates_total)
+        Write-Host ("  z0_inject_after_frontier_total    : {0}" -f $z0Inj.z0_inject_after_frontier_total)
+        Write-Host ("  z0_inject_after_channel_gate_total: {0}" -f $z0Inj.z0_inject_after_channel_gate_total)
+        Write-Host ("  z0_inject_selected_total          : {0}" -f $z0Inj.z0_inject_selected_total)
+        Write-Host ("  z0_inject_dropped_by_channel_gate : {0}" -f $z0Inj.z0_inject_dropped_by_channel_gate)
+        Write-Host ("  z0_inject_channel_gate_threshold  : {0}" -f $z0Inj.z0_inject_channel_gate_threshold)
+    } catch {
+        Write-Host "  z0_injection meta parse error (non-fatal): $_"
+    }
+}
+
 # Git sync: show behind/ahead counts; prompt if ahead > 0
 $aheadBehind = (git rev-list --left-right --count "origin/main...HEAD" 2>$null | Out-String).Trim()
 if ($aheadBehind) {
