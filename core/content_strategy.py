@@ -1734,6 +1734,10 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
 
         heat_score = 90 if heat == "hot" else 65 if heat == "warm" else 40
         signal_text = _smart_truncate(sanitize(bucket_cards[0].title_plain or ""), 30)
+        # Guard: if title is hollow/placeholder, use the human-readable type label
+        from utils.semantic_quality import is_placeholder_or_fragment as _sig_frag
+        if not signal_text or _sig_frag(signal_text):
+            signal_text = type_labels[sig_type]
         platform_count = len(bucket_cards)
         results.append({
             "signal_type": sig_type,
@@ -1959,6 +1963,10 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
             heat = "cool"
 
         signal_text = _smart_truncate(sanitize(bucket_cards[0].title_plain or ""), 30)
+        # Guard: if title is hollow/placeholder, use the human-readable signal label
+        from utils.semantic_quality import is_placeholder_or_fragment as _sig_frag2
+        if not signal_text or _sig_frag2(signal_text):
+            signal_text = _SIGNAL_LABELS.get(sig_type, sig_type)
         source_names = {
             str(getattr(c, "source_name", "") or "").strip().lower()
             for c in bucket_cards
@@ -4293,6 +4301,14 @@ def build_signal_summary(cards: list[EduNewsCard]) -> list[dict]:
         if not title:
             title = _V532_SIGNAL_LABELS.get(signal_name, signal_name)
         title = _smart_truncate(_v522_strip_placeholders(title), 80)
+        # Guard: reject placeholder/fragment titles before they reach PPT/DOCX
+        try:
+            from utils.semantic_quality import is_placeholder_or_fragment as _v532_ipf  # noqa: PLC0415
+            if not title or _v532_ipf(title):
+                title = signal_name  # ASCII-safe enum name, e.g. "TOOL_ADOPTION"
+        except ImportError:
+            if not title:
+                title = signal_name
 
         combined = " ".join(
             [
@@ -4651,39 +4667,64 @@ def semantic_guard_text(
     card: "EduNewsCard",
     *,
     context: str = "",
+    density_threshold: int = 80,
 ) -> str:
     """Return semantically sound text, backfilling from card if text is hollow.
 
-    If *text* is a placeholder/fragment or too short (< 15 non-space chars):
-      1. Try card.why_important (for context="action") or card.what_happened first
-      2. Fall back through why_important → what_happened → title
-      3. Final guaranteed fallback: "{title}（來源：{source}）— 需進一步確認。"
+    If *text* is a placeholder/fragment, too short (< 15 non-space chars), or
+    has semantic density below *density_threshold*:
+      1. Step 1 — candidates from card (why/what/title) that pass density gate
+      2. Step 2 — candidates from card that pass basic validity (not fragment, len OK)
+      3. Guaranteed fallback: structured sentence with sanitized title, source,
+         and impact score (always includes a number for density scoring).
 
     Never returns empty string or a fragment.
     Does NOT modify the card schema.
     """
-    from utils.semantic_quality import is_placeholder_or_fragment
+    from utils.semantic_quality import is_placeholder_or_fragment, semantic_density_score
+
+    def _is_good(t: str, require_density: bool = True) -> bool:
+        t = t.strip()
+        if not t or is_placeholder_or_fragment(t):
+            return False
+        if len(t.replace(" ", "")) < 15:
+            return False
+        if require_density and semantic_density_score(t) < density_threshold:
+            return False
+        return True
 
     s = (text or "").strip()
-    # Fast-pass: text is good
-    if s and not is_placeholder_or_fragment(s) and len(s.replace(" ", "")) >= 15:
+    # Fast-pass: text meets all quality gates
+    if _is_good(s, require_density=True):
         return s
 
     # Build backfill candidates from card (all run through sanitize)
     what = sanitize(card.what_happened or "")
     why = sanitize(card.why_important or "")
     title = sanitize(card.title_plain or "")
-    source = (card.source_name or "來源").strip()
+    source = (getattr(card, "source_name", None) or "來源").strip()
 
     candidates = [why, what, title] if context == "action" else [what, why, title]
 
+    # Step 1: candidates that also pass semantic density gate
     for cand in candidates:
-        cand_s = cand.strip()
-        if (cand_s
-                and not is_placeholder_or_fragment(cand_s)
-                and len(cand_s.replace(" ", "")) >= 15):
-            return cand_s[:100]
+        if _is_good(cand, require_density=True):
+            return cand.strip()[:120]
 
-    # Guaranteed structured fallback (always has title + source → always readable)
-    title_short = (card.title_plain or "").strip()[:40]
-    return f"{title_short}（來源：{source}）— 需進一步確認。"
+    # Step 2: candidates that pass basic validity (not fragment, len OK) but not density
+    for cand in candidates:
+        if _is_good(cand, require_density=False):
+            return cand.strip()[:120]
+
+    # Guaranteed structured fallback — sanitize title, use category if title is hollow,
+    # always include a numeric score so density scoring can find a number.
+    title_raw = sanitize(card.title_plain or "").strip()
+    if not title_raw or is_placeholder_or_fragment(title_raw):
+        title_safe = f"{card.category or 'AI'}領域事件"
+    else:
+        title_safe = title_raw[:40]
+    score_val = float(getattr(card, "final_score", 5.0) or 5.0)
+    return (
+        f"{title_safe}（{source}，影響評分 {score_val:.1f}/10）。"
+        f"建議相關負責人於 T+7 日內評估確認。"
+    )

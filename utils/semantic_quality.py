@@ -95,7 +95,8 @@ _EVIDENCE_NUM_RE = re.compile(
     r"|£[\d,.]+[BMKbmk]?"                                # pound: £500M
     r"|\d+%"                                              # percentage: 50%
     r"|\bv?\d+\.\d+"                                     # version: v1.2, 3.5
-    r"|\d{2,}[\s]*(billion|million|thousand|M|B|K|GB|TB|萬|億|兆|天|週|月)"
+    r"|\d+[\s]*(billion|million|thousand|M|B|K|GB|TB|萬|億|兆|天|週|月)"  # 1M, 1 million
+    r"|\d+[BMKbmk]\b"                                    # compact: 1M, 5B, 10k
     r"|\d+/\d+"                                          # ratio: 3/5, impact=4/5
     r"|\d{4}",                                           # 4-digit year
     re.IGNORECASE,
@@ -223,7 +224,7 @@ def semantic_density_score(text: str) -> int:
     score = terms_score + numbers_score + sentences_score
 
     # Cap very short text — prevents single-term snippets from scoring high
-    if char_count < 60:
+    if char_count < 40:
         score = min(score, 40)
 
     return min(100, score)

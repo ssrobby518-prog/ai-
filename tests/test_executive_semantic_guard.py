@@ -101,6 +101,49 @@ def _rich_cards() -> list[EduNewsCard]:
     ]
 
 
+def _hollow_cards() -> list[EduNewsCard]:
+    """Cards with hollow / placeholder field values — the pipeline stress test."""
+    return [
+        EduNewsCard(
+            item_id=f"hollow-{i:03d}",
+            is_valid_news=True,
+            title_plain=title,
+            what_happened=what,
+            why_important=why,
+            source_name=src,
+            source_url=url,
+            final_score=score,
+            category="AI",
+        )
+        for i, (title, what, why, src, url, score) in enumerate([
+            (
+                "的趨勢，解決方 記",          # hollow title — truncation artifact
+                "的趨勢",                      # hollow what
+                "",                            # empty why
+                "HollowSource",
+                "https://example.com/hollow1",
+                6.0,
+            ),
+            (
+                "Last July was a turning point",  # template remnant title
+                "Last July was an interesting time",
+                "",
+                "TplSource",
+                "https://example.com/hollow2",
+                5.5,
+            ),
+            (
+                "OpenAI GPT-5 Released",           # valid title (needed for fallback)
+                "",                                # empty what
+                "",                                # empty why
+                "ValidSource",
+                "https://example.com/hollow3",
+                7.0,
+            ),
+        ])
+    ]
+
+
 def _gen_pptx(tmp_path: Path, cards: list[EduNewsCard]) -> Path:
     from core.ppt_generator import generate_executive_ppt
 
@@ -286,7 +329,46 @@ class TestSemanticGuardBackfill:
         card = _make_card()
         result = semantic_guard_text("Last July was", card)
         score = semantic_density_score(result)
-        assert score > 0, f"Backfill has zero semantic score: {result!r}"
+        assert score >= 70, f"Backfill semantic score too low ({score}): {result!r}"
+
+    def test_hollow_card_fallback_has_number(self) -> None:
+        """Guaranteed fallback must contain a number so density scoring finds one."""
+        hollow = EduNewsCard(
+            item_id="hollow-002",
+            is_valid_news=True,
+            title_plain="的趨勢，解決方 記",
+            what_happened="的趨勢",
+            why_important="",
+            source_name="TestSource",
+            source_url="https://example.com",
+            final_score=7.0,
+            category="AI",
+        )
+        result = semantic_guard_text("的趨勢", hollow)
+        assert count_evidence_numbers(result) >= 1, (
+            f"Fallback has no numeric evidence: {result!r}"
+        )
+
+    def test_hollow_card_fallback_not_fragment(self) -> None:
+        """When title is hollow, fallback must still not be a fragment."""
+        hollow = EduNewsCard(
+            item_id="hollow-003",
+            is_valid_news=True,
+            title_plain="的趨勢，解決方 記",
+            what_happened="",
+            why_important="",
+            source_name="TestSource",
+            source_url="https://example.com",
+            final_score=5.0,
+            category="AI",
+        )
+        result = semantic_guard_text("", hollow)
+        assert not is_placeholder_or_fragment(result), (
+            f"Fallback with hollow title is still a fragment: {result!r}"
+        )
+        assert count_sentences(result) >= 1, (
+            f"Fallback has no sentence: {result!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -488,3 +570,117 @@ class TestVerifyRunDensityAuditOutput:
         """Base64-encoded note must be removed."""
         text = self._read_script()
         assert "noteBase64" not in text
+
+
+# ---------------------------------------------------------------------------
+# 5) Hollow-card regression: placeholder text must not reach PPT or DOCX
+# ---------------------------------------------------------------------------
+
+class TestHollowCardNoAir:
+    """PPT / DOCX rendered from hollow/template-remnant cards must not leak placeholders."""
+
+    _BAD_PATTERNS = [
+        r"Last\s+\w+\s+was\b",
+        r"解決方\s*[記表]",
+        r"^\s*[0-9]+[.)]\s*$",
+        r"的趨勢，解決方",
+    ]
+
+    def _extract_pptx_texts(self, pptx_path: Path) -> list[str]:
+        from pptx import Presentation
+
+        prs = Presentation(str(pptx_path))
+        texts = []
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for para in shape.text_frame.paragraphs:
+                        t = para.text.strip()
+                        if t:
+                            texts.append(t)
+                if shape.has_table:
+                    for row in shape.table.rows:
+                        for cell in row.cells:
+                            t = cell.text.strip()
+                            if t:
+                                texts.append(t)
+        return texts
+
+    def _extract_docx_texts(self, docx_path: Path) -> list[str]:
+        from docx import Document
+
+        doc = Document(str(docx_path))
+        texts = []
+        for p in doc.paragraphs:
+            t = p.text.strip()
+            if t:
+                texts.append(t)
+        for tbl in doc.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    t = cell.text.strip()
+                    if t:
+                        texts.append(t)
+        return texts
+
+    def _assert_no_bad_patterns(self, texts: list[str], source: str) -> None:
+        for text in texts:
+            for pat in self._BAD_PATTERNS:
+                if re.search(pat, text, re.IGNORECASE | re.MULTILINE):
+                    pytest.fail(
+                        f"Placeholder pattern {pat!r} leaked in {source}: {text!r}"
+                    )
+
+    def test_placeholder_fragment_examples_rejected(self) -> None:
+        """All hollow card field values must be flagged as placeholders/fragments."""
+        bad_examples = [
+            "的趨勢，解決方 記",
+            "Last July was a turning point",
+            "的趨勢",
+            "",
+            "2. ",
+            "WHY IT MATTERS:",
+        ]
+        for example in bad_examples:
+            assert is_placeholder_or_fragment(example), (
+                f"Expected is_placeholder_or_fragment({example!r}) == True"
+            )
+
+    def test_semantic_guard_backfills_to_full_sentence(self) -> None:
+        """semantic_guard_text with hollow card must backfill to sentence with evidence."""
+        hollow_card = EduNewsCard(
+            item_id="hollow-regr-001",
+            is_valid_news=True,
+            title_plain="的趨勢，解決方 記",
+            what_happened="的趨勢",
+            why_important="",
+            source_name="HollowSrc",
+            source_url="https://example.com/hollow",
+            final_score=6.5,
+            category="AI",
+        )
+        result = semantic_guard_text("的趨勢，解決方 記", hollow_card)
+        assert not is_placeholder_or_fragment(result), (
+            f"Guard returned fragment: {result!r}"
+        )
+        assert count_evidence_terms(result) >= 2 or count_evidence_numbers(result) >= 1, (
+            f"Backfill has insufficient evidence: terms={count_evidence_terms(result)}, "
+            f"nums={count_evidence_numbers(result)}, text={result!r}"
+        )
+        assert count_sentences(result) >= 1, (
+            f"Backfill has no sentence boundary: {result!r}"
+        )
+
+    def test_pptx_no_placeholder_with_hollow_cards(self, tmp_path: Path) -> None:
+        """PPT generated from hollow cards must not contain placeholder patterns."""
+        pptx = _gen_pptx(tmp_path, _hollow_cards())
+        texts = self._extract_pptx_texts(pptx)
+        assert texts, "PPTX with hollow cards produced no text at all"
+        self._assert_no_bad_patterns(texts, "PPTX[hollow]")
+
+    def test_docx_no_placeholder_with_hollow_cards(self, tmp_path: Path) -> None:
+        """DOCX generated from hollow cards must not contain placeholder patterns."""
+        docx = _gen_docx(tmp_path, _hollow_cards())
+        texts = self._extract_docx_texts(docx)
+        assert texts, "DOCX with hollow cards produced no text at all"
+        self._assert_no_bad_patterns(texts, "DOCX[hollow]")

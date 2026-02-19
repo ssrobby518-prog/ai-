@@ -842,10 +842,13 @@ def _slide_pending_decisions(prs: Presentation, event_cards: list[EduNewsCard]) 
         owner = dc["owner"]
         impact_data = score_event_impact(c)
         impact = impact_data.get("impact", 3) if isinstance(impact_data, dict) else 3
-        why_snippet = safe_text(c.why_important or "", 40) or safe_text(c.title_plain or "", 30) or ""
+        why_raw = safe_text(c.why_important or "", 40) or safe_text(c.title_plain or "", 30) or ""
+        from utils.semantic_quality import is_placeholder_or_fragment as _is_frag
+        why_snippet = "" if _is_frag(why_raw) else why_raw
         items.append(
             f"{i}. {action[:55]} → Owner: {owner} "
-            f"| Due: T+7 | Metric: impact={impact}/5 | {why_snippet}"
+            f"| Due: T+7 | Metric: impact={impact}/5"
+            + (f" | {why_snippet}" if why_snippet else "")
         )
 
     if not items:

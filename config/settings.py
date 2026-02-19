@@ -227,6 +227,8 @@ EXEC_SEMANTIC_THRESHOLDS: dict[str, int] = {
     "ranking": _env_int("EXEC_SEMANTIC_RANKING", 40),
     "pending": _env_int("EXEC_SEMANTIC_PENDING", 40),
 }
+# Semantic guard backfill threshold: below this density → backfill from card data
+EXEC_SEMANTIC_GUARD_THRESHOLD: int = _env_int("EXEC_SEMANTIC_GUARD_THRESHOLD", 80)
 # Minimum non-empty cell ratio for ANY table in key slides
 PER_CELL_MIN_NONEMPTY_RATIO: float = _env_float("PER_CELL_MIN_NONEMPTY_RATIO", 0.85)
 # Placeholder patterns that must NOT appear in key slide text (regex strings)

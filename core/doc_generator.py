@@ -535,12 +535,13 @@ def _build_event_ranking(
         for rank, (c, imp) in enumerate(scored, 1):
             dc = build_decision_card(c)
             action = dc["actions"][0] if dc["actions"] else "待確認"
+            action = semantic_guard_text(action, c, context="action")
             rows.append([
                 str(rank),
                 f"{imp['impact']}/5 {imp['label']}",
                 sanitize(c.title_plain or "")[:25],
                 c.category or "綜合",
-                sanitize(action)[:25],
+                action[:25],
             ])
     else:
         signals = build_signal_summary(cards or [])
