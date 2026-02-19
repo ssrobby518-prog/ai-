@@ -490,16 +490,19 @@ def run_pipeline() -> None:
 
         # Step 3: Quota-aware selection (no dev backfill).
         # _channel_passed is ordered Track A first (frontier >= 65), Track B last (frontier < 65).
-        # Naively taking the top max_extra by frontier would exclude all Track B items when
-        # Track A alone fills the budget — leaving zero business candidates for
-        # select_executive_items().  Fix: put Track B items first so they're always included.
+        # Challenge: naively taking the top max_extra by frontier excludes all Track B items
+        # when Track A alone fills the budget (business=0). But front-loading all Track B items
+        # displaces Track A product/dev diversity (product=0).
+        # Fix: reserve a small, capped number of slots for Track B items (2× business quota=4),
+        # then fill the remaining budget with Track A items (high-quality, diverse channels).
+        _Z0_BIZ_RESERVE = 4  # 2× exec business quota; enough to survive relevance-gate filtering
         _track_b_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_b}
         _ch_pass_b = [_it2 for _it2 in _channel_passed
                       if str(getattr(_it2, "item_id", "") or id(_it2)) in _track_b_id_set]
         _ch_pass_a = [_it2 for _it2 in _channel_passed
                       if str(getattr(_it2, "item_id", "") or id(_it2)) not in _track_b_id_set]
-        # Track B (business) items come first; Track A fills remaining budget.
-        _selected_items = (_ch_pass_b + _ch_pass_a)[:_z0_exec_max_extra]
+        _biz_slots = min(len(_ch_pass_b), _Z0_BIZ_RESERVE)
+        _selected_items = _ch_pass_b[:_biz_slots] + _ch_pass_a[:_z0_exec_max_extra - _biz_slots]
         _z0_inject_selected_total = len(_selected_items)
 
         z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)
