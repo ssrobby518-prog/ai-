@@ -641,9 +641,29 @@ def collect_all(config_path: Path, outdir: Path) -> dict:
         and (_age_hours(it, now_utc) or float("inf")) <= 72.0
     )
 
+    # --- Audit: date-source provenance (read-only; does NOT affect scores) ---
+    pub_src_counts: dict[str, int] = {}
+    for it in all_items:
+        src = it.get("published_at_source", "unknown")
+        pub_src_counts[src] = pub_src_counts.get(src, 0) + 1
+
+    total = len(all_items)
+    fallback_count = pub_src_counts.get("fallback_collected_at", 0)
+    fallback_ratio = round(fallback_count / total, 4) if total > 0 else 0.0
+
+    f85_fallback_count = sum(
+        1 for it in all_items
+        if it["frontier_score"] >= 85
+        and it.get("published_at_source") == "fallback_collected_at"
+    )
+    f85_fallback_ratio = (
+        round(f85_fallback_count / frontier_ge_85_total, 4)
+        if frontier_ge_85_total > 0 else 0.0
+    )
+
     meta = {
         "collected_at": now_iso,
-        "total_items": len(all_items),
+        "total_items": total,
         "by_platform": by_platform,
         "by_feed": by_feed,
         # backwards-compat aliases
@@ -654,6 +674,11 @@ def collect_all(config_path: Path, outdir: Path) -> dict:
         "frontier_ge_85_total": frontier_ge_85_total,
         "frontier_ge_70_72h": frontier_ge_70_72h,
         "frontier_ge_85_72h": frontier_ge_85_72h,
+        # audit: date-source provenance
+        "published_at_source_counts": pub_src_counts,
+        "fallback_ratio": fallback_ratio,
+        "frontier_ge_85_fallback_count": f85_fallback_count,
+        "frontier_ge_85_fallback_ratio": f85_fallback_ratio,
     }
 
     # Write JSONL
@@ -689,6 +714,10 @@ def _write_empty_output(outdir: Path) -> dict:
         "frontier_ge_85_total": 0,
         "frontier_ge_70_72h": 0,
         "frontier_ge_85_72h": 0,
+        "published_at_source_counts": {},
+        "fallback_ratio": 0.0,
+        "frontier_ge_85_fallback_count": 0,
+        "frontier_ge_85_fallback_ratio": 0.0,
         "error": "collection_failed",
     }
     outdir.mkdir(parents=True, exist_ok=True)

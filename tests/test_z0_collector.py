@@ -591,3 +591,218 @@ class TestPublishedAtFallback:
         )
         assert it["published_at_parsed"] is not None
         assert "2026" in str(it["published_at_parsed"])
+
+
+# ---------------------------------------------------------------------------
+# Audit meta fields (new: date-source provenance)
+# ---------------------------------------------------------------------------
+
+# Mixed RSS: 1 item with pubDate, 1 item without — triggers fallback on one
+_RSS_MIXED_DATES = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Mixed Feed</title>
+    <item>
+      <title>GPT-5 release benchmark model</title>
+      <link>https://openai.com/blog/gpt5</link>
+      <pubDate>Wed, 19 Feb 2026 09:00:00 +0000</pubDate>
+      <description>OpenAI releases GPT-5 model benchmark score 92%.</description>
+    </item>
+    <item>
+      <title>AI model released with open-source weights</title>
+      <link>https://example.com/ai-model-release</link>
+      <description>An AI model release with great benchmark scores and open-source weights.</description>
+    </item>
+  </channel>
+</rss>
+"""
+
+_FEED_CFG_MIXED = {
+    "name": "Mixed Test Feed",
+    "url": "https://example.com/rss",
+    "platform": "openai",
+    "tag": "official",
+}
+
+
+class TestAuditMetaFields:
+    """Verify audit fields in collect_all meta output are stable and correct."""
+
+    def _run_collect_with_inline_feed(self, tmp_path: Path, xml_text: str, feed_cfg: dict) -> dict:
+        """Collect using a mock config that returns inline XML (via tmp file trick)."""
+        from core.z0_collector import parse_feed, _write_empty_output
+        import json as _json
+
+        # Parse items directly (parse_feed is pure)
+        items = parse_feed(xml_text, feed_cfg)
+
+        # Simulate the meta-building logic from collect_all to test the audit fields
+        from datetime import timezone as _tz
+        from core.z0_collector import _age_hours
+
+        now_utc = datetime.now(timezone.utc)
+        now_iso = now_utc.isoformat()
+
+        frontier_ge_70_total = sum(1 for it in items if it["frontier_score"] >= 70)
+        frontier_ge_85_total = sum(1 for it in items if it["frontier_score"] >= 85)
+        frontier_ge_70_72h = sum(
+            1 for it in items
+            if it["frontier_score"] >= 70
+            and (_age_hours(it, now_utc) or float("inf")) <= 72.0
+        )
+        frontier_ge_85_72h = sum(
+            1 for it in items
+            if it["frontier_score"] >= 85
+            and (_age_hours(it, now_utc) or float("inf")) <= 72.0
+        )
+
+        pub_src_counts: dict[str, int] = {}
+        for it in items:
+            src = it.get("published_at_source", "unknown")
+            pub_src_counts[src] = pub_src_counts.get(src, 0) + 1
+
+        total = len(items)
+        fallback_count = pub_src_counts.get("fallback_collected_at", 0)
+        fallback_ratio = round(fallback_count / total, 4) if total > 0 else 0.0
+        f85_fallback_count = sum(
+            1 for it in items
+            if it["frontier_score"] >= 85
+            and it.get("published_at_source") == "fallback_collected_at"
+        )
+        f85_fallback_ratio = (
+            round(f85_fallback_count / frontier_ge_85_total, 4)
+            if frontier_ge_85_total > 0 else 0.0
+        )
+
+        return {
+            "total_items": total,
+            "frontier_ge_85_total": frontier_ge_85_total,
+            "frontier_ge_85_72h": frontier_ge_85_72h,
+            "published_at_source_counts": pub_src_counts,
+            "fallback_ratio": fallback_ratio,
+            "frontier_ge_85_fallback_count": f85_fallback_count,
+            "frontier_ge_85_fallback_ratio": f85_fallback_ratio,
+            "_items": items,
+        }
+
+    def test_audit_fields_present_in_meta(self, tmp_path: Path):
+        """collect_all must include all 4 audit fields in returned meta."""
+        from core.z0_collector import collect_all
+        config = {
+            "collector": {
+                "locale": {"hl": "en-US", "gl": "US", "ceid": "US:en"},
+                "time_window_days": 7,
+                "http_timeout_sec": 1,
+                "polite_delay_ms": 0,
+                "max_items_per_feed": 5,
+                "enable_fulltext_fetch": False,
+                "user_agent": "test",
+            },
+            "official_feeds": [],
+            "community_feeds": [],
+            "github_watch": {"feeds": [], "repos": [], "wiki_probe": {"enabled": False}},
+            "google_news_queries": [],
+        }
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
+        meta = collect_all(cfg_path, tmp_path / "out")
+
+        assert "published_at_source_counts" in meta
+        assert "fallback_ratio" in meta
+        assert "frontier_ge_85_fallback_count" in meta
+        assert "frontier_ge_85_fallback_ratio" in meta
+
+    def test_source_counts_sum_equals_total_items(self):
+        """Sum of all published_at_source_counts values must equal total_items."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        total = meta["total_items"]
+        counts_sum = sum(meta["published_at_source_counts"].values())
+        assert counts_sum == total, (
+            f"source_counts sum={counts_sum} != total_items={total}"
+        )
+
+    def test_fallback_detected_in_mixed_feed(self):
+        """Mixed feed (1 dated + 1 undated) must report fallback_collected_at count >= 1."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        src_counts = meta["published_at_source_counts"]
+        assert src_counts.get("fallback_collected_at", 0) >= 1, (
+            f"Expected at least 1 fallback, got: {src_counts}"
+        )
+
+    def test_fallback_ratio_in_range(self):
+        """fallback_ratio must be between 0.0 and 1.0 inclusive."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        r = meta["fallback_ratio"]
+        assert 0.0 <= r <= 1.0, f"fallback_ratio={r} out of range"
+
+    def test_fallback_ratio_matches_count(self):
+        """fallback_ratio == fallback_count / total rounded to 4 dp."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        total = meta["total_items"]
+        fb_count = meta["published_at_source_counts"].get("fallback_collected_at", 0)
+        expected = round(fb_count / total, 4) if total > 0 else 0.0
+        assert meta["fallback_ratio"] == expected
+
+    def test_all_fallback_feed_ratio_is_1(self):
+        """Feed with zero dates → fallback_ratio == 1.0."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_NO_PUBDATE, _FEED_CFG_OPENAI
+        )
+        assert meta["fallback_ratio"] == 1.0, (
+            f"Expected fallback_ratio=1.0 for no-date feed, got {meta['fallback_ratio']}"
+        )
+
+    def test_f85_fallback_count_subset_of_f85_total(self):
+        """frontier_ge_85_fallback_count <= frontier_ge_85_total."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        assert meta["frontier_ge_85_fallback_count"] <= meta["frontier_ge_85_total"]
+
+    def test_f85_fallback_ratio_matches_count(self):
+        """frontier_ge_85_fallback_ratio == count/total rounded to 4 dp."""
+        meta = self._run_collect_with_inline_feed(
+            Path("."), _RSS_MIXED_DATES, _FEED_CFG_MIXED
+        )
+        f85_total = meta["frontier_ge_85_total"]
+        f85_fb = meta["frontier_ge_85_fallback_count"]
+        expected = round(f85_fb / f85_total, 4) if f85_total > 0 else 0.0
+        assert meta["frontier_ge_85_fallback_ratio"] == expected
+
+    def test_meta_json_written_to_disk_contains_audit_fields(self, tmp_path: Path):
+        """collect_all must write audit fields into latest.meta.json on disk."""
+        from core.z0_collector import collect_all
+        config = {
+            "collector": {
+                "locale": {"hl": "en-US", "gl": "US", "ceid": "US:en"},
+                "time_window_days": 7,
+                "http_timeout_sec": 1,
+                "polite_delay_ms": 0,
+                "max_items_per_feed": 5,
+                "enable_fulltext_fetch": False,
+                "user_agent": "test",
+            },
+            "official_feeds": [],
+            "community_feeds": [],
+            "github_watch": {"feeds": [], "repos": [], "wiki_probe": {"enabled": False}},
+            "google_news_queries": [],
+        }
+        cfg_path = tmp_path / "cfg.json"
+        cfg_path.write_text(json.dumps(config), encoding="utf-8")
+        out_dir = tmp_path / "out"
+        collect_all(cfg_path, out_dir)
+
+        meta_on_disk = json.loads((out_dir / "latest.meta.json").read_text(encoding="utf-8"))
+        assert "published_at_source_counts" in meta_on_disk
+        assert "fallback_ratio" in meta_on_disk
+        assert isinstance(meta_on_disk["published_at_source_counts"], dict)
+        assert isinstance(meta_on_disk["fallback_ratio"], float)

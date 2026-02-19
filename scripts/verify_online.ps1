@@ -42,6 +42,15 @@ if (Test-Path $metaPath) {
     if ($meta.PSObject.Properties['frontier_ge_85_72h']) {
         Write-Output "  frontier_ge_85_72h: $($meta.frontier_ge_85_72h)"
     }
+    if ($meta.PSObject.Properties['fallback_ratio']) {
+        Write-Output "  fallback_ratio    : $($meta.fallback_ratio)"
+    }
+    if ($meta.PSObject.Properties['frontier_ge_85_fallback_count']) {
+        Write-Output "  f85_fallback_count: $($meta.frontier_ge_85_fallback_count)"
+    }
+    if ($meta.PSObject.Properties['frontier_ge_85_fallback_ratio']) {
+        Write-Output "  f85_fallback_ratio: $($meta.frontier_ge_85_fallback_ratio)"
+    }
     Write-Output "  by_platform:"
     if ($meta.by_platform) {
         $meta.by_platform.PSObject.Properties | Sort-Object Value -Descending | ForEach-Object {

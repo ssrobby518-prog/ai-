@@ -412,6 +412,20 @@ if (Test-Path $z0MetaPath) {
         if ($z0Meta.PSObject.Properties['frontier_ge_85_72h']) {
             Write-Host ("  frontier_ge_85_72h: {0}" -f $z0Meta.frontier_ge_85_72h)
         }
+        # Audit: date-source provenance
+        if ($z0Meta.PSObject.Properties['published_at_source_counts']) {
+            $srcJson = $z0Meta.published_at_source_counts | ConvertTo-Json -Compress
+            Write-Host ("  pub_at_source_counts: {0}" -f $srcJson)
+        }
+        if ($z0Meta.PSObject.Properties['fallback_ratio']) {
+            Write-Host ("  fallback_ratio        : {0}" -f $z0Meta.fallback_ratio)
+        }
+        if ($z0Meta.PSObject.Properties['frontier_ge_85_fallback_count']) {
+            Write-Host ("  f85_fallback_count    : {0}" -f $z0Meta.frontier_ge_85_fallback_count)
+        }
+        if ($z0Meta.PSObject.Properties['frontier_ge_85_fallback_ratio']) {
+            Write-Host ("  f85_fallback_ratio    : {0}" -f $z0Meta.frontier_ge_85_fallback_ratio)
+        }
         if ($z0Meta.by_platform) {
             Write-Host "  by_platform:"
             $z0Meta.by_platform.PSObject.Properties | Sort-Object Value -Descending | ForEach-Object {
