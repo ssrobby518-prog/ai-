@@ -616,7 +616,7 @@ foreach ($_spec in $_artSpecs) {
     $_fb   = if ($_found.IsFallback) { " [FOUND_LATEST=1]" } else { "" }
     Write-Host ("  {0}{1}:" -f $_spec.StdPath, $_fb)
     Write-Host ("    path     : {0}" -f $_info.FullName)
-    Write-Host ("    modified : {0}" -f $_info.LastWriteTime.ToString("yyyy-MM-ddTHH:mm:ss"))
+    Write-Host ("    modified : {0}" -f ([DateTimeOffset]$_info.LastWriteTime).ToString("yyyy-MM-ddTHH:mm:sszzz"))
     Write-Host ("    size     : {0} bytes" -f $_info.Length)
     Write-Host ("    sha256   : {0}" -f $_hash)
 }
