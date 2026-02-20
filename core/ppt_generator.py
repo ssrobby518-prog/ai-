@@ -1090,6 +1090,15 @@ from utils.bullet_normalizer import (
     normalize_bullets_safe as _v1_norm_bullets_safe,
     compute_bullet_stats as _v1_bullet_stats,
 )
+from utils.hybrid_glossing import (
+    normalize_exec_text as _v1_norm_gloss,
+    load_glossary as _v1_load_glossary,
+    get_gloss_stats as _v1_gloss_stats,
+    reset_gloss_stats as _v1_reset_gloss_stats,
+)
+
+# Glossary loaded once at module level (cached inside hybrid_glossing)
+_V1_GLOSSARY: dict = _v1_load_glossary()
 
 
 # ---------------------------------------------------------------------------
@@ -1619,7 +1628,9 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     card_left = 1.8
 
     # Build narrative compact for Card 1 body
-    narrative = _v1_narrative(card)
+    # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across fields on this slide
+    _gloss_seen: set = set()
+    narrative = _v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen)
     brief = build_ceo_brief_blocks(card)
     trend_liner = brief.get('ai_trend_liner', '')
 
@@ -1641,7 +1652,8 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     # Card 2: Q2 — Why It Matters
     card2_top = card1_top + card1_h + 0.6
     card2_h = 3.5
-    why_text = safe_text(card.why_important or '', 150) or safe_text(brief.get('q1_meaning', ''), 150)
+    _why_raw = safe_text(card.why_important or '', 150) or safe_text(brief.get('q1_meaning', ''), 150)
+    why_text = _v1_norm_gloss(_why_raw, _V1_GLOSSARY, _gloss_seen)
     q2_text = safe_text(brief.get('q2_impact', ''), 100)
     _v1_add_card(
         slide, card_left, card2_top, card_w, card2_h,
@@ -1707,10 +1719,13 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     _add_divider(slide, Cm(2), Cm(1.8), Cm(4), color=ACCENT)
 
     # Q3 actions → staircase steps
+    # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across actions on this slide
+    _gloss_seen_p2: set = set()
     actions = brief.get('q3_actions', [])
     actions = _v1_norm_bullets_safe(
         [safe_text(a, 60) for a in (actions or [])],
     )
+    actions = [_v1_norm_gloss(a, _V1_GLOSSARY, _gloss_seen_p2) for a in actions]
     while len(actions) < 3:
         actions.append('持續追蹤後續發展，確認關鍵指標後決定行動方向。')
 
@@ -1908,11 +1923,14 @@ def _v1_write_exec_layout_meta(
             _qm = _json_q.loads(_q_path.read_text(encoding='utf-8'))
         else:
             _qm = {}
+        _gloss = _v1_gloss_stats()
         _qm.update({
             'fragments_detected': fragments_detected,
             'fragments_fixed': fragments_fixed,
             'fragments_leaked': fragments_leaked,
             'fragment_leak_gate': fragment_leak_gate,
+            'english_heavy_paragraphs_fixed_count': _gloss.get('english_heavy_paragraphs_fixed_count', 0),
+            'proper_noun_gloss_applied_count': _gloss.get('proper_noun_gloss_applied_count', 0),
         })
         _q_path.write_text(
             _json_q.dumps(_qm, ensure_ascii=False, indent=2),

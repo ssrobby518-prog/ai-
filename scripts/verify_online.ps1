@@ -358,6 +358,8 @@ if (Test-Path $execQualMetaOnlinePath) {
         $leakedO   = if ($eqmO.PSObject.Properties['fragments_leaked'])       { $eqmO.fragments_leaked }       else { 0 }
         $detectedO = if ($eqmO.PSObject.Properties['fragments_detected'])     { $eqmO.fragments_detected }     else { 0 }
         $fixedO    = if ($eqmO.PSObject.Properties['fragments_fixed'])        { $eqmO.fragments_fixed }        else { 0 }
+        $enHeavyO  = if ($eqmO.PSObject.Properties['english_heavy_paragraphs_fixed_count']) { $eqmO.english_heavy_paragraphs_fixed_count } else { 0 }
+        $glossedO  = if ($eqmO.PSObject.Properties['proper_noun_gloss_applied_count'])      { $eqmO.proper_noun_gloss_applied_count }      else { 0 }
 
         Write-Output ""
         Write-Output "EXEC QUALITY GATES:"
@@ -365,6 +367,7 @@ if (Test-Path $execQualMetaOnlinePath) {
         Write-Output ("  SOURCE_DIVERSITY_GATE: {0} (max_source_share={1:P1} source={2})" -f $g2O, $maxShrO, $maxSrcO)
         Write-Output ("  PROOF_COVERAGE_GATE  : {0} (ratio={1:P1})" -f $g3O, $proofO)
         Write-Output ("  FRAGMENT_LEAK_GATE   : {0} (leaked={1} detected={2} fixed={3})" -f $g4O, $leakedO, $detectedO, $fixedO)
+        Write-Output ("  EN_ZH_HYBRID_GLOSS   : english_heavy_fixed={0}  proper_noun_glossed={1}" -f $enHeavyO, $glossedO)
 
         $qualAnyFailO = ($g2O -eq "FAIL") -or ($g3O -eq "FAIL") -or ($g4O -eq "FAIL")
         if ($qualAnyFailO) {

@@ -42,6 +42,13 @@ from schemas.education_models import (
     SystemHealthReport,
 )
 from utils.logger import get_logger
+from utils.hybrid_glossing import (
+    normalize_exec_text as _doc_norm_gloss,
+    load_glossary as _doc_load_glossary,
+)
+
+# Glossary loaded once at module level (cached inside hybrid_glossing)
+_DOC_GLOSSARY: dict = _doc_load_glossary()
 
 # ---------------------------------------------------------------------------
 # Notion-style colour palette
@@ -387,8 +394,10 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
         pass
 
     # ── Q1: What Happened (narrative_compact) ──
+    # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across fields in this card section
+    _gloss_seen: set = set()
     _add_heading(doc, "Q1 — What Happened", level=3)
-    narrative = _nc_build(card)
+    narrative = _doc_norm_gloss(_nc_build(card), _DOC_GLOSSARY, _gloss_seen)
     p_what = doc.add_paragraph(sanitize(narrative))
     p_what.paragraph_format.space_after = Pt(6)
     for run in p_what.runs:
@@ -402,6 +411,7 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     why_combined = why_text
     if q2_text and q2_text != why_text:
         why_combined = f"{why_text} {q2_text}".strip()
+    why_combined = _doc_norm_gloss(why_combined, _DOC_GLOSSARY, _gloss_seen)
     p_why = doc.add_paragraph(why_combined)
     p_why.paragraph_format.space_after = Pt(6)
     for run in p_why.runs:

@@ -254,10 +254,19 @@ class TestSemanticGuardBackfill:
     """semantic_guard_text() must always return substantial, readable content."""
 
     def test_good_text_passes_through(self) -> None:
+        """Good text is not replaced by backfill; original tokens are preserved.
+
+        semantic_guard_text now applies EN-ZH Hybrid Glossing v1, so the result
+        may include ZH annotations / skeleton — but all original content tokens
+        must still be present.
+        """
         card = _make_card()
         good = "NVIDIA launched H200 GPU at $30k for AI training workloads."
         result = semantic_guard_text(good, card)
-        assert result == good
+        # Original key tokens must be preserved (not replaced by backfill)
+        assert "NVIDIA" in result
+        assert "H200" in result
+        assert "$30k" in result
 
     def test_fragment_triggers_backfill(self) -> None:
         card = _make_card()

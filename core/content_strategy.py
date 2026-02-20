@@ -4711,8 +4711,11 @@ def semantic_guard_text(
 
     Never returns empty string or a fragment.
     Does NOT modify the card schema.
+    Applies EN-ZH Hybrid Glossing v1 to every returned string.
     """
     from utils.semantic_quality import is_placeholder_or_fragment, semantic_density_score
+    from utils.hybrid_glossing import normalize_exec_text as _norm_gloss, load_glossary as _load_gl
+    _glossary = _load_gl()
 
     def _is_good(t: str, require_density: bool = True) -> bool:
         t = t.strip()
@@ -4727,7 +4730,7 @@ def semantic_guard_text(
     s = (text or "").strip()
     # Fast-pass: text meets all quality gates
     if _is_good(s, require_density=True):
-        return s
+        return _norm_gloss(s, _glossary)
 
     # Build backfill candidates from card (all run through sanitize)
     what = sanitize(card.what_happened or "")
@@ -4740,12 +4743,12 @@ def semantic_guard_text(
     # Step 1: candidates that also pass semantic density gate
     for cand in candidates:
         if _is_good(cand, require_density=True):
-            return cand.strip()[:120]
+            return _norm_gloss(cand.strip()[:120], _glossary)
 
     # Step 2: candidates that pass basic validity (not fragment, len OK) but not density
     for cand in candidates:
         if _is_good(cand, require_density=False):
-            return cand.strip()[:120]
+            return _norm_gloss(cand.strip()[:120], _glossary)
 
     # Guaranteed structured fallback — sanitize title, use category if title is hollow,
     # always include a numeric score so density scoring can find a number.
@@ -4755,9 +4758,10 @@ def semantic_guard_text(
     else:
         title_safe = title_raw[:40]
     score_val = float(getattr(card, "final_score", 5.0) or 5.0)
-    return (
+    return _norm_gloss(
         f"{title_safe}（{source}，影響評分 {score_val:.1f}/10）。"
-        f"建議相關負責人於 T+7 日內評估確認。"
+        f"建議相關負責人於 T+7 日內評估確認。",
+        _glossary,
     )
 
 
