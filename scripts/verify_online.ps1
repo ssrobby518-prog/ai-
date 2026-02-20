@@ -115,10 +115,10 @@ $execSelMetaPath = Join-Path $repoRoot "outputs\exec_selection.meta.json"
 if (Test-Path $execSelMetaPath) {
     try {
         $esMeta = Get-Content $execSelMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $minEv  = [int]($env:EXEC_MIN_EVENTS   ?? "6")
-        $minPr  = [int]($env:EXEC_MIN_PRODUCT  ?? "2")
-        $minTe  = [int]($env:EXEC_MIN_TECH     ?? "2")
-        $minBu  = [int]($env:EXEC_MIN_BUSINESS ?? "2")
+        $minEv  = if ($env:EXEC_MIN_EVENTS)   { [int]$env:EXEC_MIN_EVENTS }   else { 6 }
+        $minPr  = if ($env:EXEC_MIN_PRODUCT)  { [int]$env:EXEC_MIN_PRODUCT }  else { 2 }
+        $minTe  = if ($env:EXEC_MIN_TECH)     { [int]$env:EXEC_MIN_TECH }     else { 2 }
+        $minBu  = if ($env:EXEC_MIN_BUSINESS) { [int]$env:EXEC_MIN_BUSINESS } else { 2 }
 
         $actEv = if ($esMeta.PSObject.Properties['events_total'])           { [int]$esMeta.events_total }                              else { 0 }
         $actPr = if ($esMeta.PSObject.Properties['events_by_bucket'] -and $esMeta.events_by_bucket.PSObject.Properties['product'])   { [int]$esMeta.events_by_bucket.product }  else { 0 }
