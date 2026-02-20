@@ -102,11 +102,9 @@ def test_exec_kpi_meta_structure(tmp_path):
         sel_meta = {
             "events_total": 7,
             "events_by_bucket": {"product": 2, "tech": 2, "business": 2, "dev": 1},
-            "business_backfill": {
-                "candidates_total": 3,
-                "selected_total": 0,
-                "selected_ids": [],
-            },
+            "business_backfill": {"candidates_total": 3, "selected_total": 0, "selected_ids": []},
+            "product_backfill":  {"candidates_total": 0, "selected_total": 0, "selected_ids": []},
+            "tech_backfill":     {"candidates_total": 0, "selected_total": 0, "selected_ids": []},
         }
 
         write_exec_kpi_meta(sel_meta, project_root=tmp_path)
@@ -116,8 +114,9 @@ def test_exec_kpi_meta_structure(tmp_path):
 
         data = json.loads(out_file.read_text(encoding="utf-8"))
 
-        # Required top-level keys
-        assert set(data.keys()) >= {"kpi_targets", "kpi_actuals", "business_backfill"}
+        # Required top-level keys (now includes product_backfill and tech_backfill)
+        assert set(data.keys()) >= {"kpi_targets", "kpi_actuals", "business_backfill",
+                                     "product_backfill", "tech_backfill"}
 
         # kpi_targets
         kt = data["kpi_targets"]
@@ -129,10 +128,11 @@ def test_exec_kpi_meta_structure(tmp_path):
         assert set(ka.keys()) >= {"events", "product", "tech", "business"}
         assert ka["business"] == 2
 
-        # business_backfill
-        bb = data["business_backfill"]
-        assert set(bb.keys()) >= {"candidates_total", "selected_total", "selected_ids"}
-        assert isinstance(bb["selected_ids"], list)
+        # all channel backfills
+        for bf_key in ("business_backfill", "product_backfill", "tech_backfill"):
+            bb = data[bf_key]
+            assert set(bb.keys()) >= {"candidates_total", "selected_total", "selected_ids"}
+            assert isinstance(bb["selected_ids"], list)
     finally:
         for k in ["EXEC_MIN_EVENTS", "EXEC_MIN_PRODUCT", "EXEC_MIN_TECH", "EXEC_MIN_BUSINESS"]:
             os.environ.pop(k, None)

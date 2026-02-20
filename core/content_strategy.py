@@ -3822,8 +3822,10 @@ def get_event_cards_for_deck(
                 break
 
     # Quota-based topic selection (C) + audit meta write (E)
+    # Pass fallback_candidates as extra_pool so channel backfill can draw from them
+    _extra_pool = [card for _rank, card, _ec, _nc in fallback_candidates]
     try:
-        selected, sel_meta = select_executive_items(event_cards)
+        selected, sel_meta = select_executive_items(event_cards, extra_pool=_extra_pool or None)
         write_exec_selection_meta(sel_meta)
         write_exec_kpi_meta(sel_meta)
         return selected
@@ -4767,6 +4769,7 @@ _EXEC_SPARSE_THRESHOLD: int = 6
 
 def select_executive_items(
     candidates: list[EduNewsCard],
+    extra_pool: "list[EduNewsCard] | None" = None,
 ) -> tuple[list[EduNewsCard], dict]:
     """Quota-based selection with relevance gate for executive events.
 
@@ -4778,7 +4781,9 @@ def select_executive_items(
       3. Bucket candidates by best channel
       4. Fill quota from each bucket (product>=2, tech>=2, business>=2, dev>=1)
       5. Backfill with remaining relevant items up to _EXEC_MAX_TOTAL
-      6. If total < _EXEC_SPARSE_THRESHOLD → mark sparse_day=True (WARN-OK)
+      6. Channel Backfill: for any channel still below quota, scan extra_pool
+         and unused bucket items for high channel-score candidates
+      7. If total < _EXEC_SPARSE_THRESHOLD → mark sparse_day=True (WARN-OK)
     """
     from utils.topic_router import classify_channels, is_relevant_ai
 
@@ -4877,68 +4882,121 @@ def select_executive_items(
     sparse_day = len(selected) < _EXEC_SPARSE_THRESHOLD
 
     # ---------------------------------------------------------------------------
-    # Business Backfill Track — if business < MIN_BUSINESS, pull from remaining pool
-    # Settings (env-overridable):
-    #   Z0_EXEC_MIN_CHANNEL_BIZ  — minimum business_score for candidate  (default 55)
-    #   Z0_EXEC_MIN_FRONTIER_BIZ — minimum z0_frontier_score for candidate (default 40)
-    #   EXEC_MIN_BUSINESS        — business quota target                   (default 2)
+    # Channel Backfill Track — for any quota channel still below target,
+    # scan unused bucket items AND extra_pool for high channel-score candidates.
+    #
+    # Settings (env-overridable, per channel):
+    #   Z0_EXEC_MIN_CHANNEL_BIZ/PROD/TECH  — min channel_score  (defaults: 55/55/50)
+    #   Z0_EXEC_MIN_FRONTIER_BIZ/PROD/TECH — min frontier_score  (defaults: 40/35/35)
+    #   EXEC_MIN_BUSINESS/PRODUCT/TECH      — quota targets       (default: 2/2/2)
     # ---------------------------------------------------------------------------
     import os as _os
-    _min_biz_target  = int(_os.environ.get("EXEC_MIN_BUSINESS",        "2")  or "2")
-    _min_biz_score   = int(_os.environ.get("Z0_EXEC_MIN_CHANNEL_BIZ",  "55") or "55")
-    _min_biz_frontier = int(_os.environ.get("Z0_EXEC_MIN_FRONTIER_BIZ", "40") or "40")
 
-    _biz_backfill: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+    _ch_score_defaults   = {"business": 55, "product": 55, "tech": 50}
+    _ch_frontier_defaults = {"business": 40, "product": 35, "tech": 35}
+    _ch_env_suffixes     = {"business": "BIZ", "product": "PROD", "tech": "TECH"}
+    _ch_min_target_envs  = {
+        "business": "EXEC_MIN_BUSINESS",
+        "product":  "EXEC_MIN_PRODUCT",
+        "tech":     "EXEC_MIN_TECH",
+    }
 
-    if by_bucket.get("business", 0) < _min_biz_target:
-        _biz_pool: list[tuple[int, EduNewsCard]] = []
+    _channel_backfills: dict[str, dict] = {}
+    _any_backfill_fired = False
+
+    def _is_72h_recent(_card: EduNewsCard) -> bool:
+        _pub = str(getattr(_card, "published_at", "") or "")
+        if not _pub:
+            return True  # no date → assume recent
+        try:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            _pub_dt = _dt.fromisoformat(_pub.replace("Z", "+00:00"))
+            return _dt.now(_tz.utc) - _pub_dt <= _td(hours=72)
+        except Exception:
+            return True
+
+    def _ch_pool_from_source(
+        source_items: "list[tuple[float, EduNewsCard]] | list[EduNewsCard]",
+        ch_name: str,
+        min_score: int,
+        min_frontier: int,
+        *,
+        tuples: bool = True,
+    ) -> "list[tuple[int, EduNewsCard]]":
+        """Collect backfill candidates with sufficient channel score from a source list."""
+        _result: list[tuple[int, EduNewsCard]] = []
+        _score_key = f"{ch_name}_score"
+        for _entry in source_items:
+            _card = _entry[1] if tuples else _entry  # type: ignore[index]
+            _iid = str(getattr(_card, "item_id", "") or id(_card))
+            if _iid in used_ids:
+                continue
+            _text = " ".join(filter(None, [
+                str(getattr(_card, "title_plain", "") or ""),
+                str(getattr(_card, "what_happened", "") or ""),
+            ]))
+            _url = str(getattr(_card, "source_url", "") or "")
+            _ch_s = classify_channels(_text, _url)
+            if _ch_s[_score_key] < min_score:
+                continue
+            _frontier = int(getattr(_card, "z0_frontier_score", 0) or 0)
+            if _frontier > 0 and _frontier < min_frontier:
+                continue
+            if not _is_72h_recent(_card):
+                continue
+            _result.append((_ch_s[_score_key], _card))
+        return _result
+
+    for _ch_name in ["business", "product", "tech"]:
+        _ch_suffix  = _ch_env_suffixes[_ch_name]
+        _min_target = int(_os.environ.get(_ch_min_target_envs[_ch_name], "2") or "2")
+        _min_score  = int(
+            _os.environ.get(f"Z0_EXEC_MIN_CHANNEL_{_ch_suffix}",
+                            str(_ch_score_defaults[_ch_name]))
+            or str(_ch_score_defaults[_ch_name])
+        )
+        _min_frontier = int(
+            _os.environ.get(f"Z0_EXEC_MIN_FRONTIER_{_ch_suffix}",
+                            str(_ch_frontier_defaults[_ch_name]))
+            or str(_ch_frontier_defaults[_ch_name])
+        )
+
+        _ch_bf: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        _channel_backfills[_ch_name] = _ch_bf
+
+        if by_bucket.get(_ch_name, 0) >= _min_target:
+            continue  # already meets quota
+
+        # Gather candidates: unused bucket items first, then extra_pool
+        _bucket_items: list[tuple[float, EduNewsCard]] = []
         for _b in buckets:
-            for _rank, _card in buckets[_b]:
-                _iid = str(getattr(_card, "item_id", "") or id(_card))
-                if _iid in used_ids:
-                    continue
-                _text = " ".join(filter(None, [
-                    str(getattr(_card, "title_plain", "") or ""),
-                    str(getattr(_card, "what_happened", "") or ""),
-                ]))
-                _url = str(getattr(_card, "source_url", "") or "")
-                _ch = classify_channels(_text, _url)
-                if _ch["business_score"] < _min_biz_score:
-                    continue
-                # Frontier check: only skip if score is known and below threshold
-                _frontier = int(getattr(_card, "z0_frontier_score", 0) or 0)
-                if _frontier > 0 and _frontier < _min_biz_frontier:
-                    continue
-                # Recency check — best-effort 72h; skip check if no published_at
-                _pub = str(getattr(_card, "published_at", "") or "")
-                if _pub:
-                    try:
-                        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-                        _pub_dt = _dt.fromisoformat(_pub.replace("Z", "+00:00"))
-                        if _dt.now(_tz.utc) - _pub_dt > _td(hours=72):
-                            continue
-                    except Exception:
-                        pass
-                _biz_pool.append((_ch["business_score"], _card))
+            _bucket_items.extend(buckets[_b])
 
-        _biz_backfill["candidates_total"] = len(_biz_pool)
-        _biz_pool.sort(key=lambda x: x[0], reverse=True)
+        _ch_pool = _ch_pool_from_source(_bucket_items, _ch_name, _min_score, _min_frontier, tuples=True)
+        if extra_pool:
+            _ch_pool += _ch_pool_from_source(extra_pool, _ch_name, _min_score, _min_frontier, tuples=False)
 
-        _needed = _min_biz_target - by_bucket.get("business", 0)
-        for _bscore, _card in _biz_pool:
+        _ch_bf["candidates_total"] = len(_ch_pool)
+        _ch_pool.sort(key=lambda x: x[0], reverse=True)
+
+        _needed = _min_target - by_bucket.get(_ch_name, 0)
+        for _bscore, _card in _ch_pool:
             if _needed <= 0:
                 break
             if _add(_card):
                 _iid = str(getattr(_card, "item_id", "") or id(_card))
-                _biz_backfill["selected_ids"].append(_iid)
+                _ch_bf["selected_ids"].append(_iid)
                 _needed -= 1
 
-        _biz_backfill["selected_total"] = len(_biz_backfill["selected_ids"])
-        _biz_backfill["selected_ids"] = _biz_backfill["selected_ids"][:5]
+        _ch_bf["selected_total"] = len(_ch_bf["selected_ids"])
+        _ch_bf["selected_ids"] = _ch_bf["selected_ids"][:5]
 
-        if _biz_backfill["selected_total"] > 0:
-            by_bucket = _recount_by_bucket()
-            quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
+        if _ch_bf["selected_total"] > 0:
+            _any_backfill_fired = True
+
+    if _any_backfill_fired:
+        by_bucket = _recount_by_bucket()
+        quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
 
     selection_meta: dict = {
         "events_total": len(selected),
@@ -4948,7 +5006,15 @@ def select_executive_items(
         "quota_target": dict(quota),
         "quota_pass": quota_pass,
         "sparse_day": sparse_day,
-        "business_backfill": _biz_backfill,
+        "business_backfill": _channel_backfills.get(
+            "business", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        ),
+        "product_backfill": _channel_backfills.get(
+            "product", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        ),
+        "tech_backfill": _channel_backfills.get(
+            "tech", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        ),
     }
     return selected, selection_meta
 
@@ -4987,6 +5053,7 @@ def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> N
         min_bu = int(os.environ.get("EXEC_MIN_BUSINESS", "2") or "2")
 
         ev_by_bucket = sel_meta.get("events_by_bucket", {})
+        _empty_bf: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
         kpi_meta: dict = {
             "kpi_targets": {
                 "events":   min_ev,
@@ -5000,10 +5067,9 @@ def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> N
                 "tech":     ev_by_bucket.get("tech", 0),
                 "business": ev_by_bucket.get("business", 0),
             },
-            "business_backfill": sel_meta.get(
-                "business_backfill",
-                {"candidates_total": 0, "selected_total": 0, "selected_ids": []},
-            ),
+            "business_backfill": sel_meta.get("business_backfill", _empty_bf),
+            "product_backfill":  sel_meta.get("product_backfill",  _empty_bf),
+            "tech_backfill":     sel_meta.get("tech_backfill",     _empty_bf),
         }
         (out_dir / "exec_kpi.meta.json").write_text(
             json.dumps(kpi_meta, ensure_ascii=False, indent=2),

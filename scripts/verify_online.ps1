@@ -177,12 +177,14 @@ if (Test-Path $execKpiMetaPath) {
             Write-Output ("  kpi_actuals.tech    : {0}" -f $ka.tech)
             Write-Output ("  kpi_actuals.business: {0}" -f $ka.business)
         }
-        if ($ekm.PSObject.Properties['business_backfill']) {
-            $bb = $ekm.business_backfill
-            Write-Output ("  backfill.candidates_total: {0}" -f $bb.candidates_total)
-            Write-Output ("  backfill.selected_total  : {0}" -f $bb.selected_total)
-            if ($bb.selected_ids -and $bb.selected_ids.Count -gt 0) {
-                Write-Output ("  backfill.selected_ids(top5): {0}" -f ($bb.selected_ids -join ', '))
+        foreach ($bfKey in @('business_backfill', 'product_backfill', 'tech_backfill')) {
+            if ($ekm.PSObject.Properties[$bfKey]) {
+                $bb = $ekm.$bfKey
+                $bfLabel = $bfKey -replace '_backfill', ''
+                Write-Output ("  {0}_backfill.candidates: {1}  selected: {2}" -f $bfLabel, $bb.candidates_total, $bb.selected_total)
+                if ($bb.selected_ids -and $bb.selected_ids.Count -gt 0) {
+                    Write-Output ("  {0}_backfill.ids(top5): {1}" -f $bfLabel, ($bb.selected_ids -join ', '))
+                }
             }
         }
     } catch {
