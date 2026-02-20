@@ -3825,6 +3825,7 @@ def get_event_cards_for_deck(
     try:
         selected, sel_meta = select_executive_items(event_cards)
         write_exec_selection_meta(sel_meta)
+        write_exec_kpi_meta(sel_meta)
         return selected
     except Exception:
         # If quota selection fails for any reason, return unfiltered pool
@@ -4854,22 +4855,90 @@ def select_executive_items(
         _add(card)
 
     # Compute per-bucket count on selected items
-    by_bucket: dict[str, int] = {k: 0 for k in quota}
-    for card in selected:
-        text = " ".join(filter(None, [
-            str(getattr(card, "title_plain", "") or ""),
-            str(getattr(card, "what_happened", "") or ""),
-        ]))
-        url = str(getattr(card, "source_url", "") or "")
-        ch = classify_channels(text, url)
-        b = ch["best_channel"]
-        if b in by_bucket:
-            by_bucket[b] += 1
-        else:
-            by_bucket["dev"] += 1
+    def _recount_by_bucket() -> dict[str, int]:
+        _bb: dict[str, int] = {k: 0 for k in quota}
+        for _card in selected:
+            _text = " ".join(filter(None, [
+                str(getattr(_card, "title_plain", "") or ""),
+                str(getattr(_card, "what_happened", "") or ""),
+            ]))
+            _url = str(getattr(_card, "source_url", "") or "")
+            _ch = classify_channels(_text, _url)
+            _b = _ch["best_channel"]
+            if _b in _bb:
+                _bb[_b] += 1
+            else:
+                _bb["dev"] += 1
+        return _bb
+
+    by_bucket = _recount_by_bucket()
 
     quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
     sparse_day = len(selected) < _EXEC_SPARSE_THRESHOLD
+
+    # ---------------------------------------------------------------------------
+    # Business Backfill Track — if business < MIN_BUSINESS, pull from remaining pool
+    # Settings (env-overridable):
+    #   Z0_EXEC_MIN_CHANNEL_BIZ  — minimum business_score for candidate  (default 55)
+    #   Z0_EXEC_MIN_FRONTIER_BIZ — minimum z0_frontier_score for candidate (default 40)
+    #   EXEC_MIN_BUSINESS        — business quota target                   (default 2)
+    # ---------------------------------------------------------------------------
+    import os as _os
+    _min_biz_target  = int(_os.environ.get("EXEC_MIN_BUSINESS",        "2")  or "2")
+    _min_biz_score   = int(_os.environ.get("Z0_EXEC_MIN_CHANNEL_BIZ",  "55") or "55")
+    _min_biz_frontier = int(_os.environ.get("Z0_EXEC_MIN_FRONTIER_BIZ", "40") or "40")
+
+    _biz_backfill: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+
+    if by_bucket.get("business", 0) < _min_biz_target:
+        _biz_pool: list[tuple[int, EduNewsCard]] = []
+        for _b in buckets:
+            for _rank, _card in buckets[_b]:
+                _iid = str(getattr(_card, "item_id", "") or id(_card))
+                if _iid in used_ids:
+                    continue
+                _text = " ".join(filter(None, [
+                    str(getattr(_card, "title_plain", "") or ""),
+                    str(getattr(_card, "what_happened", "") or ""),
+                ]))
+                _url = str(getattr(_card, "source_url", "") or "")
+                _ch = classify_channels(_text, _url)
+                if _ch["business_score"] < _min_biz_score:
+                    continue
+                # Frontier check: only skip if score is known and below threshold
+                _frontier = int(getattr(_card, "z0_frontier_score", 0) or 0)
+                if _frontier > 0 and _frontier < _min_biz_frontier:
+                    continue
+                # Recency check — best-effort 72h; skip check if no published_at
+                _pub = str(getattr(_card, "published_at", "") or "")
+                if _pub:
+                    try:
+                        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                        _pub_dt = _dt.fromisoformat(_pub.replace("Z", "+00:00"))
+                        if _dt.now(_tz.utc) - _pub_dt > _td(hours=72):
+                            continue
+                    except Exception:
+                        pass
+                _biz_pool.append((_ch["business_score"], _card))
+
+        _biz_backfill["candidates_total"] = len(_biz_pool)
+        _biz_pool.sort(key=lambda x: x[0], reverse=True)
+
+        _needed = _min_biz_target - by_bucket.get("business", 0)
+        for _bscore, _card in _biz_pool:
+            if _needed <= 0:
+                break
+            if _add(_card):
+                _iid = str(getattr(_card, "item_id", "") or id(_card))
+                _biz_backfill["selected_ids"].append(_iid)
+                _needed -= 1
+
+        _biz_backfill["selected_total"] = len(_biz_backfill["selected_ids"])
+        _biz_backfill["selected_ids"] = _biz_backfill["selected_ids"][:5]
+
+        if _biz_backfill["selected_total"] > 0:
+            by_bucket = _recount_by_bucket()
+            quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
 
     selection_meta: dict = {
         "events_total": len(selected),
@@ -4879,6 +4948,7 @@ def select_executive_items(
         "quota_target": dict(quota),
         "quota_pass": quota_pass,
         "sparse_day": sparse_day,
+        "business_backfill": _biz_backfill,
     }
     return selected, selection_meta
 
@@ -4894,6 +4964,49 @@ def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) ->
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "exec_selection.meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # audit write must never break the pipeline
+
+
+def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> None:
+    """Write exec_kpi.meta.json to outputs/ with KPI targets/actuals and backfill audit."""
+    import json
+    import os
+    from pathlib import Path
+
+    try:
+        root = project_root or Path(__file__).resolve().parent.parent
+        out_dir = root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        min_ev = int(os.environ.get("EXEC_MIN_EVENTS",   "6") or "6")
+        min_pr = int(os.environ.get("EXEC_MIN_PRODUCT",  "2") or "2")
+        min_te = int(os.environ.get("EXEC_MIN_TECH",     "2") or "2")
+        min_bu = int(os.environ.get("EXEC_MIN_BUSINESS", "2") or "2")
+
+        ev_by_bucket = sel_meta.get("events_by_bucket", {})
+        kpi_meta: dict = {
+            "kpi_targets": {
+                "events":   min_ev,
+                "product":  min_pr,
+                "tech":     min_te,
+                "business": min_bu,
+            },
+            "kpi_actuals": {
+                "events":   sel_meta.get("events_total", 0),
+                "product":  ev_by_bucket.get("product", 0),
+                "tech":     ev_by_bucket.get("tech", 0),
+                "business": ev_by_bucket.get("business", 0),
+            },
+            "business_backfill": sel_meta.get(
+                "business_backfill",
+                {"candidates_total": 0, "selected_total": 0, "selected_ids": []},
+            ),
+        }
+        (out_dir / "exec_kpi.meta.json").write_text(
+            json.dumps(kpi_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:

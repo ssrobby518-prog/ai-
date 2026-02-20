@@ -126,10 +126,10 @@ if (Test-Path $execSelMetaPath) {
         $actBu = if ($esMeta.PSObject.Properties['events_by_bucket'] -and $esMeta.events_by_bucket.PSObject.Properties['business'])  { [int]$esMeta.events_by_bucket.business } else { 0 }
         $sparseDay = if ($esMeta.PSObject.Properties['sparse_day']) { [bool]$esMeta.sparse_day } else { $false }
 
-        $gateEv = if ($actEv -ge $minEv -or $sparseDay) { "PASS" } else { "WARN" }
-        $gatePr = if ($actPr -ge $minPr -or $sparseDay) { "PASS" } else { "WARN" }
-        $gateTe = if ($actTe -ge $minTe -or $sparseDay) { "PASS" } else { "WARN" }
-        $gateBu = if ($actBu -ge $minBu -or $sparseDay) { "PASS" } else { "WARN" }
+        $gateEv = if ($actEv -ge $minEv -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gatePr = if ($actPr -ge $minPr -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gateTe = if ($actTe -ge $minTe -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gateBu = if ($actBu -ge $minBu -or $sparseDay) { "PASS" } else { "FAIL" }
         $sparseNote = if ($sparseDay) { " [sparse-day fallback]" } else { "" }
 
         Write-Output ""
@@ -139,9 +139,10 @@ if (Test-Path $execSelMetaPath) {
         Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
         Write-Output ("  MIN_BUSINESS={0,-1} actual={1,-4} {2}{3}" -f $minBu, $actBu, $gateBu, $sparseNote)
 
-        $anyWarn = $gateEv -eq "WARN" -or $gatePr -eq "WARN" -or $gateTe -eq "WARN" -or $gateBu -eq "WARN"
-        if ($anyWarn) {
-            Write-Output "  => EXEC KPI GATES: QUOTA_UNMET (pipeline completed - verify_run 9/9 PASS is authoritative)"
+        $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
+        if ($anyFail) {
+            Write-Output "  => EXEC KPI GATES: FAIL"
+            exit 1
         } else {
             Write-Output "  => EXEC KPI GATES: PASS"
         }
@@ -151,6 +152,45 @@ if (Test-Path $execSelMetaPath) {
 } else {
     Write-Output ""
     Write-Output "EXEC KPI GATES: exec_selection.meta.json not found (skipped)"
+}
+
+# ---------------------------------------------------------------------------
+# EXEC KPI META — reads exec_kpi.meta.json written by pipeline
+# ---------------------------------------------------------------------------
+$execKpiMetaPath = Join-Path $repoRoot "outputs\exec_kpi.meta.json"
+if (Test-Path $execKpiMetaPath) {
+    try {
+        $ekm = Get-Content $execKpiMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Output ""
+        Write-Output "EXEC KPI META:"
+        if ($ekm.PSObject.Properties['kpi_targets']) {
+            $kt = $ekm.kpi_targets
+            Write-Output ("  kpi_targets.events  : {0}" -f $kt.events)
+            Write-Output ("  kpi_targets.product : {0}" -f $kt.product)
+            Write-Output ("  kpi_targets.tech    : {0}" -f $kt.tech)
+            Write-Output ("  kpi_targets.business: {0}" -f $kt.business)
+        }
+        if ($ekm.PSObject.Properties['kpi_actuals']) {
+            $ka = $ekm.kpi_actuals
+            Write-Output ("  kpi_actuals.events  : {0}" -f $ka.events)
+            Write-Output ("  kpi_actuals.product : {0}" -f $ka.product)
+            Write-Output ("  kpi_actuals.tech    : {0}" -f $ka.tech)
+            Write-Output ("  kpi_actuals.business: {0}" -f $ka.business)
+        }
+        if ($ekm.PSObject.Properties['business_backfill']) {
+            $bb = $ekm.business_backfill
+            Write-Output ("  backfill.candidates_total: {0}" -f $bb.candidates_total)
+            Write-Output ("  backfill.selected_total  : {0}" -f $bb.selected_total)
+            if ($bb.selected_ids -and $bb.selected_ids.Count -gt 0) {
+                Write-Output ("  backfill.selected_ids(top5): {0}" -f ($bb.selected_ids -join ', '))
+            }
+        }
+    } catch {
+        Write-Output "  exec_kpi meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC KPI META: exec_kpi.meta.json not found (skipped)"
 }
 
 # Z0 Injection Gate Evidence (printed after pipeline run writes the file)
@@ -176,15 +216,21 @@ if (Test-Path $z0InjMetaOnlinePath) {
 # Copies files to outputs\deliveries\<YYYYMMDD_HHMMSS>_<HEAD>\ so every
 # online run produces a traceable, immutable snapshot alongside the evidence.
 # ---------------------------------------------------------------------------
-$_headOnline  = (git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+$CURRENT_HEAD = (git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
 $_tsOnline    = Get-Date -Format "yyyyMMdd_HHmmss"
-$_deliveryDir = Join-Path $repoRoot "outputs\deliveries\${_tsOnline}_${_headOnline}"
+$_deliveryDir = Join-Path $repoRoot "outputs\deliveries\${_tsOnline}_${CURRENT_HEAD}"
 New-Item -ItemType Directory -Path $_deliveryDir -Force | Out-Null
+
+# Verify archive HEAD consistency: extract HEAD from dir name and compare to current HEAD
+$_dirLeaf     = Split-Path $_deliveryDir -Leaf
+$ARCHIVE_HEAD = $($_dirLeaf -replace '^\d{8}_\d{6}_', '')
+$ARCHIVE_HEAD_MATCH = if ($CURRENT_HEAD -eq $ARCHIVE_HEAD) { "PASS" } else { "FAIL" }
 
 $_toArchive = @(
     "outputs\executive_report.pptx",
     "outputs\executive_report.docx",
     "outputs\exec_selection.meta.json",
+    "outputs\exec_kpi.meta.json",
     "outputs\flow_counts.meta.json"
 )
 $_archivedCount = 0
@@ -197,8 +243,15 @@ foreach ($_src in $_toArchive) {
 }
 Write-Output ""
 Write-Output "DELIVERY ARCHIVE:"
-Write-Output ("  delivery_dir   : {0}" -f $_deliveryDir)
-Write-Output ("  archived_files : {0}" -f $_archivedCount)
+Write-Output ("  delivery_dir      : {0}" -f $_deliveryDir)
+Write-Output ("  archived_files    : {0}" -f $_archivedCount)
+Write-Output ("  CURRENT_HEAD      : {0}" -f $CURRENT_HEAD)
+Write-Output ("  ARCHIVE_HEAD      : {0}" -f $ARCHIVE_HEAD)
+Write-Output ("  ARCHIVE_HEAD_MATCH: {0}" -f $ARCHIVE_HEAD_MATCH)
+if ($ARCHIVE_HEAD_MATCH -eq "FAIL") {
+    Write-Output "[verify_online] FAIL: archive HEAD mismatch - repository changed during run"
+    exit 1
+}
 
 # ---------------------------------------------------------------------------
 # EXEC LAYOUT EVIDENCE (online run — same as verify_run, reproduced here for auditability)
