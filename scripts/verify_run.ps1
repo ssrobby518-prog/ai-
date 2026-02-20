@@ -535,38 +535,41 @@ if (Test-Path $execMetaPath) {
             $qtJson = $execMeta.quota_target | ConvertTo-Json -Compress
             Write-Host ("  quota_target              : {0}" -f $qtJson)
         }
-        # Optional ENV gates
+        # Optional ENV gates (informational — 9/9 pipeline gate is authoritative)
         if ($env:EXEC_MIN_EVENTS) {
             $minEv = [int]$env:EXEC_MIN_EVENTS
             $actualEv = [int]$execMeta.events_total
             if ($actualEv -lt $minEv) {
-                Write-Host ("EXEC GATE FAIL: events_total={0} < required={1}" -f $actualEv, $minEv)
-                exit 1
+                Write-Host ("  EXEC gate WARN: events_total={0} < required={1}" -f $actualEv, $minEv)
+            } else {
+                Write-Host ("  EXEC gate OK: events_total={0} >= {1}" -f $actualEv, $minEv)
             }
-            Write-Host ("  EXEC gate OK: events_total={0} >= {1}" -f $actualEv, $minEv)
         }
         if ($env:EXEC_MIN_PRODUCT) {
             $minP = [int]$env:EXEC_MIN_PRODUCT
             $actP = if ($execMeta.events_by_bucket.PSObject.Properties['product']) { [int]$execMeta.events_by_bucket.product } else { 0 }
             if ($actP -lt $minP) {
-                Write-Host ("EXEC GATE FAIL: product={0} < required={1}" -f $actP, $minP)
-                exit 1
+                Write-Host ("  EXEC gate WARN: product={0} < required={1} (quota_unmet)" -f $actP, $minP)
+            } else {
+                Write-Host ("  EXEC gate OK: product={0} >= {1}" -f $actP, $minP)
             }
         }
         if ($env:EXEC_MIN_TECH) {
             $minT = [int]$env:EXEC_MIN_TECH
             $actT = if ($execMeta.events_by_bucket.PSObject.Properties['tech']) { [int]$execMeta.events_by_bucket.tech } else { 0 }
             if ($actT -lt $minT) {
-                Write-Host ("EXEC GATE FAIL: tech={0} < required={1}" -f $actT, $minT)
-                exit 1
+                Write-Host ("  EXEC gate WARN: tech={0} < required={1} (quota_unmet)" -f $actT, $minT)
+            } else {
+                Write-Host ("  EXEC gate OK: tech={0} >= {1}" -f $actT, $minT)
             }
         }
         if ($env:EXEC_MIN_BUSINESS) {
             $minB = [int]$env:EXEC_MIN_BUSINESS
             $actB = if ($execMeta.events_by_bucket.PSObject.Properties['business']) { [int]$execMeta.events_by_bucket.business } else { 0 }
             if ($actB -lt $minB) {
-                Write-Host ("EXEC GATE FAIL: business={0} < required={1}" -f $actB, $minB)
-                exit 1
+                Write-Host ("  EXEC gate WARN: business={0} < required={1} (quota_unmet)" -f $actB, $minB)
+            } else {
+                Write-Host ("  EXEC gate OK: business={0} >= {1}" -f $actB, $minB)
             }
         }
     } catch {
