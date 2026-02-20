@@ -35,6 +35,21 @@ _stats: dict = {
 _GLOSSARY_CACHE: dict | None = None
 
 # ---------------------------------------------------------------------------
+# Big Tech / AI Lab companies — first occurrence is NOT annotated.
+# These names are globally recognized; adding a ZH parenthetical creates
+# clutter rather than clarity.  Other proper nouns (benchmarks, tools,
+# frameworks) still receive first-occurrence annotations from the glossary.
+# ---------------------------------------------------------------------------
+
+NO_GLOSS_TERMS: frozenset = frozenset({
+    "OpenAI", "NVIDIA", "Microsoft", "Google", "Anthropic",
+    "AWS", "Meta", "Apple", "Intel", "xAI",
+})
+
+# Lowercase version for case-insensitive lookup against glossary keys
+_NO_GLOSS_LOWER: frozenset = frozenset(t.lower() for t in NO_GLOSS_TERMS)
+
+# ---------------------------------------------------------------------------
 # Tokens that must NOT receive a ZH annotation even when capitalised
 # ---------------------------------------------------------------------------
 
@@ -140,6 +155,9 @@ def apply_glossary(text: str, glossary: dict, seen: "set | None" = None) -> str:
     for term, zh_annotation in sorted(glossary.items(), key=lambda kv: -len(kv[0])):
         term_key = term.lower()
         if term_key in seen:
+            continue
+        # Big Tech / AI Lab companies: never annotate, regardless of glossary entry
+        if term_key in _NO_GLOSS_LOWER:
             continue
         # Skip if already annotated (previous pass inserted 「term（」)
         if re.search(r'\b' + re.escape(term) + r'（', result, re.IGNORECASE):
