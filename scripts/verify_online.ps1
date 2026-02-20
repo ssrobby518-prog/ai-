@@ -141,7 +141,7 @@ if (Test-Path $execSelMetaPath) {
 
         $anyWarn = $gateEv -eq "WARN" -or $gatePr -eq "WARN" -or $gateTe -eq "WARN" -or $gateBu -eq "WARN"
         if ($anyWarn) {
-            Write-Output "  => EXEC KPI GATES: QUOTA_UNMET (pipeline completed — verify_run 9/9 PASS is authoritative)"
+            Write-Output "  => EXEC KPI GATES: QUOTA_UNMET (pipeline completed - verify_run 9/9 PASS is authoritative)"
         } else {
             Write-Output "  => EXEC KPI GATES: PASS"
         }
