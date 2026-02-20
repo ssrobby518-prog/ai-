@@ -59,25 +59,38 @@ if (Test-Path $metaPath) {
     }
     Write-Output ""
 
-    # Optional Z0 gate: total frontier_ge_85
-    if ($env:Z0_MIN_FRONTIER85) {
-        $minF85 = [int]$env:Z0_MIN_FRONTIER85
-        if ($meta.frontier_ge_85 -lt $minF85) {
-            Write-Output "[verify_online] Z0 GATE FAIL: frontier_ge_85=$($meta.frontier_ge_85) < required=$minF85"
-            exit 1
-        }
-        Write-Output "[verify_online] Z0 gate OK: frontier_ge_85=$($meta.frontier_ge_85) >= $minF85"
+    # ---------------------------------------------------------------------------
+    # Z0 POOL HEALTH GATES — always-on; override via env vars before calling script
+    #   Z0_MIN_TOTAL_ITEMS     (default 800) — guards against near-empty collection
+    #   Z0_MIN_FRONTIER85_72H  (default  10) — guards against stale / no fresh news
+    # Fail-fast: gates run BEFORE pipeline so garbage reports are never generated.
+    # ---------------------------------------------------------------------------
+    $z0MinTotal   = if ($env:Z0_MIN_TOTAL_ITEMS)    { [int]$env:Z0_MIN_TOTAL_ITEMS }    else { 800 }
+    $z0Min85_72h  = if ($env:Z0_MIN_FRONTIER85_72H) { [int]$env:Z0_MIN_FRONTIER85_72H } else { 10  }
+
+    $z0ActualTotal  = if ($meta.PSObject.Properties['total_items'])        { [int]$meta.total_items }        else { 0 }
+    $z0Actual85_72h = if ($meta.PSObject.Properties['frontier_ge_85_72h']) { [int]$meta.frontier_ge_85_72h } else { 0 }
+
+    $gatePoolTotal  = if ($z0ActualTotal  -ge $z0MinTotal)  { "PASS" } else { "FAIL" }
+    $gatePool85_72h = if ($z0Actual85_72h -ge $z0Min85_72h) { "PASS" } else { "FAIL" }
+    $poolAnyFail    = ($gatePoolTotal -eq "FAIL") -or ($gatePool85_72h -eq "FAIL")
+
+    Write-Output ""
+    Write-Output "Z0 POOL HEALTH GATES:"
+    Write-Output ("  Z0_MIN_TOTAL_ITEMS    target={0,-5} actual={1,-5} {2}" -f $z0MinTotal,  $z0ActualTotal,  $gatePoolTotal)
+    Write-Output ("  Z0_MIN_FRONTIER85_72H target={0,-5} actual={1,-5} {2}" -f $z0Min85_72h, $z0Actual85_72h, $gatePool85_72h)
+    Write-Output ("  meta_path   : {0}" -f $metaPath)
+    if ($meta.PSObject.Properties['collected_at']) {
+        Write-Output ("  collected_at: {0}" -f $meta.collected_at)
     }
-    # Optional Z0 gate: 72h window frontier_ge_85
-    if ($env:Z0_MIN_FRONTIER85_72H) {
-        $minF85_72h = [int]$env:Z0_MIN_FRONTIER85_72H
-        $actual72h = if ($meta.PSObject.Properties['frontier_ge_85_72h']) { [int]$meta.frontier_ge_85_72h } else { 0 }
-        if ($actual72h -lt $minF85_72h) {
-            Write-Output "[verify_online] Z0 GATE FAIL: frontier_ge_85_72h=$actual72h < required=$minF85_72h"
-            exit 1
-        }
-        Write-Output "[verify_online] Z0 gate OK: frontier_ge_85_72h=$actual72h >= $minF85_72h"
+    if ($poolAnyFail) {
+        Write-Output "  => Z0 POOL HEALTH GATES: FAIL"
+        exit 1
     }
+    Write-Output "  => Z0 POOL HEALTH GATES: PASS"
+} else {
+    Write-Output "[verify_online] ERROR: Z0 meta not found: $metaPath — pool health check cannot run."
+    exit 1
 }
 
 # ---- Step 2: Set Z0_ENABLED so pipeline reads local JSONL ----
