@@ -449,35 +449,41 @@ def run_pipeline() -> None:
                 _track_a_ids.add(_iid)
                 _track_a.append(_it)
 
-        # Track B: business-relaxed frontier — search FULL deduped pool (not just signal_pool).
-        # Rationale: google_news business articles typically have short RSS summaries
-        # (<300 chars) that fail the body-length signal gate, so they never reach
-        # signal_pool.  deduped contains all z0 items that survived DB dedup, including
-        # those filtered for body_too_short, and all items have z0_frontier_score set.
+        # Tracks B + C: quota supplements from FULL deduped pool (not just signal_pool).
+        # Rationale: official product-announcement sources (OpenAI, Anthropic) and
+        # google_news business articles both tend to have short RSS summaries (<300 chars)
+        # that fail the body-length signal gate, so they never reach signal_pool / Track A.
+        # Track B = best_channel=="business" AND business_score >= threshold
+        # Track C = best_channel=="product"  AND product_score  >= threshold
+        # Both search deduped (all z0 items after DB dedup, body_too_short included).
         _track_b: list = []
-        _z0_deduped_biz_pool = deduped  # all z0 items after DB dedup
-        for _it in _z0_deduped_biz_pool:
+        _track_c: list = []
+        _z0_deduped_supp_pool = deduped  # all z0 items after DB dedup
+        for _it in _z0_deduped_supp_pool:
             _fs = int(getattr(_it, "z0_frontier_score", 0) or 0)
             if _fs < _z0_exec_min_frontier_biz:
-                continue  # below relaxed threshold
+                continue  # below relaxed threshold (shared by both Track B and C)
             _iid = str(getattr(_it, "item_id", "") or id(_it))
             if _iid in _track_a_ids:
                 continue  # already in Track A
             _text = f"{getattr(_it, 'title', '') or ''} {getattr(_it, 'body', '') or ''}"
             _url = str(getattr(_it, "url", "") or "")
-            _ch_b = _classify_channels(_text, _url)
-            if _ch_b["best_channel"] == "business" and _ch_b["business_score"] >= _z0_exec_min_channel:
+            _ch_bc = _classify_channels(_text, _url)
+            if _ch_bc["best_channel"] == "business" and _ch_bc["business_score"] >= _z0_exec_min_channel:
                 _track_b.append(_it)
+            elif _ch_bc["best_channel"] == "product" and _ch_bc["product_score"] >= _z0_exec_min_channel:
+                _track_c.append(_it)
 
         # Merge tracks: sort each by frontier descending, Track A first (higher quality)
         _track_a.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
         _track_b.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
-        _frontier_pool = _track_a + _track_b
+        _track_c.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+        _frontier_pool = _track_a + _track_b + _track_c
         _z0_inject_after_frontier_total = len(_frontier_pool)
 
         # Step 2: channel gate — max(product, tech, business) >= threshold; dev excluded
-        # Track B items already satisfy business_score >= threshold but we run the same
-        # gate for consistency (they will pass).
+        # Supplement items (B/C) already satisfy their respective channel_score >= threshold,
+        # but we run the same gate for consistency (they will pass).
         def _passes_channel_gate(it) -> bool:
             text = f"{getattr(it, 'title', '') or ''} {getattr(it, 'body', '') or ''}"
             url = str(getattr(it, "url", "") or "")
@@ -488,21 +494,28 @@ def run_pipeline() -> None:
         _z0_inject_after_channel_gate_total = len(_channel_passed)
         _z0_inject_dropped_by_channel_gate = _z0_inject_after_frontier_total - _z0_inject_after_channel_gate_total
 
-        # Step 3: Supplement selection (no dev backfill).
-        # _channel_passed is ordered Track A first (frontier >= 65), Track B last (frontier < 65).
-        # Strategy: Track A gets its FULL max_extra budget (maintains product/tech/dev diversity),
-        # then Track B (business) items are APPENDED as a supplement (up to _Z0_BIZ_RESERVE).
-        # Rationale: sharing the budget (Track A: max_extra - biz_reserve, Track B: biz_reserve)
-        # displaced the tail Track A product items, yielding product=0/1.  Additive supplement
-        # lets select_executive_items see both the full product/tech set AND business candidates.
-        _Z0_BIZ_RESERVE = 4  # business supplement: 2× exec business quota target
+        # Step 3: Additive supplement selection (no dev backfill).
+        # Track A gets its FULL max_extra budget (maintains channel diversity).
+        # Tracks B (business) and C (product) are appended as supplements so
+        # select_executive_items() can fill both business >= 2 and product >= 2 quotas
+        # even when signal_pool lacks these channels.
+        _Z0_BIZ_RESERVE = 4   # 2× exec business quota target
+        _Z0_PROD_RESERVE = 4  # 2× exec product quota target
         _track_b_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_b}
+        _track_c_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_c}
         _ch_pass_b = [_it2 for _it2 in _channel_passed
                       if str(getattr(_it2, "item_id", "") or id(_it2)) in _track_b_id_set]
+        _ch_pass_c = [_it2 for _it2 in _channel_passed
+                      if str(getattr(_it2, "item_id", "") or id(_it2)) in _track_c_id_set]
         _ch_pass_a = [_it2 for _it2 in _channel_passed
-                      if str(getattr(_it2, "item_id", "") or id(_it2)) not in _track_b_id_set]
-        # Track A fills full budget; Track B appended as supplement (total may exceed max_extra)
-        _selected_items = _ch_pass_a[:_z0_exec_max_extra] + _ch_pass_b[:_Z0_BIZ_RESERVE]
+                      if str(getattr(_it2, "item_id", "") or id(_it2))
+                      not in (_track_b_id_set | _track_c_id_set)]
+        # Track A fills full budget; Track B and C appended as supplements
+        _selected_items = (
+            _ch_pass_a[:_z0_exec_max_extra]
+            + _ch_pass_b[:_Z0_BIZ_RESERVE]
+            + _ch_pass_c[:_Z0_PROD_RESERVE]
+        )
         _z0_inject_selected_total = len(_selected_items)
 
         z0_exec_extra_cards = _build_soft_quality_cards_from_filtered(_selected_items)

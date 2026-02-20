@@ -130,13 +130,17 @@ def _simulate_injection_gate(
     channel_min: int = 55,
     max_extra: int = 50,
 ) -> dict:
-    """Replicate the run_once.py Z0 injection gate logic (two-track) and return audit counts.
+    """Replicate the run_once.py Z0 injection gate logic (three-track) and return audit counts.
 
     Track A (standard): frontier >= frontier_min — any channel
-    Track B (business-relaxed): frontier >= frontier_min_biz AND best_channel=="business"
-                                 AND business_score >= channel_min
+    Track B (business supplement): frontier >= frontier_min_biz AND best_channel=="business"
+                                    AND business_score >= channel_min
+    Track C (product supplement):  frontier >= frontier_min_biz AND best_channel=="product"
+                                    AND product_score  >= channel_min
     """
     candidates_total = len(items)
+    _BIZ_RESERVE = 4
+    _PROD_RESERVE = 4
 
     # Track A: standard frontier (any channel)
     track_a_ids: set[str] = set()
@@ -148,8 +152,9 @@ def _simulate_injection_gate(
             track_a_ids.add(iid)
             track_a.append(it)
 
-    # Track B: business-relaxed frontier
+    # Tracks B (business) and C (product): supplement from full pool
     track_b: list = []
+    track_c: list = []
     for it in items:
         fs = int(getattr(it, "z0_frontier_score", 0) or 0)
         iid = str(getattr(it, "item_id", "") or id(it))
@@ -160,10 +165,13 @@ def _simulate_injection_gate(
         ch = classify_channels(text, url)
         if ch["best_channel"] == "business" and ch["business_score"] >= channel_min:
             track_b.append(it)
+        elif ch["best_channel"] == "product" and ch["product_score"] >= channel_min:
+            track_c.append(it)
 
     track_a.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
     track_b.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
-    frontier_passed = track_a + track_b
+    track_c.sort(key=lambda it: int(getattr(it, "z0_frontier_score", 0) or 0), reverse=True)
+    frontier_passed = track_a + track_b + track_c
     after_frontier_total = len(frontier_passed)
 
     # Channel gate: max(product, tech, business) >= threshold
@@ -177,7 +185,14 @@ def _simulate_injection_gate(
     after_channel_gate_total = len(channel_passed)
     dropped = after_frontier_total - after_channel_gate_total
 
-    selected = channel_passed[:max_extra]
+    # Additive supplement selection: Track A fills full budget, B and C appended
+    track_b_ids = {str(getattr(it, "item_id", "") or id(it)) for it in track_b}
+    track_c_ids = {str(getattr(it, "item_id", "") or id(it)) for it in track_c}
+    ch_pass_b = [it for it in channel_passed if str(getattr(it, "item_id", "") or id(it)) in track_b_ids]
+    ch_pass_c = [it for it in channel_passed if str(getattr(it, "item_id", "") or id(it)) in track_c_ids]
+    ch_pass_a = [it for it in channel_passed
+                 if str(getattr(it, "item_id", "") or id(it)) not in (track_b_ids | track_c_ids)]
+    selected = ch_pass_a[:max_extra] + ch_pass_b[:_BIZ_RESERVE] + ch_pass_c[:_PROD_RESERVE]
     selected_total = len(selected)
 
     return {
@@ -364,4 +379,83 @@ class TestBusinessRelaxedTrack:
         meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
         assert meta["z0_inject_after_frontier_total"] >= 1, (
             "Track B item should be included in z0_inject_after_frontier_total"
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestProductRelaxedTrack — Track C (frontier >= 45, best_channel == "product")
+# ---------------------------------------------------------------------------
+
+
+class TestProductRelaxedTrack:
+    """Track C: product-announcement articles with frontier 45-64 pass via the product supplement."""
+
+    def _prod_item(self, frontier: int) -> _MockItem:
+        """A pure product-best_channel item at the given frontier score."""
+        return _MockItem(
+            title="OpenAI launches GPT-4o at $0.01/token pricing, generally available",
+            body=(
+                "OpenAI has released GPT-4o with updated pricing tiers: $0.01 per token "
+                "input, $0.03 per token output.  The new model is generally available via "
+                "the API and ChatGPT subscription plan."
+            ),
+            url="https://openai.com/blog/gpt-4o-pricing",
+            frontier_score=frontier,
+        )
+
+    def test_product_item_at_frontier_60_passes_track_c(self):
+        """frontier=60 < 65 (Track A) but >= 45 (Track C) — should be admitted."""
+        item = self._prod_item(frontier=60)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] >= 1, (
+            "Product item with frontier=60 should pass via Track C"
+        )
+
+    def test_product_item_at_frontier_45_passes_track_c(self):
+        """frontier exactly at Track C threshold should be admitted."""
+        item = self._prod_item(frontier=45)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] >= 1, (
+            "Product item with frontier=45 should pass via Track C"
+        )
+
+    def test_product_item_below_threshold_rejected(self):
+        """frontier=44 < 45 — rejected even if best_channel=product."""
+        item = self._prod_item(frontier=44)
+        meta = _simulate_injection_gate([item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        assert meta["z0_inject_selected_total"] == 0, (
+            "Product item with frontier=44 < frontier_min_biz=45 must be rejected"
+        )
+
+    def test_non_product_item_at_frontier_60_not_admitted_via_track_c(self):
+        """frontier=60 with best_channel=business must NOT pass Track C."""
+        biz_item = _MockItem(
+            title="AI startup raises $200M Series C funding from investors valuation $2B",
+            body="The company closed a $200M funding round, valuation $2B, CEO announced expansion.",
+            url="https://news.google.com/biz",
+            frontier_score=60,
+        )
+        meta = _simulate_injection_gate([biz_item], frontier_min=65, frontier_min_biz=45, channel_min=55)
+        # best_channel=business, so Track B admits it but NOT Track C
+        assert meta["z0_inject_selected_total"] >= 1, (
+            "Business item should still pass via Track B (not Track C)"
+        )
+
+    def test_track_b_and_c_items_both_counted(self):
+        """Track B and Track C items both count in z0_inject_after_frontier_total."""
+        biz_item = _MockItem(
+            title="AI startup raises $200M Series C funding from investors valuation $2B",
+            body="The company closed a $200M funding round, valuation $2B, CEO announced expansion.",
+            url="https://news.google.com/biz",
+            frontier_score=60,
+        )
+        prod_item = self._prod_item(frontier=55)
+        meta = _simulate_injection_gate(
+            [biz_item, prod_item], frontier_min=65, frontier_min_biz=45, channel_min=55
+        )
+        assert meta["z0_inject_after_frontier_total"] >= 2, (
+            "Both Track B and Track C items should appear in z0_inject_after_frontier_total"
+        )
+        assert meta["z0_inject_selected_total"] >= 2, (
+            "Both Track B and Track C items should be selected"
         )
