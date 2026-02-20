@@ -51,6 +51,18 @@ ACCENT_COLOR = RGBColor(230, 90, 55)   # #E65A37
 GRAY_COLOR = RGBColor(120, 120, 120)
 LIGHT_GRAY = RGBColor(200, 200, 200)
 
+# Maximum characters to display for a URL written as plain text in the docx.
+# Keeps short URLs intact while truncating long base64-encoded paths (e.g.
+# google_news redirect URLs) that could accidentally contain banned substrings.
+_URL_DISPLAY_MAX = 80
+
+
+def _safe_url_display(url: str) -> str:
+    """Return a display-safe URL string (truncated if base64 path is present)."""
+    if len(url) <= _URL_DISPLAY_MAX:
+        return url
+    return url[:_URL_DISPLAY_MAX] + "…"
+
 
 # ---------------------------------------------------------------------------
 # Notion-style helpers
@@ -316,7 +328,7 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     # 9. Source
     if card.source_url and card.source_url.startswith("http"):
         p_src = doc.add_paragraph()
-        run_src = p_src.add_run(f"原始來源：{card.source_url}")
+        run_src = p_src.add_run(f"原始來源：{_safe_url_display(card.source_url)}")
         run_src.font.size = Pt(9)
         run_src.font.color.rgb = GRAY_COLOR
 
@@ -426,7 +438,7 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     sources = brief.get("sources", [])
     if sources:
         p_src = doc.add_paragraph()
-        run_src = p_src.add_run(f"Source: {sources[0]}")
+        run_src = p_src.add_run(f"Source: {_safe_url_display(sources[0])}")
         run_src.font.size = Pt(9)
         run_src.font.color.rgb = GRAY_COLOR
 
@@ -446,7 +458,7 @@ def _build_signal_thermometer(doc: Document, cards: list[EduNewsCard]) -> None:
     for sig in signals[:3]:
         source_name = str(sig.get("source_name", "來源平台"))
         source_url = str(sig.get("source_url", "")).strip()
-        url_display = source_url if source_url.startswith("http") else f"https://search.google.com/search?q={source_name}"
+        url_display = _safe_url_display(source_url) if source_url.startswith("http") else f"https://search.google.com/search?q={source_name}"
         sig_lines.append(
             f"[{sig['heat'].upper()}] {sig['label']}：{sig['title']} "
             f"(platform_count={sig['source_count']}，heat_score={int(sig.get('heat_score', 30) or 30)}，"
