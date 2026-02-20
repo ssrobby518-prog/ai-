@@ -108,6 +108,51 @@ if ($exitCode -ne 0) {
     exit $exitCode
 }
 
+# ---------------------------------------------------------------------------
+# EXEC KPI GATE EVIDENCE — reads exec_selection.meta.json written by pipeline
+# ---------------------------------------------------------------------------
+$execSelMetaPath = Join-Path $repoRoot "outputs\exec_selection.meta.json"
+if (Test-Path $execSelMetaPath) {
+    try {
+        $esMeta = Get-Content $execSelMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $minEv  = [int]($env:EXEC_MIN_EVENTS   ?? "6")
+        $minPr  = [int]($env:EXEC_MIN_PRODUCT  ?? "2")
+        $minTe  = [int]($env:EXEC_MIN_TECH     ?? "2")
+        $minBu  = [int]($env:EXEC_MIN_BUSINESS ?? "2")
+
+        $actEv = if ($esMeta.PSObject.Properties['events_total'])           { [int]$esMeta.events_total }                              else { 0 }
+        $actPr = if ($esMeta.PSObject.Properties['events_by_bucket'] -and $esMeta.events_by_bucket.PSObject.Properties['product'])   { [int]$esMeta.events_by_bucket.product }  else { 0 }
+        $actTe = if ($esMeta.PSObject.Properties['events_by_bucket'] -and $esMeta.events_by_bucket.PSObject.Properties['tech'])      { [int]$esMeta.events_by_bucket.tech }     else { 0 }
+        $actBu = if ($esMeta.PSObject.Properties['events_by_bucket'] -and $esMeta.events_by_bucket.PSObject.Properties['business'])  { [int]$esMeta.events_by_bucket.business } else { 0 }
+        $sparseDay = if ($esMeta.PSObject.Properties['sparse_day']) { [bool]$esMeta.sparse_day } else { $false }
+
+        $gateEv = if ($actEv -ge $minEv -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gatePr = if ($actPr -ge $minPr -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gateTe = if ($actTe -ge $minTe -or $sparseDay) { "PASS" } else { "FAIL" }
+        $gateBu = if ($actBu -ge $minBu -or $sparseDay) { "PASS" } else { "FAIL" }
+        $sparseNote = if ($sparseDay) { " [sparse-day fallback]" } else { "" }
+
+        Write-Output ""
+        Write-Output "EXEC KPI GATES (default):"
+        Write-Output ("  MIN_EVENTS={0,-3} actual={1,-4} {2}{3}" -f $minEv, $actEv, $gateEv, $sparseNote)
+        Write-Output ("  MIN_PRODUCT={0,-2} actual={1,-4} {2}{3}" -f $minPr, $actPr, $gatePr, $sparseNote)
+        Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
+        Write-Output ("  MIN_BUSINESS={0,-1} actual={1,-4} {2}{3}" -f $minBu, $actBu, $gateBu, $sparseNote)
+
+        if ($gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL") {
+            Write-Output "  => EXEC KPI GATES: FAIL (non-sparse-day quota not met)"
+            exit 1
+        } else {
+            Write-Output "  => EXEC KPI GATES: PASS"
+        }
+    } catch {
+        Write-Output "  exec_selection meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC KPI GATES: exec_selection.meta.json not found (skipped)"
+}
+
 # Z0 Injection Gate Evidence (printed after pipeline run writes the file)
 $z0InjMetaOnlinePath = Join-Path $repoRoot "outputs\z0_injection.meta.json"
 if (Test-Path $z0InjMetaOnlinePath) {
@@ -154,6 +199,61 @@ Write-Output ""
 Write-Output "DELIVERY ARCHIVE:"
 Write-Output ("  delivery_dir   : {0}" -f $_deliveryDir)
 Write-Output ("  archived_files : {0}" -f $_archivedCount)
+
+# ---------------------------------------------------------------------------
+# EXEC LAYOUT EVIDENCE (online run — same as verify_run, reproduced here for auditability)
+# ---------------------------------------------------------------------------
+$execLayoutOnlinePath = Join-Path $repoRoot "outputs\exec_layout.meta.json"
+if (Test-Path $execLayoutOnlinePath) {
+    try {
+        $elmOnline = Get-Content $execLayoutOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Output ""
+        Write-Output "EXEC LAYOUT EVIDENCE:"
+        Write-Output ("  layout_version          : {0}" -f $elmOnline.layout_version)
+        if ($elmOnline.PSObject.Properties['template_map']) {
+            $tmO = $elmOnline.template_map
+            Write-Output ("  template_map.overview   : {0}" -f $tmO.overview)
+            Write-Output ("  template_map.ranking    : {0}" -f $tmO.ranking)
+            Write-Output ("  template_map.pending    : {0}" -f $tmO.pending)
+            Write-Output ("  template_map.sig_summary: {0}" -f $tmO.signal_summary)
+            Write-Output ("  template_map.ev_slide_a : {0}" -f $tmO.event_slide_a)
+            Write-Output ("  template_map.ev_slide_b : {0}" -f $tmO.event_slide_b)
+        }
+        if ($elmOnline.PSObject.Properties['fragment_fix_stats']) {
+            $ffsO = $elmOnline.fragment_fix_stats
+            Write-Output ("  fragment_ratio          : {0}" -f $ffsO.fragment_ratio)
+            Write-Output ("  fragments_detected      : {0}" -f $ffsO.fragments_detected)
+            Write-Output ("  fragments_fixed         : {0}" -f $ffsO.fragments_fixed)
+        }
+        if ($elmOnline.PSObject.Properties['bullet_len_stats']) {
+            $blsO = $elmOnline.bullet_len_stats
+            Write-Output ("  min_bullet_len          : {0}" -f $blsO.min_bullet_len)
+            Write-Output ("  avg_bullet_len          : {0}" -f $blsO.avg_bullet_len)
+        }
+        if ($elmOnline.PSObject.Properties['card_stats']) {
+            $csO = $elmOnline.card_stats
+            Write-Output ("  proof_token_coverage    : {0}" -f $csO.proof_token_coverage_ratio)
+            Write-Output ("  avg_sentences_per_card  : {0}" -f $csO.avg_sentences_per_event_card)
+        }
+        $validCodesO = @('T1','T2','T3','T4','T5','T6','COVER','STRUCTURED_SUMMARY','CORP_WATCH','KEY_TAKEAWAYS','REC_MOVES','DECISION_MATRIX')
+        $invalidCodesO = @()
+        if ($elmOnline.PSObject.Properties['slide_layout_map']) {
+            foreach ($slO in $elmOnline.slide_layout_map) {
+                if ($slO.template_code -notin $validCodesO) { $invalidCodesO += $slO.template_code }
+            }
+        }
+        if ($invalidCodesO.Count -gt 0) {
+            Write-Output ("  WARNING: invalid template codes: {0}" -f ($invalidCodesO -join ', '))
+        } else {
+            Write-Output "  slide_layout_map codes  : all valid (T1-T6 + structural)"
+        }
+    } catch {
+        Write-Output "  exec_layout meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC LAYOUT EVIDENCE: exec_layout.meta.json not found (skipped)"
+}
 
 Write-Output ""
 Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="

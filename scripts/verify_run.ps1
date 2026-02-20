@@ -337,6 +337,63 @@ Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray
 
+# ---------------------------------------------------------------------------
+# EXEC LAYOUT EVIDENCE — Visual Template V1 audit (reads exec_layout.meta.json)
+# ---------------------------------------------------------------------------
+$execLayoutMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_layout.meta.json"
+if (Test-Path $execLayoutMetaPath) {
+    try {
+        $elm = Get-Content $execLayoutMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "EXEC LAYOUT EVIDENCE:"
+        Write-Host ("  layout_version          : {0}" -f $elm.layout_version)
+        if ($elm.PSObject.Properties['template_map']) {
+            $tm = $elm.template_map
+            Write-Host ("  template_map.overview   : {0}" -f $tm.overview)
+            Write-Host ("  template_map.ranking    : {0}" -f $tm.ranking)
+            Write-Host ("  template_map.pending    : {0}" -f $tm.pending)
+            Write-Host ("  template_map.sig_summary: {0}" -f $tm.signal_summary)
+            Write-Host ("  template_map.ev_slide_a : {0}" -f $tm.event_slide_a)
+            Write-Host ("  template_map.ev_slide_b : {0}" -f $tm.event_slide_b)
+        }
+        if ($elm.PSObject.Properties['fragment_fix_stats']) {
+            $ffs = $elm.fragment_fix_stats
+            Write-Host ("  fragment_ratio          : {0}" -f $ffs.fragment_ratio)
+            Write-Host ("  fragments_detected      : {0}" -f $ffs.fragments_detected)
+            Write-Host ("  fragments_fixed         : {0}" -f $ffs.fragments_fixed)
+        }
+        if ($elm.PSObject.Properties['bullet_len_stats']) {
+            $bls = $elm.bullet_len_stats
+            Write-Host ("  min_bullet_len          : {0}" -f $bls.min_bullet_len)
+            Write-Host ("  avg_bullet_len          : {0}" -f $bls.avg_bullet_len)
+        }
+        if ($elm.PSObject.Properties['card_stats']) {
+            $cs = $elm.card_stats
+            Write-Host ("  proof_token_coverage    : {0}" -f $cs.proof_token_coverage_ratio)
+            Write-Host ("  avg_sentences_per_card  : {0}" -f $cs.avg_sentences_per_event_card)
+        }
+        $validCodes = @('T1','T2','T3','T4','T5','T6','COVER','STRUCTURED_SUMMARY','CORP_WATCH','KEY_TAKEAWAYS','REC_MOVES','DECISION_MATRIX')
+        $invalidCodes = @()
+        if ($elm.PSObject.Properties['slide_layout_map']) {
+            foreach ($sl in $elm.slide_layout_map) {
+                if ($sl.template_code -notin $validCodes) {
+                    $invalidCodes += $sl.template_code
+                }
+            }
+        }
+        if ($invalidCodes.Count -gt 0) {
+            Write-Host ("  WARNING: invalid template codes: {0}" -f ($invalidCodes -join ', '))
+        } else {
+            Write-Host "  slide_layout_map codes  : all valid (T1-T6 + structural)"
+        }
+    } catch {
+        Write-Host "  exec_layout meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Host ""
+    Write-Host "EXEC LAYOUT EVIDENCE: exec_layout.meta.json not found (skipped)"
+}
+
 $head = (git rev-parse HEAD 2>$null | Select-Object -First 1)
 $gitStatusSbLines = @(git status -sb 2>$null)
 $gitStatusSb = if ($gitStatusSbLines.Count -gt 0) { "$($gitStatusSbLines[0])".Trim() } else { "" }

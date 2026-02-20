@@ -353,25 +353,29 @@ def _build_structured_summary(doc: Document, cards: list[EduNewsCard],
 
 
 def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> None:
-    """CEO Brief card — WHAT HAPPENED + WHY IT MATTERS (Q&A), matching PPT."""
+    """CEO Brief card — Anti-Fragment v1 fixed 3-section format.
+
+    Sections (EXEC_VISUAL_TEMPLATE_V1 DOCX sync):
+      1. What (narrative_compact: 2-3 sentences with ≥1 hard evidence token)
+      2. Why (business/product/tech impact angle)
+      3. Proof (hard evidence token + source)
+      + Moves (3 bullets, bullet_normalizer enforced)
+      + Risks (2 bullets)
+      + Owner / ETA (1 line)
+    """
+    from utils.narrative_compact import (
+        build_narrative_compact as _nc_build,
+        extract_first_hard_evidence as _nc_extract,
+        has_hard_evidence as _nc_has_ev,
+    )
+    from utils.bullet_normalizer import normalize_bullets_safe as _nb_safe
+
     brief = build_ceo_brief_blocks(card)
+    dc = build_decision_card(card)
     _add_divider(doc)
 
-    # ── WHAT HAPPENED ──
-    _add_heading(doc, f"#{idx}  {brief['title']}", level=2)
-
-    # AI trend liner
-    p_trend = doc.add_paragraph()
-    run_trend = p_trend.add_run(sanitize(brief["ai_trend_liner"]))
-    run_trend.font.size = Pt(11)
-    run_trend.font.color.rgb = ACCENT_COLOR
-    run_trend.bold = True
-
-    # Image query (text reference)
-    p_img = doc.add_paragraph()
-    run_img = p_img.add_run(f"Image: {sanitize(brief['image_query'])}")
-    run_img.font.size = Pt(9)
-    run_img.font.color.rgb = GRAY_COLOR
+    # Section heading
+    _add_heading(doc, f"#{idx}  {sanitize(card.title_plain[:45])}", level=2)
 
     # Embedded image
     try:
@@ -382,57 +386,94 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     except Exception:
         pass
 
-    # Event one-liner
-    _add_bold_label(doc, "事件", brief["event_liner"])
+    # ── Q1: What Happened (narrative_compact) ──
+    _add_heading(doc, "Q1 — What Happened", level=3)
+    narrative = _nc_build(card)
+    p_what = doc.add_paragraph(sanitize(narrative))
+    p_what.paragraph_format.space_after = Pt(6)
+    for run in p_what.runs:
+        run.font.size = Pt(11)
+        run.font.color.rgb = DARK_TEXT
 
-    # Data card (1-3 metrics)
+    # ── Q2: WHY IT MATTERS ──
+    _add_heading(doc, "Q2 — WHY IT MATTERS", level=3)
+    why_text = sanitize(card.why_important or brief.get("q1_meaning", ""))
+    q2_text = sanitize(brief.get("q2_impact", ""))
+    why_combined = why_text
+    if q2_text and q2_text != why_text:
+        why_combined = f"{why_text} {q2_text}".strip()
+    p_why = doc.add_paragraph(why_combined)
+    p_why.paragraph_format.space_after = Pt(6)
+    for run in p_why.runs:
+        run.font.size = Pt(11)
+        run.font.color.rgb = DARK_TEXT
+
+    # ── Section 3: Proof (hard evidence token) ──
+    _add_heading(doc, "Proof — Hard Evidence", level=3)
+    all_text = ' '.join(filter(None, [
+        card.title_plain or '',
+        card.what_happened or '',
+        ' '.join(getattr(card, 'fact_check_confirmed', []) or []),
+        ' '.join(getattr(card, 'evidence_lines', []) or []),
+        getattr(card, 'technical_interpretation', '') or '',
+    ]))
+    proof_token = _nc_extract(all_text)
+    source_label = sanitize(getattr(card, 'source_name', '') or '')
+    proof_text = proof_token if proof_token else '詳見原始來源'
+    proof_lines = [f"關鍵數據：{proof_text}"]
+    if source_label:
+        proof_lines.append(f"來源：{source_label}")
+    if card.source_url and card.source_url.startswith("http"):
+        proof_lines.append(_safe_url_display(card.source_url))
+    _add_callout(doc, "Proof", [sanitize(line) for line in proof_lines])
+
+    # ── Data Card ──
     data_items = brief.get("data_card", [])
     if data_items:
-        dc_lines = [f"{it['value']}  {it['label']}" for it in data_items[:3]]
-        _add_callout(doc, "Data Card", dc_lines)
+        dc_lines = [f'{d["value"]}  {d["label"]}' for d in data_items[:2]]
+    else:
+        score_val = getattr(card, 'final_score', None)
+        dc_lines = [f'{score_val:.1f}/10  重要性評分'] if score_val is not None else ['詳見原始來源']
+    _add_callout(doc, "Data Card", [sanitize(l) for l in dc_lines])
 
-    # Chart spec (text block)
-    chart = brief.get("chart_spec", {})
-    if chart:
-        chart_lines = [
-            f"Chart Type: {chart.get('type', 'bar')}",
-            f"Labels: {', '.join(chart.get('labels', []))}",
-            f"Values: {', '.join(str(v) for v in chart.get('values', []))}",
-        ]
-        _add_callout(doc, "Chart Spec", chart_lines)
+    # ── Chart Type ──
+    chart_spec = brief.get("chart_spec", {}) or {}
+    chart_type = chart_spec.get("type", "bar")
+    _add_callout(doc, "Chart Type", [f"Chart Type: {chart_type}"])
 
-    # CEO metaphor (italic)
-    metaphor = brief.get("ceo_metaphor", "")
-    if metaphor:
-        p_meta = doc.add_paragraph()
-        run_meta = p_meta.add_run(sanitize(metaphor))
-        run_meta.font.size = Pt(11)
-        run_meta.font.color.rgb = GRAY_COLOR
-        run_meta.italic = True
+    # ── Q3 Moves (3 bullets, bullet_normalizer) ──
+    _add_heading(doc, "Q3 — 現在要做什麼 / Moves", level=3)
+    raw_actions = brief.get("q3_actions", []) or []
+    moves = _nb_safe([sanitize(a) for a in raw_actions[:3]])
+    if not moves:
+        moves = ["持續監控此事件後續發展（T+7）。"]
+    move_lines = [f"{i}. {m}" for i, m in enumerate(moves[:3], 1)]
+    _add_callout(doc, "Q3 — 現在要做什麼", move_lines)
 
-    # ── WHY IT MATTERS (Q&A) ──
-    _add_heading(doc, f"#{idx}  WHY IT MATTERS", level=3)
+    # ── Video reference ──
+    video_source = brief.get("video_source", [])
+    if video_source:
+        vid = video_source[0]
+        vid_title = sanitize(vid.get("title", ""))
+        vid_url = vid.get("url", "")
+        vid_lines = [f"Video: {vid_title}"]
+        if vid_url:
+            vid_lines.append(vid_url)
+        _add_callout(doc, "Video Source", [sanitize(l) for l in vid_lines])
 
-    # Q1
-    _add_bold_label(doc, "Q1：這件事的商業意義", brief["q1_meaning"])
+    # ── Risks (2 bullets) ──
+    raw_risks = dc.get("risks", []) or []
+    risks = _nb_safe([sanitize(r) for r in raw_risks[:2]])
+    if risks:
+        _add_callout(doc, "Risks / Watch", [f"• {r}" for r in risks[:2]])
 
-    # Q2
-    _add_bold_label(doc, "Q2：對公司的影響", brief["q2_impact"])
-
-    # Q3 (numbered actions ≤3)
-    actions = brief.get("q3_actions", [])
-    q3_lines = [f"{i}. {sanitize(a)}" for i, a in enumerate(actions[:3], 1)]
-    _add_callout(doc, "Q3：現在要做什麼", q3_lines)
-
-    # Video source
-    videos = brief.get("video_source", [])
-    if videos:
-        vid = videos[0]
-        p_vid = doc.add_paragraph()
-        run_vid = p_vid.add_run(
-            f"Video: {sanitize(vid.get('title', ''))} — {vid.get('url', '')}")
-        run_vid.font.size = Pt(9)
-        run_vid.font.color.rgb = GRAY_COLOR
+    # ── Owner / ETA ──
+    owner = dc.get("owner", "CXO")
+    p_owner = doc.add_paragraph()
+    run_ow = p_owner.add_run(f"Owner: {owner}  |  ETA: T+7")
+    run_ow.font.size = Pt(11)
+    run_ow.bold = True
+    run_ow.font.color.rgb = ACCENT_COLOR
 
     # Sources
     sources = brief.get("sources", [])
