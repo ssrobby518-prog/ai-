@@ -126,5 +126,34 @@ if (Test-Path $z0InjMetaOnlinePath) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# DELIVERY ARCHIVE — versioned copy of artifacts for audit / distribution
+# Copies files to outputs\deliveries\<YYYYMMDD_HHMMSS>_<HEAD>\ so every
+# online run produces a traceable, immutable snapshot alongside the evidence.
+# ---------------------------------------------------------------------------
+$_headOnline  = (git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+$_tsOnline    = Get-Date -Format "yyyyMMdd_HHmmss"
+$_deliveryDir = Join-Path $repoRoot "outputs\deliveries\${_tsOnline}_${_headOnline}"
+New-Item -ItemType Directory -Path $_deliveryDir -Force | Out-Null
+
+$_toArchive = @(
+    "outputs\executive_report.pptx",
+    "outputs\executive_report.docx",
+    "outputs\exec_selection.meta.json",
+    "outputs\flow_counts.meta.json"
+)
+$_archivedCount = 0
+foreach ($_src in $_toArchive) {
+    $_srcFull = Join-Path $repoRoot $_src
+    if (Test-Path $_srcFull) {
+        Copy-Item -Path $_srcFull -Destination $_deliveryDir -Force
+        $_archivedCount++
+    }
+}
+Write-Output ""
+Write-Output "DELIVERY ARCHIVE:"
+Write-Output ("  delivery_dir   : {0}" -f $_deliveryDir)
+Write-Output ("  archived_files : {0}" -f $_archivedCount)
+
 Write-Output ""
 Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="

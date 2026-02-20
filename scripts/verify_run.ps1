@@ -571,4 +571,54 @@ if ($aheadBehind) {
         }
     }
 }
+
+# ---------------------------------------------------------------------------
+# Helper: resolve standard artifact path; glob-fallback to most-recently-
+# modified match when the standard path is missing (avoids path-drift misses)
+# ---------------------------------------------------------------------------
+function Get-LatestArtifactPath {
+    param(
+        [string]$StandardPath,
+        [string]$Pattern,
+        [string]$BaseDir = "outputs"
+    )
+    if (Test-Path $StandardPath) {
+        return [PSCustomObject]@{ Path = (Resolve-Path $StandardPath).Path; IsFallback = $false }
+    }
+    $candidates = Get-ChildItem -Path $BaseDir -Filter $Pattern -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($candidates) {
+        return [PSCustomObject]@{ Path = $candidates.FullName; IsFallback = $true }
+    }
+    return $null
+}
+
+# ---------------------------------------------------------------------------
+# OUTPUT ARTIFACTS EVIDENCE — file fingerprints bound to this pipeline run
+# HEAD is already printed above; these hashes tie the files to that commit
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "OUTPUT ARTIFACTS EVIDENCE:"
+$_artSpecs = @(
+    @{ StdPath = "outputs\executive_report.pptx";    Pattern = "executive_report*.pptx" },
+    @{ StdPath = "outputs\executive_report.docx";    Pattern = "executive_report*.docx" },
+    @{ StdPath = "outputs\exec_selection.meta.json"; Pattern = "exec_selection*.json"   },
+    @{ StdPath = "outputs\flow_counts.meta.json";    Pattern = "flow_counts*.json"      }
+)
+foreach ($_spec in $_artSpecs) {
+    $_found = Get-LatestArtifactPath -StandardPath $_spec.StdPath -Pattern $_spec.Pattern
+    if ($null -eq $_found) {
+        Write-Host ("  {0}: NOT FOUND" -f $_spec.StdPath)
+        continue
+    }
+    $_info = Get-Item $_found.Path
+    $_hash = (Get-FileHash -Path $_found.Path -Algorithm SHA256).Hash
+    $_fb   = if ($_found.IsFallback) { " [FOUND_LATEST=1]" } else { "" }
+    Write-Host ("  {0}{1}:" -f $_spec.StdPath, $_fb)
+    Write-Host ("    path     : {0}" -f $_info.FullName)
+    Write-Host ("    modified : {0}" -f $_info.LastWriteTime.ToString("yyyy-MM-ddTHH:mm:ss"))
+    Write-Host ("    size     : {0} bytes" -f $_info.Length)
+    Write-Host ("    sha256   : {0}" -f $_hash)
+}
+
 Write-Host "=======================================" -ForegroundColor Cyan
