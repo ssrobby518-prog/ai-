@@ -4877,6 +4877,7 @@ def select_executive_items(
         return _bb
 
     by_bucket = _recount_by_bucket()
+    _pre_backfill_by_bucket = dict(by_bucket)  # snapshot before channel backfill runs
 
     quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
     sparse_day = len(selected) < _EXEC_SPARSE_THRESHOLD
@@ -4961,35 +4962,61 @@ def select_executive_items(
             or str(_ch_frontier_defaults[_ch_name])
         )
 
-        _ch_bf: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        _ch_bf: dict = {
+            "candidates_total": 0,
+            "selected_total": 0,
+            "selected_ids": [],
+            "triggered": False,
+            "note": "quota_met_by_primary_pool",
+            "extra_pool_selected": 0,
+        }
         _channel_backfills[_ch_name] = _ch_bf
 
         if by_bucket.get(_ch_name, 0) >= _min_target:
-            continue  # already meets quota
+            continue  # already meets quota — triggered stays False
 
-        # Gather candidates: unused bucket items first, then extra_pool
+        _ch_bf["triggered"] = True
+
+        # Gather candidates: unused bucket items first, then extra_pool (tracked separately)
         _bucket_items: list[tuple[float, EduNewsCard]] = []
         for _b in buckets:
             _bucket_items.extend(buckets[_b])
 
-        _ch_pool = _ch_pool_from_source(_bucket_items, _ch_name, _min_score, _min_frontier, tuples=True)
-        if extra_pool:
-            _ch_pool += _ch_pool_from_source(extra_pool, _ch_name, _min_score, _min_frontier, tuples=False)
+        _ch_pool_bucket = _ch_pool_from_source(
+            _bucket_items, _ch_name, _min_score, _min_frontier, tuples=True
+        )
+        _ch_pool_extra = (
+            _ch_pool_from_source(extra_pool, _ch_name, _min_score, _min_frontier, tuples=False)
+            if extra_pool else []
+        )
+        # Track IDs that came from extra_pool for origin_counts accounting
+        _extra_pool_ids_ch: set[str] = {
+            str(getattr(_c, "item_id", "") or id(_c)) for _, _c in _ch_pool_extra
+        }
+        _ch_pool = _ch_pool_bucket + _ch_pool_extra
 
         _ch_bf["candidates_total"] = len(_ch_pool)
         _ch_pool.sort(key=lambda x: x[0], reverse=True)
 
         _needed = _min_target - by_bucket.get(_ch_name, 0)
+        _extra_selected_count = 0
         for _bscore, _card in _ch_pool:
             if _needed <= 0:
                 break
             if _add(_card):
                 _iid = str(getattr(_card, "item_id", "") or id(_card))
                 _ch_bf["selected_ids"].append(_iid)
+                if _iid in _extra_pool_ids_ch:
+                    _extra_selected_count += 1
                 _needed -= 1
 
         _ch_bf["selected_total"] = len(_ch_bf["selected_ids"])
         _ch_bf["selected_ids"] = _ch_bf["selected_ids"][:5]
+        _ch_bf["extra_pool_selected"] = _extra_selected_count
+        _ch_bf["note"] = (
+            "quota_filled_by_backfill" if _ch_bf["selected_total"] > 0
+            else "quota_unmet_and_no_candidates"
+        )
 
         if _ch_bf["selected_total"] > 0:
             _any_backfill_fired = True
@@ -4998,23 +5025,22 @@ def select_executive_items(
         by_bucket = _recount_by_bucket()
         quota_pass = all(by_bucket.get(b, 0) >= q for b, q in quota.items() if b != "dev")
 
+    _empty_ch_bf: dict = {
+        "candidates_total": 0, "selected_total": 0, "selected_ids": [],
+        "triggered": False, "note": "quota_met_by_primary_pool", "extra_pool_selected": 0,
+    }
     selection_meta: dict = {
         "events_total": len(selected),
         "events_by_bucket": dict(by_bucket),
+        "pre_backfill_by_bucket": _pre_backfill_by_bucket,
         "rejected_irrelevant_count": len(rejected_irrelevant),
         "rejected_top_reasons": list(dict.fromkeys(rejected_top_reasons))[:5],
         "quota_target": dict(quota),
         "quota_pass": quota_pass,
         "sparse_day": sparse_day,
-        "business_backfill": _channel_backfills.get(
-            "business", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
-        ),
-        "product_backfill": _channel_backfills.get(
-            "product", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
-        ),
-        "tech_backfill": _channel_backfills.get(
-            "tech", {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
-        ),
+        "business_backfill": _channel_backfills.get("business", _empty_ch_bf),
+        "product_backfill":  _channel_backfills.get("product",  _empty_ch_bf),
+        "tech_backfill":     _channel_backfills.get("tech",     _empty_ch_bf),
     }
     return selected, selection_meta
 
@@ -5053,7 +5079,23 @@ def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> N
         min_bu = int(os.environ.get("EXEC_MIN_BUSINESS", "2") or "2")
 
         ev_by_bucket = sel_meta.get("events_by_bucket", {})
-        _empty_bf: dict = {"candidates_total": 0, "selected_total": 0, "selected_ids": []}
+        _pre_bf_bb   = sel_meta.get("pre_backfill_by_bucket", {})
+        _empty_bf: dict = {
+            "candidates_total": 0, "selected_total": 0, "selected_ids": [],
+            "triggered": False, "note": "quota_met_by_primary_pool", "extra_pool_selected": 0,
+        }
+
+        def _bf(key: str) -> dict:
+            return sel_meta.get(key, _empty_bf)
+
+        def _origin_counts(ch_key: str, bf_key: str) -> dict:
+            _b = _bf(bf_key)
+            return {
+                "primary_pool": _pre_bf_bb.get(ch_key, 0),
+                "extra_pool":   _b.get("extra_pool_selected", 0),
+                "backfill":     _b.get("selected_total", 0),
+            }
+
         kpi_meta: dict = {
             "kpi_targets": {
                 "events":   min_ev,
@@ -5067,9 +5109,12 @@ def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> N
                 "tech":     ev_by_bucket.get("tech", 0),
                 "business": ev_by_bucket.get("business", 0),
             },
-            "business_backfill": sel_meta.get("business_backfill", _empty_bf),
-            "product_backfill":  sel_meta.get("product_backfill",  _empty_bf),
-            "tech_backfill":     sel_meta.get("tech_backfill",     _empty_bf),
+            "business_backfill":      _bf("business_backfill"),
+            "product_backfill":       _bf("product_backfill"),
+            "tech_backfill":          _bf("tech_backfill"),
+            "business_origin_counts": _origin_counts("business", "business_backfill"),
+            "product_origin_counts":  _origin_counts("product",  "product_backfill"),
+            "tech_origin_counts":     _origin_counts("tech",     "tech_backfill"),
         }
         (out_dir / "exec_kpi.meta.json").write_text(
             json.dumps(kpi_meta, ensure_ascii=False, indent=2),

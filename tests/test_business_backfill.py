@@ -210,3 +210,68 @@ def test_write_exec_kpi_meta_fields(tmp_path, monkeypatch):
     assert data["kpi_actuals"]["business"] == 2
     assert data["business_backfill"]["candidates_total"] == 5
     assert data["product_backfill"]["selected_total"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — triggered=False when quota already met by primary pool
+# ---------------------------------------------------------------------------
+
+def test_exec_kpi_origin_audit_quota_met_no_backfill_triggered(monkeypatch):
+    """When business quota is met by primary pool, triggered=False and note='quota_met_by_primary_pool'.
+
+    Clarifies that candidates=0 / selected=0 does NOT mean backfill is broken —
+    it means backfill was never invoked because quota was already satisfied.
+    """
+    monkeypatch.setenv("EXEC_MIN_BUSINESS", "2")
+    monkeypatch.setenv("EXEC_MIN_PRODUCT",  "0")
+    monkeypatch.setenv("EXEC_MIN_TECH",     "0")
+
+    from core.content_strategy import select_executive_items
+
+    candidates = [
+        _make_card("b1", title=_BIZ_TEXT, score=9.0),
+        _make_card("b2", title=_BIZ_TEXT + " deal", score=8.0),
+    ]
+
+    _selected, meta = select_executive_items(candidates)
+
+    bb = meta.get("business_backfill", {})
+    assert bb.get("triggered") is False, (
+        f"triggered should be False (quota met by primary pool), got: {bb.get('triggered')}"
+    )
+    assert bb.get("note") == "quota_met_by_primary_pool", f"note={bb.get('note')}"
+    assert bb.get("extra_pool_selected") == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — triggered=True but no candidates pass threshold
+# ---------------------------------------------------------------------------
+
+def test_exec_kpi_origin_audit_backfill_triggered_but_no_candidates(monkeypatch):
+    """When business quota unmet and no item clears the score threshold, triggered=True
+    with note='quota_unmet_and_no_candidates' and selected_total=0.
+
+    Clarifies that triggered=True / selected=0 is the signal for 'backfill searched
+    but found nothing qualifying', which is a pipeline warning — not a bug.
+    """
+    monkeypatch.setenv("EXEC_MIN_BUSINESS",       "2")
+    monkeypatch.setenv("EXEC_MIN_PRODUCT",        "0")
+    monkeypatch.setenv("EXEC_MIN_TECH",           "0")
+    monkeypatch.setenv("Z0_EXEC_MIN_CHANNEL_BIZ", "99")  # unreachably high → no candidates pass
+
+    from core.content_strategy import select_executive_items
+
+    # Only tech items — none will score >= 99 on business_score
+    candidates = [
+        _make_card("t1", title=_TECH_TEXT, score=9.0),
+        _make_card("t2", title=_TECH_TEXT + " v2", score=8.5),
+    ]
+
+    _selected, meta = select_executive_items(candidates)
+
+    bb = meta.get("business_backfill", {})
+    assert bb.get("triggered") is True, (
+        f"triggered should be True (quota unmet, backfill searched), got: {bb.get('triggered')}"
+    )
+    assert bb.get("note") == "quota_unmet_and_no_candidates", f"note={bb.get('note')}"
+    assert bb.get("selected_total") == 0

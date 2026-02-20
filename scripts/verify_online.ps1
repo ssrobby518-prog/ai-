@@ -187,6 +187,22 @@ if (Test-Path $execKpiMetaPath) {
                 }
             }
         }
+        Write-Output ""
+        Write-Output "EXEC KPI ORIGIN AUDIT:"
+        foreach ($chKey in @('business', 'product', 'tech')) {
+            $bfKey = "${chKey}_backfill"
+            $ocKey = "${chKey}_origin_counts"
+            if ($ekm.PSObject.Properties[$bfKey]) {
+                $bf        = $ekm.$bfKey
+                $triggered = if ($bf.triggered) { "true" } else { "false" }
+                $note      = if ($bf.note)      { $bf.note } else { "n/a" }
+                Write-Output ("  {0}  triggered={1}  note={2}" -f $chKey, $triggered, $note)
+            }
+            if ($ekm.PSObject.Properties[$ocKey]) {
+                $oc = $ekm.$ocKey
+                Write-Output ("  {0}_origin_counts: primary_pool={1}  extra_pool={2}  backfill={3}" -f $chKey, $oc.primary_pool, $oc.extra_pool, $oc.backfill)
+            }
+        }
     } catch {
         Write-Output "  exec_kpi meta parse error (non-fatal): $_"
     }
