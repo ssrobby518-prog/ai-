@@ -3828,7 +3828,10 @@ def get_event_cards_for_deck(
         selected, sel_meta = select_executive_items(event_cards, extra_pool=_extra_pool or None)
         write_exec_selection_meta(sel_meta)
         write_exec_kpi_meta(sel_meta)
+        write_exec_quality_meta(selected, sel_meta)
         return selected
+    except RuntimeError:
+        raise  # propagate G2/G3 fail-fast gates
     except Exception:
         # If quota selection fails for any reason, return unfiltered pool
         return event_cards
@@ -5122,3 +5125,129 @@ def write_exec_kpi_meta(sel_meta: dict, project_root: "Path | None" = None) -> N
         )
     except Exception:
         pass  # audit write must never break the pipeline
+
+
+# ---------------------------------------------------------------------------
+# G1/G2/G3 quality gate helper functions (pure, testable)
+# ---------------------------------------------------------------------------
+
+def _compute_source_diversity(selected_cards: list, max_share: float = 0.45) -> dict:
+    """Compute source distribution and gate result from a list of EduNewsCard."""
+    events_by_source: dict = {}
+    for card in selected_cards:
+        src = _v522_source_name(card) if hasattr(card, "__class__") else "unknown"
+        events_by_source[src] = events_by_source.get(src, 0) + 1
+    total = max(len(selected_cards), 1)
+    if events_by_source:
+        max_src = max(events_by_source, key=lambda k: events_by_source[k])
+        max_src_count = events_by_source[max_src]
+    else:
+        max_src, max_src_count = "none", 0
+    max_src_share = round(max_src_count / total, 4)
+    gate = "PASS" if max_src_share <= max_share else "FAIL"
+    return {
+        "events_by_source": events_by_source,
+        "max_source": max_src,
+        "max_source_share": max_src_share,
+        "source_diversity_gate": gate,
+    }
+
+
+def _compute_proof_coverage(selected_cards: list, min_coverage: float = 0.85) -> dict:
+    """Compute proof token coverage (G3) over selected event cards."""
+    from utils.narrative_compact import count_hard_evidence_tokens
+
+    proof_missing_ids: list = []
+    proof_covered = 0
+    for card in selected_cards:
+        cid = str(getattr(card, "id", None) or getattr(card, "item_id", None) or "?")
+        text = " ".join(filter(None, [
+            str(getattr(card, "title_plain", "") or ""),
+            str(getattr(card, "what_happened", "") or ""),
+            str(getattr(card, "why_important", "") or ""),
+            str(getattr(card, "technical_interpretation", "") or ""),
+        ]))
+        if count_hard_evidence_tokens(text) > 0:
+            proof_covered += 1
+        else:
+            proof_missing_ids.append(cid)
+    if not selected_cards:
+        return {"proof_coverage_ratio": 1.0, "proof_missing_event_ids": [], "proof_coverage_gate": "PASS"}
+    ratio = round(proof_covered / len(selected_cards), 4)
+    gate = "PASS" if ratio >= min_coverage else "FAIL"
+    return {
+        "proof_coverage_ratio": ratio,
+        "proof_missing_event_ids": proof_missing_ids[:10],
+        "proof_coverage_gate": gate,
+    }
+
+
+def write_exec_quality_meta(
+    selected_cards: list,
+    selection_meta: dict,
+    project_root: "Path | None" = None,
+) -> None:
+    """Write outputs/exec_quality.meta.json (G1/G2/G3 gates).
+
+    G4 (fragment_leak) is updated later by ppt_generator._v1_write_exec_layout_meta.
+    Never raises — audit writes must not break the pipeline.
+    However, if G2 or G3 FAIL and sparse_day is False, a RuntimeError is raised
+    so the pipeline exits before generating a low-quality report.
+    """
+    import json
+    import os
+
+    try:
+        root = project_root or Path(__file__).resolve().parent.parent
+        out_dir = root / "outputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        sparse_day: bool = bool(selection_meta.get("sparse_day", False))
+
+        # G1: AI relevance rejection counts (already computed by select_executive_items)
+        non_ai_rejected_count = int(selection_meta.get("rejected_irrelevant_count", 0))
+        non_ai_rejected_top_reasons: list = list(
+            selection_meta.get("rejected_top_reasons", [])
+        )[:5]
+
+        # G2: Source diversity
+        max_share_threshold = float(os.environ.get("MAX_SOURCE_SHARE", "0.45"))
+        g2 = _compute_source_diversity(selected_cards, max_share=max_share_threshold)
+
+        # G3: Proof coverage
+        min_proof = float(os.environ.get("MIN_PROOF_COVERAGE", "0.85"))
+        g3 = _compute_proof_coverage(selected_cards, min_coverage=min_proof)
+
+        meta: dict = {
+            "non_ai_rejected_count": non_ai_rejected_count,
+            "non_ai_rejected_top_reasons": non_ai_rejected_top_reasons,
+            **g2,
+            **g3,
+            # G4 placeholder — updated by ppt_generator after generation
+            "fragments_detected": 0,
+            "fragments_fixed": 0,
+            "fragments_leaked": 0,
+            "fragment_leak_gate": "PASS",
+        }
+
+        (out_dir / "exec_quality.meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # Fail-fast for G2 and G3 (skip on sparse day to allow thin-data fallback)
+        if not sparse_day:
+            if g2["source_diversity_gate"] == "FAIL":
+                raise RuntimeError(
+                    f"SOURCE_DIVERSITY_GATE FAIL: max_source='{g2['max_source']}' "
+                    f"share={g2['max_source_share']:.1%} > {max_share_threshold:.1%}"
+                )
+            if g3["proof_coverage_gate"] == "FAIL":
+                raise RuntimeError(
+                    f"PROOF_COVERAGE_GATE FAIL: coverage={g3['proof_coverage_ratio']:.1%} "
+                    f"< {min_proof:.1%}  missing_ids={g3['proof_missing_event_ids'][:5]}"
+                )
+    except RuntimeError:
+        raise  # propagate fail-fast gates
+    except Exception:
+        pass  # other errors must not break pipeline

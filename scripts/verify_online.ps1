@@ -339,5 +339,46 @@ if (Test-Path $execLayoutOnlinePath) {
     Write-Output "EXEC LAYOUT EVIDENCE: exec_layout.meta.json not found (skipped)"
 }
 
+# ---------------------------------------------------------------------------
+# EXEC QUALITY GATES (online run) — reads exec_quality.meta.json
+# ---------------------------------------------------------------------------
+$execQualMetaOnlinePath = Join-Path $repoRoot "outputs\exec_quality.meta.json"
+if (Test-Path $execQualMetaOnlinePath) {
+    try {
+        $eqmO = Get-Content $execQualMetaOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $g2O = if ($eqmO.PSObject.Properties['source_diversity_gate']) { $eqmO.source_diversity_gate } else { "PASS" }
+        $g3O = if ($eqmO.PSObject.Properties['proof_coverage_gate'])   { $eqmO.proof_coverage_gate }   else { "PASS" }
+        $g4O = if ($eqmO.PSObject.Properties['fragment_leak_gate'])    { $eqmO.fragment_leak_gate }    else { "PASS" }
+
+        $nonAiO    = if ($eqmO.PSObject.Properties['non_ai_rejected_count'])  { $eqmO.non_ai_rejected_count }  else { 0 }
+        $maxShrO   = if ($eqmO.PSObject.Properties['max_source_share'])       { $eqmO.max_source_share }       else { 0 }
+        $maxSrcO   = if ($eqmO.PSObject.Properties['max_source'])             { $eqmO.max_source }             else { "n/a" }
+        $proofO    = if ($eqmO.PSObject.Properties['proof_coverage_ratio'])   { $eqmO.proof_coverage_ratio }   else { 0 }
+        $leakedO   = if ($eqmO.PSObject.Properties['fragments_leaked'])       { $eqmO.fragments_leaked }       else { 0 }
+        $detectedO = if ($eqmO.PSObject.Properties['fragments_detected'])     { $eqmO.fragments_detected }     else { 0 }
+        $fixedO    = if ($eqmO.PSObject.Properties['fragments_fixed'])        { $eqmO.fragments_fixed }        else { 0 }
+
+        Write-Output ""
+        Write-Output "EXEC QUALITY GATES:"
+        Write-Output ("  AI_RELEVANCE_GATE    : PASS (non_ai_rejected={0})" -f $nonAiO)
+        Write-Output ("  SOURCE_DIVERSITY_GATE: {0} (max_source_share={1:P1} source={2})" -f $g2O, $maxShrO, $maxSrcO)
+        Write-Output ("  PROOF_COVERAGE_GATE  : {0} (ratio={1:P1})" -f $g3O, $proofO)
+        Write-Output ("  FRAGMENT_LEAK_GATE   : {0} (leaked={1} detected={2} fixed={3})" -f $g4O, $leakedO, $detectedO, $fixedO)
+
+        $qualAnyFailO = ($g2O -eq "FAIL") -or ($g3O -eq "FAIL") -or ($g4O -eq "FAIL")
+        if ($qualAnyFailO) {
+            Write-Output "  => EXEC QUALITY GATES: FAIL"
+            exit 1
+        }
+        Write-Output "  => EXEC QUALITY GATES: PASS"
+    } catch {
+        Write-Output "  exec_quality meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC QUALITY GATES: exec_quality.meta.json not found (skipped)"
+}
+
 Write-Output ""
 Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="

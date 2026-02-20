@@ -1898,6 +1898,29 @@ def _v1_write_exec_layout_meta(
     except Exception as exc:
         get_logger().warning('Failed to write exec_layout.meta.json: %s', exc)
 
+    # G4: update exec_quality.meta.json with fragment leak data
+    try:
+        import json as _json_q
+        _q_path = meta_path.parent / 'exec_quality.meta.json'
+        fragments_leaked = max(0, fragments_detected - fragments_fixed)
+        fragment_leak_gate = 'PASS' if fragments_leaked == 0 else 'FAIL'
+        if _q_path.exists():
+            _qm = _json_q.loads(_q_path.read_text(encoding='utf-8'))
+        else:
+            _qm = {}
+        _qm.update({
+            'fragments_detected': fragments_detected,
+            'fragments_fixed': fragments_fixed,
+            'fragments_leaked': fragments_leaked,
+            'fragment_leak_gate': fragment_leak_gate,
+        })
+        _q_path.write_text(
+            _json_q.dumps(_qm, ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+    except Exception as _exc_q:
+        get_logger().warning('exec_quality.meta G4 update error (non-fatal): %s', _exc_q)
+
 
 # ---------------------------------------------------------------------------
 # Override generate_executive_ppt to write exec_layout.meta.json

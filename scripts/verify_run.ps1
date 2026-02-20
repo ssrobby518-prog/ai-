@@ -619,6 +619,49 @@ if (Test-Path $z0InjMetaPath) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# EXEC QUALITY GATES — reads exec_quality.meta.json written by pipeline
+# ---------------------------------------------------------------------------
+$execQualMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_quality.meta.json"
+if (Test-Path $execQualMetaPath) {
+    try {
+        $eqm = Get-Content $execQualMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $eqSparseDay = if ($eqm.PSObject.Properties['sparse_day']) { [bool]$eqm.sparse_day } else { $false }
+
+        $g1Status  = "PASS"   # AI relevance already enforced upstream; report count only
+        $g2Status  = if ($eqm.PSObject.Properties['source_diversity_gate']) { $eqm.source_diversity_gate } else { "PASS" }
+        $g3Status  = if ($eqm.PSObject.Properties['proof_coverage_gate'])   { $eqm.proof_coverage_gate }   else { "PASS" }
+        $g4Status  = if ($eqm.PSObject.Properties['fragment_leak_gate'])    { $eqm.fragment_leak_gate }    else { "PASS" }
+
+        $nonAiRej     = if ($eqm.PSObject.Properties['non_ai_rejected_count'])  { $eqm.non_ai_rejected_count }  else { 0 }
+        $maxSrcShare  = if ($eqm.PSObject.Properties['max_source_share'])       { $eqm.max_source_share }       else { 0 }
+        $maxSrc       = if ($eqm.PSObject.Properties['max_source'])             { $eqm.max_source }             else { "n/a" }
+        $proofRatio   = if ($eqm.PSObject.Properties['proof_coverage_ratio'])   { $eqm.proof_coverage_ratio }   else { 0 }
+        $fragLeaked   = if ($eqm.PSObject.Properties['fragments_leaked'])       { $eqm.fragments_leaked }       else { 0 }
+        $fragDetected = if ($eqm.PSObject.Properties['fragments_detected'])     { $eqm.fragments_detected }     else { 0 }
+        $fragFixed    = if ($eqm.PSObject.Properties['fragments_fixed'])        { $eqm.fragments_fixed }        else { 0 }
+
+        Write-Host ""
+        Write-Host "EXEC QUALITY GATES:"
+        Write-Host ("  AI_RELEVANCE_GATE    : {0} (non_ai_rejected={1})" -f $g1Status, $nonAiRej)
+        Write-Host ("  SOURCE_DIVERSITY_GATE: {0} (max_source_share={1:P1} source={2})" -f $g2Status, $maxSrcShare, $maxSrc)
+        Write-Host ("  PROOF_COVERAGE_GATE  : {0} (ratio={1:P1})" -f $g3Status, $proofRatio)
+        Write-Host ("  FRAGMENT_LEAK_GATE   : {0} (leaked={1} detected={2} fixed={3})" -f $g4Status, $fragLeaked, $fragDetected, $fragFixed)
+
+        $qualAnyFail = ($g2Status -eq "FAIL") -or ($g3Status -eq "FAIL") -or ($g4Status -eq "FAIL")
+        if ($qualAnyFail -and -not $eqSparseDay) {
+            Write-Host "  => EXEC QUALITY GATES: FAIL" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  => EXEC QUALITY GATES: PASS"
+    } catch {
+        Write-Host "  exec_quality meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Host ""
+    Write-Host "EXEC QUALITY GATES: exec_quality.meta.json not found (skipped)"
+}
+
 # Git sync: show behind/ahead counts; prompt if ahead > 0
 $aheadBehind = (git rev-list --left-right --count "origin/main...HEAD" 2>$null | Out-String).Trim()
 if ($aheadBehind) {
