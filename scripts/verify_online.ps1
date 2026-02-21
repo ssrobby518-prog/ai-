@@ -446,6 +446,85 @@ if (Test-Path $execQualMetaOnlinePath) {
     Write-Output "EXEC QUALITY GATES: exec_quality.meta.json not found (skipped)"
 }
 
+# ---------------------------------------------------------------------------
+# GIT UPSTREAM PROBE — same hardened logic as verify_run v2; audits tracking
+# state; never crashes on [gone] / missing refs
+# ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE
+# ---------------------------------------------------------------------------
+$_voGitOriginRef    = $null
+$_voGitOriginMode   = "NONE"
+$_voGitOriginExists = $false
+
+# Method A: git symbolic-ref — local only, fast
+$_voSymRef = (git symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
+if ($_voSymRef -match "refs/remotes/origin/(.+)") {
+    $_voBranchA = $Matches[1].Trim()
+    $null = git show-ref --verify "refs/remotes/origin/$_voBranchA" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $_voGitOriginRef    = "origin/$_voBranchA"
+        $_voGitOriginMode   = "HEAD"
+        $_voGitOriginExists = $true
+    }
+}
+# Method B: git remote show origin — ref must still exist locally
+if (-not $_voGitOriginRef) {
+    $_voRemoteShow = (git remote show origin 2>$null | Out-String)
+    if ($_voRemoteShow -match "HEAD branch:\s*(.+)") {
+        $_voBranchB = $Matches[1].Trim()
+        if ($_voBranchB -ne "(unknown)" -and $_voBranchB -ne "") {
+            $null = git show-ref --verify "refs/remotes/origin/$_voBranchB" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $_voGitOriginRef    = "origin/$_voBranchB"
+                $_voGitOriginMode   = "REMOTE_SHOW"
+                $_voGitOriginExists = $true
+            }
+        }
+    }
+}
+# Method C: explicit local probe — origin/main then origin/master
+if (-not $_voGitOriginRef) {
+    foreach ($_voFb in @("main", "master")) {
+        $null = git show-ref --verify "refs/remotes/origin/$_voFb" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $_voGitOriginRef    = "origin/$_voFb"
+            $_voGitOriginMode   = "FALLBACK"
+            $_voGitOriginExists = $true
+            break
+        }
+    }
+}
+
+$_voOriginRefStr    = if ($_voGitOriginRef)    { $_voGitOriginRef } else { "n/a" }
+$_voOriginExistsStr = if ($_voGitOriginExists) { "true" }           else { "false" }
+
+Write-Output ""
+Write-Output "GIT UPSTREAM:"
+Write-Output ("  ORIGIN_REF_USED  : {0}" -f $_voOriginRefStr)
+Write-Output ("  ORIGIN_REF_MODE  : {0}" -f $_voGitOriginMode)
+Write-Output ("  ORIGIN_REF_EXISTS: {0}" -f $_voOriginExistsStr)
+Write-Output ""
+Write-Output "GIT SYNC:"
+if ($_voGitOriginRef -and $_voGitOriginExists) {
+    $_voAbRaw = (git rev-list --left-right --count "$_voGitOriginRef...HEAD" 2>$null | Out-String).Trim()
+    if ($_voAbRaw -match "^(\d+)\s+(\d+)$") {
+        $_voBehind = [int]$Matches[1]; $_voAhead = [int]$Matches[2]
+        Write-Output ("  GIT_SYNC: behind={0} ahead={1}" -f $_voBehind, $_voAhead)
+        if ($_voBehind -eq 0 -and $_voAhead -eq 0) {
+            Write-Output "  GIT_UP_TO_DATE: PASS"
+        } else {
+            Write-Output ("  GIT_UP_TO_DATE: FAIL (diverged from {0})" -f $_voGitOriginRef)
+            if ($_voAhead  -gt 0) { Write-Output ("  >> {0} commit(s) ahead; run: git push" -f $_voAhead) }
+            if ($_voBehind -gt 0) { Write-Output ("  >> {0} commit(s) behind; run: git pull" -f $_voBehind) }
+        }
+    } else {
+        Write-Output "  GIT_SYNC: WARN — rev-list returned no output"
+        Write-Output "  GIT_UP_TO_DATE: WARN-OK (rev-list empty; run: git fetch origin --prune)"
+    }
+} else {
+    Write-Output "  GIT_SYNC: SKIPPED (origin ref not found in local store)"
+    Write-Output "  GIT_UP_TO_DATE: WARN-OK (cannot verify; run: git fetch origin --prune)"
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="

@@ -412,8 +412,10 @@ if ($workingTree -eq "dirty") {
     exit 1
 }
 
-$branchSummary = if ($gitStatusSb -match "^##\s+(.+)\.\.\.(.+)$") {
-    "$($Matches[1]) -> $($Matches[2]) up-to-date"
+$branchSummary = if ($gitStatusSb -match "\[gone\]") {
+    ($gitStatusSb -replace '^##\s*', '') + "  (WARN-OK: origin ref gone)"
+} elseif ($gitStatusSb -match "^##\s+(.+)\.\.\.(.+)$") {
+    "$($Matches[1]) -> $($Matches[2]) (tracking)"
 } elseif ($gitStatusSb -match "^##\s+(.+)$") {
     "$($Matches[1]) (no upstream)"
 } else {
@@ -699,43 +701,85 @@ if (Test-Path $execQualMetaPath) {
 }
 
 # ---------------------------------------------------------------------------
-# Git sync: auto-detect remote default branch; graceful WARN if gone/unknown
+# GIT UPSTREAM PROBE v2 — hardened: A (symbolic-ref) -> B (remote show) ->
+# C (show-ref probe main/master) -> NONE; never crashes on [gone] / missing refs
+# ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE
 # ---------------------------------------------------------------------------
-Write-Host ""
-Write-Host "GIT SYNC:"
-$_originBranch = $null
-# Method A: git symbolic-ref (fast, works after `git fetch`)
-$_symRef = (git symbolic-ref refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
+$_gitOriginRef    = $null
+$_gitOriginMode   = "NONE"
+$_gitOriginExists = $false
+
+# Method A: git symbolic-ref — local only, fast; works after `git fetch`
+$_symRef = (git symbolic-ref --quiet refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
 if ($_symRef -match "refs/remotes/origin/(.+)") {
-    $_originBranch = $Matches[1]
+    $_branchA = $Matches[1].Trim()
+    $null = git show-ref --verify "refs/remotes/origin/$_branchA" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $_gitOriginRef    = "origin/$_branchA"
+        $_gitOriginMode   = "HEAD"
+        $_gitOriginExists = $true
+    }
 }
-# Method B: git remote show (slower, always fresh)
-if (-not $_originBranch) {
+
+# Method B: git remote show origin — parses HEAD branch (may make network call);
+#           ref must still exist in local store to be usable
+if (-not $_gitOriginRef) {
     $_remoteShow = (git remote show origin 2>$null | Out-String)
     if ($_remoteShow -match "HEAD branch:\s*(.+)") {
-        $_originBranch = $Matches[1].Trim()
-    }
-}
-if ($_originBranch) {
-    $originRef = "origin/$_originBranch"
-    Write-Host ("  ORIGIN_DEFAULT_BRANCH: {0}" -f $_originBranch)
-    Write-Host ("  ORIGIN_REF_USED      : {0}" -f $originRef)
-    $aheadBehind = (git rev-list --left-right --count "$originRef...HEAD" 2>$null | Out-String).Trim()
-    if ($aheadBehind) {
-        $ab = ($aheadBehind -split "\s+")
-        if ($ab.Count -ge 2) {
-            Write-Host ("  GIT_SYNC: behind={0} ahead={1}" -f $ab[0], $ab[1])
-            if ([int]$ab[1] -gt 0) {
-                Write-Host "  >> Branch is ahead of origin. Run: git push origin $_originBranch"
+        $_branchB = $Matches[1].Trim()
+        if ($_branchB -ne "(unknown)" -and $_branchB -ne "") {
+            $null = git show-ref --verify "refs/remotes/origin/$_branchB" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                $_gitOriginRef    = "origin/$_branchB"
+                $_gitOriginMode   = "REMOTE_SHOW"
+                $_gitOriginExists = $true
             }
         }
+    }
+}
+
+# Method C: explicit local show-ref probe — origin/main then origin/master
+if (-not $_gitOriginRef) {
+    foreach ($_fb in @("main", "master")) {
+        $null = git show-ref --verify "refs/remotes/origin/$_fb" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $_gitOriginRef    = "origin/$_fb"
+            $_gitOriginMode   = "FALLBACK"
+            $_gitOriginExists = $true
+            break
+        }
+    }
+}
+
+$_originRefStr    = if ($_gitOriginRef)    { $_gitOriginRef } else { "n/a" }
+$_originExistsStr = if ($_gitOriginExists) { "true" }         else { "false" }
+
+Write-Host ""
+Write-Host "GIT UPSTREAM:"
+Write-Host ("  ORIGIN_REF_USED  : {0}" -f $_originRefStr)
+Write-Host ("  ORIGIN_REF_MODE  : {0}" -f $_gitOriginMode)
+Write-Host ("  ORIGIN_REF_EXISTS: {0}" -f $_originExistsStr)
+Write-Host ""
+Write-Host "GIT SYNC:"
+if ($_gitOriginRef -and $_gitOriginExists) {
+    $_abRaw = (git rev-list --left-right --count "$_gitOriginRef...HEAD" 2>$null | Out-String).Trim()
+    if ($_abRaw -match "^(\d+)\s+(\d+)$") {
+        $_behind = [int]$Matches[1]; $_ahead = [int]$Matches[2]
+        Write-Host ("  GIT_SYNC: behind={0} ahead={1}" -f $_behind, $_ahead)
+        if ($_behind -eq 0 -and $_ahead -eq 0) {
+            Write-Host "  GIT_UP_TO_DATE: PASS"
+        } else {
+            Write-Host ("  GIT_UP_TO_DATE: FAIL (diverged from {0})" -f $_gitOriginRef)
+            if ($_ahead  -gt 0) { Write-Host ("  >> {0} commit(s) ahead of origin; run: git push" -f $_ahead) }
+            if ($_behind -gt 0) { Write-Host ("  >> {0} commit(s) behind origin; run: git pull" -f $_behind) }
+        }
     } else {
-        Write-Host "  GIT_SYNC: WARN — could not compute ahead/behind (run: git fetch origin --prune)"
+        Write-Host "  GIT_SYNC: WARN — rev-list returned no output"
+        Write-Host "  GIT_UP_TO_DATE: WARN-OK (rev-list empty; run: git fetch origin --prune)"
     }
 } else {
-    Write-Host "  ORIGIN_DEFAULT_BRANCH: UNKNOWN"
-    Write-Host "  ORIGIN_REF_USED      : n/a"
-    Write-Host "  GIT_SYNC: WARN — origin HEAD not resolvable; run: git fetch origin --prune"
+    Write-Host "  GIT_SYNC: SKIPPED (origin ref not found in local store)"
+    Write-Host "  GIT_UP_TO_DATE: WARN-OK (cannot verify; run: git fetch origin --prune)"
 }
 
 # ---------------------------------------------------------------------------
