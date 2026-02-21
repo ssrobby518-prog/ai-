@@ -4900,8 +4900,8 @@ def select_executive_items(
     # ---------------------------------------------------------------------------
     import os as _os
 
-    _ch_score_defaults   = {"business": 55, "product": 55, "tech": 50}
-    _ch_frontier_defaults = {"business": 40, "product": 35, "tech": 35}
+    _ch_score_defaults   = {"business": 55, "product": 55, "tech": 45}  # TECH: 50→45
+    _ch_frontier_defaults = {"business": 40, "product": 35, "tech": 30}  # TECH: 35→30
     _ch_env_suffixes     = {"business": "BIZ", "product": "PROD", "tech": "TECH"}
     _ch_min_target_envs  = {
         "business": "EXEC_MIN_BUSINESS",

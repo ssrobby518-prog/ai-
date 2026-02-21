@@ -92,18 +92,32 @@ _PRODUCT_ZH_RE = re.compile(
 
 _TECH_EN_RE = re.compile(
     r"\b(?:weights|checkpoint|benchmark|arXiv|arxiv|"
-    r"architecture|inference|quantiz(?:e|ation)|"
+    r"architecture|inference|quantiz(?:e|ation|ed)|"
     r"system\s+card|throughput|latency|"
-    r"fine-?tun(?:e|ing|ed)|RLHF|RLAIF|DPO|"
-    r"token(?:s|ization)?|context\s+window|"
+    r"fine-?tun(?:e|ing|ed)|RLHF|RLAIF|DPO|SFT|"
+    r"distill(?:ation|ed?)|gguf|ggml|fp8|int4|bfloat16|"
+    r"token(?:s|ization)?|tokenizer|context\s+window|"
     r"MMLU|GPQA|HumanEval|GSM8K|SWE-?bench|AIME|LiveBench|"
     r"parameter(?:s)?|LoRA|RAG|embedding|attention|"
     r"diffusion|multimodal|vision\s+model|audio\s+model|"
-    r"TTS|STT|ASR|MoE|mixture\s+of\s+experts)\b",
+    r"TTS|STT|ASR|MoE|mixture\s+of\s+experts|"
+    r"vLLM|TensorRT|CUDA|ROCm|Triton|"
+    r"pre-?train(?:ing|ed)?|open-?weight[s]?|"
+    r"dataset|eval(?:uation)?|leaderboard)\b",
     re.IGNORECASE,
 )
 _TECH_ZH_RE = re.compile(
-    r"權重|量化|微調|基準|效能|延遲|參數|推論|多模態"
+    r"權重|量化|微調|基準|效能|延遲|參數|推論|多模態|"
+    r"吞吐|評測|訓練框架|開源模型|基準測試|推理框架|蒸餾"
+)
+
+# Strong-tech tie-break: keywords that unmistakably signal technical AI content
+_STRONG_TECH_RE = re.compile(
+    r"\b(?:vLLM|TensorRT|CUDA|ROCm|Triton|checkpoint|weights|"
+    r"quantiz|gguf|ggml|fp8|int4|SFT|distill|tokenizer|"
+    r"pretrain|benchmark|arXiv|inference|throughput|latency|"
+    r"RLHF|DPO|LoRA|embedding|MoE|HumanEval|MMLU|GPQA)\b",
+    re.IGNORECASE,
 )
 
 _BUSINESS_EN_RE = re.compile(
@@ -207,6 +221,12 @@ def classify_channels(
 
     # best_channel determined by raw counts (most domain-relevant)
     best_channel = max(raw, key=lambda k: raw[k])
+
+    # TECH tie-break: if strong tech keyword present and tech is within 2 raw
+    # hits of the leader, prefer tech to avoid misrouting to product/business.
+    if best_channel != "tech" and raw["tech"] >= raw[best_channel] - 2:
+        if _STRONG_TECH_RE.search(full):
+            best_channel = "tech"
 
     # Convert to 0-100 scores with number boost
     num_boost = 20 if _NUMBER_BOOST_RE.search(full) else 0
