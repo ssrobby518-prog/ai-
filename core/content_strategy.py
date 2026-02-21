@@ -5287,3 +5287,39 @@ def write_exec_quality_meta(
         raise  # propagate fail-fast gates
     except Exception:
         pass  # other errors must not break pipeline
+
+
+# ---------------------------------------------------------------------------
+# v5.2.5 — Longform Narrative enrichment layer for build_ceo_brief_blocks
+# ---------------------------------------------------------------------------
+
+_v525_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
+    """V5.2.5: wrap previous build_ceo_brief_blocks with BBC longform enrichment."""
+    brief = dict(_v525_prev_build_ceo_brief_blocks(card))
+    try:
+        from utils.longform_narrative import render_bbc_longform
+        lf = render_bbc_longform(card)
+        if lf.get("eligible"):
+            # Slide A enrichment
+            if lf.get("bg"):
+                brief["event_liner"] = lf["bg"]
+            if lf.get("what_is"):
+                brief["ai_trend_liner"] = lf["what_is"]
+            # Slide B enrichment
+            if lf.get("why"):
+                brief["q1_meaning"] = lf["why"]
+            if lf.get("risks"):
+                brief["q2_impact"] = lf["risks"]
+            if lf.get("next"):
+                next_val = lf["next"]
+                if isinstance(brief.get("q3_actions"), list):
+                    # Prepend longform next as first action item
+                    brief["q3_actions"] = [next_val] + list(brief["q3_actions"])[:2]
+                else:
+                    brief["q3_actions"] = [next_val]
+    except Exception:
+        pass  # longform enrichment is non-fatal
+    return brief

@@ -701,6 +701,50 @@ if (Test-Path $execQualMetaPath) {
 }
 
 # ---------------------------------------------------------------------------
+# LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
+# ---------------------------------------------------------------------------
+$longformMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_longform.meta.json"
+if (Test-Path $longformMetaPath) {
+    try {
+        $lfm = Get-Content $longformMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $lfEligible    = if ($lfm.PSObject.Properties['eligible_count'])       { $lfm.eligible_count }       else { 0 }
+        $lfIneligible  = if ($lfm.PSObject.Properties['ineligible_count'])     { $lfm.ineligible_count }     else { 0 }
+        $lfTotal       = if ($lfm.PSObject.Properties['total_cards_processed']){ $lfm.total_cards_processed } else { 0 }
+        $lfEligRatio   = if ($lfm.PSObject.Properties['eligible_ratio'])       { $lfm.eligible_ratio }        else { 0 }
+        $lfProofRatio  = if ($lfm.PSObject.Properties['proof_coverage_ratio']) { $lfm.proof_coverage_ratio }  else { 0 }
+        $lfProofPres   = if ($lfm.PSObject.Properties['proof_present_count'])  { $lfm.proof_present_count }   else { 0 }
+        $lfProofMiss   = if ($lfm.PSObject.Properties['proof_missing_count'])  { $lfm.proof_missing_count }   else { 0 }
+        $lfAvgAnchor   = if ($lfm.PSObject.Properties['avg_anchor_chars'])     { $lfm.avg_anchor_chars }      else { 0 }
+        $lfMinAnchor   = if ($lfm.PSObject.Properties['min_anchor_chars'])     { $lfm.min_anchor_chars }      else { 1200 }
+
+        Write-Host ""
+        Write-Host "LONGFORM EVIDENCE (exec_longform.meta.json):"
+        Write-Host ("  generated_at          : {0}" -f $lfm.generated_at)
+        Write-Host ("  min_anchor_chars      : {0}" -f $lfMinAnchor)
+        Write-Host ("  total_cards_processed : {0}" -f $lfTotal)
+        Write-Host ("  eligible_count        : {0}  ({1:P1})" -f $lfEligible, $lfEligRatio)
+        Write-Host ("  ineligible_count      : {0}" -f $lfIneligible)
+        Write-Host ("  avg_anchor_chars      : {0}" -f $lfAvgAnchor)
+        Write-Host ("  proof_present_count   : {0}" -f $lfProofPres)
+        Write-Host ("  proof_missing_count   : {0}" -f $lfProofMiss)
+        Write-Host ("  proof_coverage_ratio  : {0:P1}" -f $lfProofRatio)
+        if ($lfm.PSObject.Properties['samples'] -and $lfm.samples.Count -gt 0) {
+            Write-Host "  samples:"
+            foreach ($s in $lfm.samples) {
+                $pf = if ($s.proof_line) { $s.proof_line } else { "(none)" }
+                Write-Host ("    title={0}  anchor={1}  proof={2}" -f ($s.title -replace '[\r\n]+',' '), $s.anchor_chars, $pf)
+            }
+        }
+        Write-Host "  => LONGFORM_EVIDENCE: PASS"
+    } catch {
+        Write-Host "  longform meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Host ""
+    Write-Host "LONGFORM EVIDENCE: exec_longform.meta.json not found (skipped — run pipeline first)"
+}
+
+# ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE v2 — hardened: A (symbolic-ref) -> B (remote show) ->
 # C (show-ref probe main/master) -> NONE; never crashes on [gone] / missing refs
 # ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE

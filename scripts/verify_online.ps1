@@ -603,6 +603,35 @@ if ($_voGitOriginRef -and $_voGitOriginExists) {
     Write-Output "  GIT_UP_TO_DATE: WARN-OK (cannot verify; run: git fetch origin --prune)"
 }
 
+# ---------------------------------------------------------------------------
+# LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
+# ---------------------------------------------------------------------------
+$voLongformPath = Join-Path $repoRoot "outputs\exec_longform.meta.json"
+if (Test-Path $voLongformPath) {
+    try {
+        $voLfm = Get-Content $voLongformPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voLfElig   = if ($voLfm.PSObject.Properties['eligible_count'])       { $voLfm.eligible_count }       else { 0 }
+        $voLfTotal  = if ($voLfm.PSObject.Properties['total_cards_processed']){ $voLfm.total_cards_processed } else { 0 }
+        $voLfERatio = if ($voLfm.PSObject.Properties['eligible_ratio'])       { $voLfm.eligible_ratio }        else { 0 }
+        $voLfPRatio = if ($voLfm.PSObject.Properties['proof_coverage_ratio']) { $voLfm.proof_coverage_ratio }  else { 0 }
+        $voLfAvg    = if ($voLfm.PSObject.Properties['avg_anchor_chars'])     { $voLfm.avg_anchor_chars }      else { 0 }
+
+        Write-Output ""
+        Write-Output "LONGFORM EVIDENCE (exec_longform.meta.json):"
+        Write-Output ("  generated_at         : {0}" -f $voLfm.generated_at)
+        Write-Output ("  total_cards_processed: {0}" -f $voLfTotal)
+        Write-Output ("  eligible_count       : {0}  (ratio={1:P1})" -f $voLfElig, $voLfERatio)
+        Write-Output ("  avg_anchor_chars     : {0}" -f $voLfAvg)
+        Write-Output ("  proof_coverage_ratio : {0:P1}" -f $voLfPRatio)
+        Write-Output "  => LONGFORM_EVIDENCE: PASS"
+    } catch {
+        Write-Output "  longform meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "LONGFORM EVIDENCE: exec_longform.meta.json not found (skipped)"
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
