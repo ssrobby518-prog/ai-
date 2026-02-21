@@ -103,7 +103,8 @@ _TECH_EN_RE = re.compile(
     r"TTS|STT|ASR|MoE|mixture\s+of\s+experts|"
     r"vLLM|TensorRT|CUDA|ROCm|Triton|"
     r"pre-?train(?:ing|ed)?|open-?weight[s]?|"
-    r"dataset|eval(?:uation)?|leaderboard)\b",
+    r"dataset|eval(?:uation)?|leaderboard|"
+    r"LLM|LLMs|agent\s+framework|agentic)\b",
     re.IGNORECASE,
 )
 _TECH_ZH_RE = re.compile(
@@ -116,7 +117,7 @@ _STRONG_TECH_RE = re.compile(
     r"\b(?:vLLM|TensorRT|CUDA|ROCm|Triton|checkpoint|weights|"
     r"quantiz|gguf|ggml|fp8|int4|SFT|distill|tokenizer|"
     r"pretrain|benchmark|arXiv|inference|throughput|latency|"
-    r"RLHF|DPO|LoRA|embedding|MoE|HumanEval|MMLU|GPQA)\b",
+    r"RLHF|DPO|LoRA|embedding|MoE|HumanEval|MMLU|GPQA|LLM|LLMs)\b",
     re.IGNORECASE,
 )
 

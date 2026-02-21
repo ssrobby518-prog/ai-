@@ -137,7 +137,11 @@ _METRIC_RE = re.compile(
     # Time-range anchors: "6 to 12 months", "3 to 6 weeks", "1 to 2 years"
     r"|\b\d+\s+to\s+\d+\s+(?:months?|weeks?|years?|days?)\b"
     # GitHub PR / issue numbers (verbatim in commit titles/PR descriptions)
-    r"|#\d{4,}\b",
+    r"|#\d{4,}\b"
+    # Percentage-in-forecast: "hit 40%", "reach 25%", "target 30%"
+    r"|\b(?:hit|reach(?:es|ed)?|target(?:s|ed)?|forecast(?:s|ed)?|project(?:s|ed)?|predict(?:s|ed)?)\s+\d+(?:\.\d+)?%"
+    # Percentage-with-growth-context: "40% growth", "15% gain", "30% decline"
+    r"|\b\d+(?:\.\d+)?%\s+(?:growth|gain|rise|decline|drop|jump|YoY|QoQ|CAGR|share|increase|return)\b",
     re.IGNORECASE,
 )
 
