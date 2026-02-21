@@ -795,9 +795,38 @@ if (Test-Path $voNv2Path) {
         $voNv2Dedup   = if ($voNv2.PSObject.Properties['avg_dedup_ratio'])           { [double]$voNv2.avg_dedup_ratio }          else { 0.0 }
         Write-Output ""
         Write-Output ("NARRATIVE_V2: applied={0}  avg_zh_ratio={1:F3}  avg_dedup_ratio={2:F3}" -f $voNv2Applied, $voNv2Zh, $voNv2Dedup)
+        if ($voNv2Zh -ge 0.25) {
+            Write-Output ("NARRATIVE_V2 ZH_RATIO_GATE: PASS (avg={0:F3} >= 0.25)" -f $voNv2Zh)
+        } else {
+            Write-Output ("NARRATIVE_V2 ZH_RATIO_GATE: WARN-OK (avg={0:F3} < 0.25 — canonical skeleton active)" -f $voNv2Zh)
+        }
     } catch {
         Write-Output "NARRATIVE_V2: meta parse error (non-fatal)"
     }
+}
+
+# CANONICAL_V3 evidence (Iteration 2 — reads canonical_v3.meta.json)
+$voCanV3Path = Join-Path $repoRoot "outputs\canonical_v3.meta.json"
+if (Test-Path $voCanV3Path) {
+    try {
+        $voCanV3 = Get-Content $voCanV3Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voCanApplied  = if ($voCanV3.PSObject.Properties['canonical_v3_applied_count']) { [int]$voCanV3.canonical_v3_applied_count } else { 0 }
+        $voCanAvgZh    = if ($voCanV3.PSObject.Properties['avg_zh_ratio'])               { [double]$voCanV3.avg_zh_ratio }            else { 0.0 }
+        $voCanMinZh    = if ($voCanV3.PSObject.Properties['min_zh_ratio'])               { [double]$voCanV3.min_zh_ratio }            else { 0.0 }
+        $voCanAvgDedup = if ($voCanV3.PSObject.Properties['avg_dedup_ratio'])            { [double]$voCanV3.avg_dedup_ratio }         else { 0.0 }
+        Write-Output ""
+        Write-Output ("CANONICAL_V3: applied={0} avg_zh_ratio={1:F3} min_zh_ratio={2:F3} avg_dedup_ratio={3:F3}" -f $voCanApplied, $voCanAvgZh, $voCanMinZh, $voCanAvgDedup)
+        if ($voCanAvgZh -ge 0.25) {
+            Write-Output ("CANONICAL_V3 ZH_RATIO: PASS (avg={0:F3} >= 0.25)" -f $voCanAvgZh)
+        } else {
+            Write-Output ("CANONICAL_V3 ZH_RATIO: WARN-OK (avg={0:F3}; ZH skeleton active; min={1:F3})" -f $voCanAvgZh, $voCanMinZh)
+        }
+    } catch {
+        Write-Output "CANONICAL_V3: meta parse error (non-fatal)"
+    }
+} else {
+    Write-Output ""
+    Write-Output "CANONICAL_V3: canonical_v3.meta.json not found (pipeline may not have generated events)"
 }
 
 Write-Output ""

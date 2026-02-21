@@ -393,56 +393,51 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     except Exception:
         pass
 
-    # ── Q1: What Happened (narrative_compact) ──
+    # ── Canonical payload v3: single source of truth ──
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_cp_doc
+        _cp_doc = _get_cp_doc(card)
+    except Exception:
+        _cp_doc = {}
+
     # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across fields in this card section
     _gloss_seen: set = set()
+
+    # ── Q1: What Happened (canonical q1_event_2sent_zh) ──
     _add_heading(doc, "Q1 — What Happened", level=3)
-    narrative = _doc_norm_gloss(_nc_build(card), _DOC_GLOSSARY, _gloss_seen)
-    p_what = doc.add_paragraph(sanitize(narrative))
+    _q1_doc = _cp_doc.get("q1_event_2sent_zh", "") or _nc_build(card)
+    narrative = _doc_norm_gloss(sanitize(_q1_doc), _DOC_GLOSSARY, _gloss_seen)
+    p_what = doc.add_paragraph(narrative)
     p_what.paragraph_format.space_after = Pt(6)
     for run in p_what.runs:
         run.font.size = Pt(11)
         run.font.color.rgb = DARK_TEXT
 
-    # ── Q2: WHY IT MATTERS ──
+    # ── Q2: WHY IT MATTERS (canonical q2_impact_2sent_zh) ──
     _add_heading(doc, "Q2 — WHY IT MATTERS", level=3)
-    why_text = sanitize(card.why_important or brief.get("q1_meaning", ""))
-    q2_text = sanitize(brief.get("q2_impact", ""))
-    why_combined = why_text
-    if q2_text and q2_text != why_text:
-        why_combined = f"{why_text} {q2_text}".strip()
-    why_combined = _doc_norm_gloss(why_combined, _DOC_GLOSSARY, _gloss_seen)
+    _q2_doc = _cp_doc.get("q2_impact_2sent_zh", "") or (card.why_important or brief.get("q1_meaning", ""))
+    why_combined = _doc_norm_gloss(sanitize(_q2_doc), _DOC_GLOSSARY, _gloss_seen)
     p_why = doc.add_paragraph(why_combined)
     p_why.paragraph_format.space_after = Pt(6)
     for run in p_why.runs:
         run.font.size = Pt(11)
         run.font.color.rgb = DARK_TEXT
 
-    # ── Section 3: Proof (hard evidence token) ──
+    # ── Proof (canonical proof_line — 證據：來源：X（YYYY-MM-DD）) ──
     _add_heading(doc, "Proof — Hard Evidence", level=3)
-    all_text = ' '.join(filter(None, [
-        card.title_plain or '',
-        card.what_happened or '',
-        ' '.join(getattr(card, 'fact_check_confirmed', []) or []),
-        ' '.join(getattr(card, 'evidence_lines', []) or []),
-        getattr(card, 'technical_interpretation', '') or '',
-    ]))
-    proof_token = _nc_extract(all_text)
-    source_label = sanitize(getattr(card, 'source_name', '') or '')
-    if not proof_token:
+    _proof_doc = _cp_doc.get("proof_line", "") or brief.get("proof_line", "")
+    if not _proof_doc:
         try:
             from utils.longform_narrative import _make_date_proof_line
-            proof_token = _make_date_proof_line(card)
+            _proof_doc = _make_date_proof_line(card)
         except Exception:
-            _pub = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
-            proof_token = f"來源：{source_label}（{_pub}）" if _pub else f"來源：{source_label}"
-    proof_text = proof_token
-    proof_lines = [f"關鍵數據：{proof_text}"]
-    if source_label:
-        proof_lines.append(f"來源：{source_label}")
+            _src_lbl = sanitize(getattr(card, 'source_name', '') or '')
+            _pub_d = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
+            _proof_doc = f"證據：來源：{_src_lbl}（{_pub_d}）" if _pub_d else f"證據：來源：{_src_lbl}"
+    proof_lines = [sanitize(_proof_doc)]
     if card.source_url and card.source_url.startswith("http"):
         proof_lines.append(_safe_url_display(card.source_url))
-    _add_callout(doc, "Proof", [sanitize(line) for line in proof_lines])
+    _add_callout(doc, "Proof", proof_lines)
 
     # ── Data Card ──
     data_items = brief.get("data_card", [])
@@ -484,8 +479,8 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
             vid_lines.append(vid_url)
         _add_callout(doc, "Video Source", [sanitize(l) for l in vid_lines])
 
-    # ── Risks (2 bullets, fragment guard + glossing) ──
-    raw_risks = dc.get("risks", []) or []
+    # ── Risks (canonical risks_2bullets_zh preferred) ──
+    raw_risks = list(_cp_doc.get("risks_2bullets_zh", []) or []) or dc.get("risks", []) or []
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_rk
     risks = _nb_safe([sanitize(r) for r in raw_risks[:2]])
     risks = [

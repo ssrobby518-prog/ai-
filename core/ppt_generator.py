@@ -1496,8 +1496,8 @@ def _slide_event_ranking(
             else:
                 _v1_add_card(
                     slide, col_x, cy, col_w, card_h,
-                    header_text='監控中',
-                    body_lines=['此欄暫無資料；持續掃描來源中。'],
+                    header_text='本類別',
+                    body_lines=['本類別今日無正式事件，請見 Developing Watchlist。'],
                     bg_color=_V1_CARD_WHITE,
                     header_color=SUBTLE_GRAY,
                     body_color=SUBTLE_GRAY,
@@ -1629,19 +1629,28 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     card_w = 20.5 if img_right else 30.0
     card_left = 1.8
 
-    # Build narrative compact for Card 1 body
     # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across fields on this slide
     _gloss_seen: set = set()
-    narrative = _v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen)
     brief = build_ceo_brief_blocks(card)
-    trend_liner = brief.get('ai_trend_liner', '')
 
-    # Card 1: Q1 — What Happened
+    # ── Canonical payload v3: single source of truth ──
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_cp_T1
+        _cp_T1 = _get_cp_T1(card)
+    except Exception:
+        _cp_T1 = {}
+
+    # Card 1: Q1 — What Happened (canonical q1_event_2sent_zh)
+    _q1_body = safe_text(_cp_T1.get('q1_event_2sent_zh', '') or '', 200)
+    if not _q1_body:
+        _q1_body = safe_text(_v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen), 200)
+    else:
+        _q1_body = safe_text(_v1_norm_gloss(_q1_body, _V1_GLOSSARY, _gloss_seen), 200)
     card1_top, card1_h = 2.8, 4.6
     _v1_add_card(
         slide, card_left, card1_top, card_w, card1_h,
         header_text='Q1 — What Happened',
-        body_lines=[safe_text(narrative, 200)] + ([safe_text(trend_liner, 80)] if trend_liner else []),
+        body_lines=[_q1_body],
         bg_color=_V1_SOFT_BG,
         header_color=_V1_BLUE,
         body_color=_V1_TEXT_GRAY,
@@ -1651,16 +1660,17 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     )
     _v1_vertical_connector(slide, card_left + card_w / 2, card1_top + card1_h, card1_top + card1_h + 0.5)
 
-    # Card 2: Q2 — Why It Matters
+    # Card 2: Q2 — Why It Matters (canonical q2_impact_2sent_zh)
     card2_top = card1_top + card1_h + 0.6
     card2_h = 3.5
-    _why_raw = safe_text(card.why_important or '', 150) or safe_text(brief.get('q1_meaning', ''), 150)
-    why_text = _v1_norm_gloss(_why_raw, _V1_GLOSSARY, _gloss_seen)
-    q2_text = safe_text(brief.get('q2_impact', ''), 100)
+    _q2_body = safe_text(_cp_T1.get('q2_impact_2sent_zh', '') or '', 200)
+    if not _q2_body:
+        _q2_body = safe_text(card.why_important or brief.get('q1_meaning', ''), 150)
+    _q2_body = safe_text(_v1_norm_gloss(_q2_body, _V1_GLOSSARY, _gloss_seen), 200)
     _v1_add_card(
         slide, card_left, card2_top, card_w, card2_h,
-        header_text='Q2 — Why It Matters (Business / Tech / Product)',
-        body_lines=[why_text, q2_text] if q2_text else [why_text],
+        header_text='Q2 — Why It Matters',
+        body_lines=[_q2_body],
         bg_color=_V1_SOFT_BG,
         header_color=_V1_BLUE,
         body_color=_V1_TEXT_GRAY,
@@ -1670,36 +1680,26 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     )
     _v1_vertical_connector(slide, card_left + card_w / 2, card2_top + card2_h, card2_top + card2_h + 0.5)
 
-    # Card 3: Proof
+    # Card 3: Proof (canonical proof_line — fixed format: 證據：來源：X（YYYY-MM-DD）)
     card3_top = card2_top + card2_h + 0.6
     card3_h = 3.0
-    all_text = ' '.join(filter(None, [
-        card.title_plain or '',
-        card.what_happened or '',
-        ' '.join(getattr(card, 'fact_check_confirmed', []) or []),
-        ' '.join(getattr(card, 'evidence_lines', []) or []),
-        getattr(card, 'technical_interpretation', '') or '',
-    ]))
-    proof_token = _v1_extract_ev(all_text)
-    source_label = safe_text(getattr(card, 'source_name', '') or '', 30)
-    source_url = safe_text(getattr(card, 'source_url', '') or '', 60)
-    if not proof_token:
+    _proof_canonical = _cp_T1.get('proof_line', '') or brief.get('proof_line', '')
+    if not _proof_canonical:
+        source_label_fb = safe_text(getattr(card, 'source_name', '') or '', 30)
         try:
             from utils.longform_narrative import _make_date_proof_line
-            proof_token = _make_date_proof_line(card)
+            _proof_canonical = _make_date_proof_line(card)
         except Exception:
-            _pub = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
-            proof_token = f"來源：{source_label}（{_pub}）" if _pub else f"來源：{source_label}"
-    proof_text = proof_token
-    proof_lines = [f'關鍵數據：{proof_text}']
-    if source_label:
-        proof_lines.append(f'來源：{source_label}')
-    if source_url and source_url.startswith('http'):
-        proof_lines.append(safe_text(source_url, 55))
+            _pub_fb = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
+            _proof_canonical = f"證據：來源：{source_label_fb}（{_pub_fb}）" if _pub_fb else f"證據：來源：{source_label_fb}"
+    source_url_T1 = safe_text(getattr(card, 'source_url', '') or '', 60)
+    proof_lines_T1 = [_proof_canonical]
+    if source_url_T1 and source_url_T1.startswith('http'):
+        proof_lines_T1.append(safe_text(source_url_T1, 55))
     _v1_add_card(
         slide, card_left, card3_top, card_w, card3_h,
         header_text='Proof — Hard Evidence',
-        body_lines=proof_lines,
+        body_lines=proof_lines_T1,
         bg_color=_V1_SOFT_BG,
         header_color=_V1_GREEN,
         body_color=_V1_TEXT_GRAY,
@@ -1757,30 +1757,47 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
             shape_type=_V1_ROUNDED_RECT,
         )
 
-    # Risks / Watch
+    # Risks / Watch — canonical risks_2bullets_zh preferred
     _add_divider(slide, Cm(2), Cm(15.0), Cm(29), color=SUBTLE_GRAY)
     _add_textbox(
         slide, Cm(2), Cm(15.2), Cm(18), Cm(0.8),
         'Risks / Watch', font_size=13, bold=True, color=TEXT_WHITE,
     )
-    dc_card = build_decision_card(card)
-    raw_risks = dc_card.get('risks', [])
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_cp_T3
+        _cp_T3 = _get_cp_T3(card)
+        raw_risks = list(_cp_T3.get('risks_2bullets_zh', []) or [])
+    except Exception:
+        raw_risks = []
     if not raw_risks:
-        raw_risks = [safe_text(brief.get('q1_meaning', ''), 55) or '持續監控此事件後續影響。']
-    risks = _v1_norm_bullets_safe(raw_risks[:2])
+        dc_card_fb = build_decision_card(card)
+        raw_risks = dc_card_fb.get('risks', []) or []
+    if not raw_risks:
+        raw_risks = ['持續監控此事件後續影響。']
+    risks_t3 = _v1_norm_bullets_safe(raw_risks[:2])
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_risk
-    risks = [
+    risks_t3 = [
         _v1_norm_gloss(rk, _V1_GLOSSARY, _gloss_seen_p2) if not _is_frag_risk(rk)
         else '持續監控此事件後續影響。'
-        for rk in risks
+        for rk in risks_t3
     ]
-    for ri, rk in enumerate(risks[:2]):
+    for ri, rk in enumerate(risks_t3[:2]):
         _add_textbox(
             slide, Cm(3), Cm(16.2 + ri * 0.9), Cm(18), Cm(0.8),
             f'• {safe_text(rk, 60)}', font_size=11, color=SUBTLE_GRAY,
         )
 
+    # Proof line (canonical — fixed format)
+    _proof_t3 = brief.get('proof_line', '')
+    if _proof_t3:
+        _add_textbox(
+            slide, Cm(2), Cm(18.0), Cm(29), Cm(0.7),
+            safe_text(_proof_t3, 100),
+            font_size=9, color=SUBTLE_GRAY,
+        )
+
     # Owner / ETA
+    dc_card = build_decision_card(card)
     owner = dc_card.get('owner', 'CXO')
     _add_textbox(
         slide, Cm(22), Cm(15.2), Cm(11), Cm(0.8),
@@ -1793,7 +1810,7 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     if videos:
         vid = videos[0]
         _add_textbox(
-            slide, Cm(2), Cm(17.0), Cm(20), Cm(0.7),
+            slide, Cm(2), Cm(17.2), Cm(20), Cm(0.7),
             f'Video: {safe_text(vid.get("title", ""), 50)}',
             font_size=9, color=SUBTLE_GRAY,
         )
@@ -1802,7 +1819,7 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     sources = brief.get('sources', [])
     if sources:
         _add_textbox(
-            slide, Cm(2), Cm(17.8), Cm(29), Cm(0.7),
+            slide, Cm(2), Cm(17.8), Cm(20), Cm(0.6),
             f'Source: {safe_text(sources[0], 80)}',
             font_size=9, color=SUBTLE_GRAY,
         )

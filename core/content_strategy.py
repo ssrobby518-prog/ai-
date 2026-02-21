@@ -5481,3 +5481,101 @@ def write_narrative_v2_meta(cards: list, out_dir: "str | None" = None) -> None:
         json.dumps(meta, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    # Also write canonical_v3.meta.json (Iteration 2 audit)
+    try:
+        from collections import Counter as _Counter
+        v3_all = [getattr(c, "_canonical_v3_debug", None) for c in cards]
+        v3_all = [s for s in v3_all if s is not None]
+        v3_count = len(v3_all)
+        if v3_count:
+            v3_avg_zh   = round(sum(s.get("zh_ratio", 0.0)   for s in v3_all) / v3_count, 3)
+            v3_min_zh   = round(min(s.get("zh_ratio", 0.0)   for s in v3_all), 3)
+            v3_avg_dd   = round(sum(s.get("dedup_ratio", 0.0) for s in v3_all) / v3_count, 3)
+            _src_ctr    = _Counter(s.get("source", "") for s in v3_all if s.get("source"))
+            src_mix_top3 = [{"source": k, "count": v} for k, v in _src_ctr.most_common(3)]
+        else:
+            v3_avg_zh = v3_min_zh = v3_avg_dd = 0.0
+            src_mix_top3 = []
+        v3_meta = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "canonical_v3_applied_count": v3_count,
+            "avg_zh_ratio":   v3_avg_zh,
+            "min_zh_ratio":   v3_min_zh,
+            "avg_dedup_ratio": v3_avg_dd,
+            "source_mix_top3": src_mix_top3,
+        }
+        (root / "canonical_v3.meta.json").write_text(
+            json.dumps(v3_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # canonical_v3 meta is non-fatal
+
+
+# ---------------------------------------------------------------------------
+# v5.2.8 — Canonical Payload v3: single source of truth for ALL text exits
+# ---------------------------------------------------------------------------
+
+_v528_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
+    """V5.2.8: Canonical Payload v3 — replace all text fields from canonical source."""
+    brief = dict(_v528_prev_build_ceo_brief_blocks(card))
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_cp_v528
+        import re as _re_v528
+
+        cp = _get_cp_v528(card)
+
+        q1 = cp.get("q1_event_2sent_zh", "")
+        q2 = cp.get("q2_impact_2sent_zh", "")
+        q3 = cp.get("q3_moves_3bullets_zh", [])
+        risks = cp.get("risks_2bullets_zh", [])
+        proof = cp.get("proof_line", "")
+        title_clean = cp.get("title_clean", "")
+
+        # event_liner (slide 1): first sentence of q1
+        _sents_v528 = _re_v528.split(r"(?<=[。！？])", q1)
+        _sents_v528 = [s.strip() for s in _sents_v528 if s.strip()]
+        if _sents_v528:
+            brief["event_liner"] = _sents_v528[0]
+
+        # q1_meaning (slide 2 Q1: 商業意義) ← canonical q2 (why important)
+        if q2:
+            brief["q1_meaning"] = q2
+
+        # q2_impact (slide 2 Q2: 對公司影響) ← canonical risks joined
+        if risks:
+            brief["q2_impact"] = "；".join(r.rstrip("。！？；") for r in risks[:2]) + "。"
+        elif q2:
+            brief["q2_impact"] = q2
+
+        # q3_actions (slide 2 Q3: 現在要做什麼) ← canonical q3 bullets
+        if q3:
+            brief["q3_actions"] = list(q3[:3])
+
+        # proof_line
+        if proof:
+            brief["proof_line"] = proof
+
+        # title (≤14 chars) — use canonical clean title
+        if title_clean:
+            brief["title"] = title_clean[:14]
+
+        # Store canonical debug for meta (avoid overwriting if already set)
+        if not getattr(card, "_canonical_v3_debug", None):
+            try:
+                setattr(card, "_canonical_v3_debug", {
+                    "item_id":     getattr(card, "item_id", "") or "",
+                    "zh_ratio":    cp.get("zh_ratio", 0.0),
+                    "dedup_ratio": cp.get("dedup_ratio", 0.0),
+                    "source":      getattr(card, "source_name", "") or "",
+                })
+            except Exception:
+                pass
+
+    except Exception:
+        pass  # canonical enrichment is non-fatal
+    return brief
