@@ -852,7 +852,7 @@ if (Test-Path $voNzPath) {
         if ($voNz.PSObject.Properties['samples'] -and $voNz.samples -and $voNz.samples.Count -gt 0) {
             $voNzSample = $voNz.samples[0]
             Write-Output ""
-            Write-Output "NEWSROOM_ZH SAMPLE (event #{0}):" -f 1
+            Write-Output "NEWSROOM_ZH SAMPLE (event #1):"
             Write-Output ("  title   : {0}" -f $voNzSample.title)
             Write-Output ("  Q1      : {0}" -f $voNzSample.q1)
             Write-Output ("  Q2      : {0}" -f $voNzSample.q2)
