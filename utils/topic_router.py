@@ -223,8 +223,9 @@ def classify_channels(
     best_channel = max(raw, key=lambda k: raw[k])
 
     # TECH tie-break: if strong tech keyword present and tech is within 2 raw
-    # hits of the leader, prefer tech to avoid misrouting to product/business.
-    if best_channel != "tech" and raw["tech"] >= raw[best_channel] - 2:
+    # hits of the leader, prefer tech — but ONLY when the leader is "business"
+    # or "dev" (never steal from "product" which has its own KPI quota gate).
+    if best_channel in ("business", "dev") and raw["tech"] >= raw[best_channel] - 2:
         if _STRONG_TECH_RE.search(full):
             best_channel = "tech"
 
