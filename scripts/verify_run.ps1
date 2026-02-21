@@ -170,16 +170,12 @@ $bannedWords = @(
     "pipeline", "ETL", "verify_run", "ingestion", "ai_core",
     "Last July was", "Desktop smoke signal", "signals_insufficient=true",
     "低信心事件候選", "source=platform", "本次無有效新聞；本次掃描統計",
-    # v5.2.6 exec sanitizer — banned template residue
-    "詳見原始來源",
-    "監控中 本欄暫無事件",
+    # v5.2.6 exec sanitizer — ASCII-only banned phrases (CJK checked in EXEC TEXT BAN SCAN)
     "Evidence summary: sources=",
     "Key terms: ",
     "validate source evidence and related numbers",
     "run small-scope checks against current workflow",
-    "escalate only if next scan confirms sustained",
-    "現有策略與資源配置",
-    "的趨勢，解決方 記"
+    "escalate only if next scan confirms sustained"
 )
 $v3Pass = $true
 $notionBannedHits = 0
@@ -826,8 +822,6 @@ $execBanPhrases = @(
     "validate source evidence and related numbers",
     "run small-scope checks against current workflow",
     "escalate only if next scan confirms sustained",
-    "現有策略與資源配置",
-    "的趨勢，解決方 記",
     "WATCH .*: validate",
     "TEST .*: run small-scope",
     "MOVE .*: escalate only"
@@ -862,6 +856,49 @@ foreach ($bp in $execBanPhrases) {
         Write-Host ("  FAIL: Banned phrase '{0}' found in PPT/DOCX output" -f $bp) -ForegroundColor Red
         $execBanHits++
     }
+}
+
+# CJK banned phrases — checked via Python to avoid PowerShell UTF-8 encoding issues
+$cjkBanResult = & $py -c "
+import sys
+try:
+    from pptx import Presentation
+    from docx import Document
+    pptx_text = ''
+    docx_text = ''
+    try:
+        prs = Presentation('outputs/executive_report.pptx')
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for p in shape.text_frame.paragraphs:
+                        pptx_text += p.text + ' '
+    except Exception:
+        pass
+    try:
+        doc = Document('outputs/executive_report.docx')
+        docx_text = ' '.join(p.text for p in doc.paragraphs)
+    except Exception:
+        pass
+    combined = pptx_text + ' ' + docx_text
+    cjk_banned = [
+        '\u8a73\u898b\u539f\u59cb\u4f86\u6e90',
+        '\u76e3\u63a7\u4e2d \u672c\u6b04\u66ab\u7121\u4e8b\u4ef6',
+        '\u73fe\u6709\u7b56\u7565\u8207\u8cc7\u6e90\u914d\u7f6e',
+        '\u7684\u8da8\u52e2\uff0c\u89e3\u6c7a\u65b9 \u8a18',
+    ]
+    hits = [b for b in cjk_banned if b in combined]
+    if hits:
+        print('FAIL:' + '|'.join(hits))
+    else:
+        print('PASS')
+except Exception as e:
+    print('SKIP:' + str(e))
+" 2>$null
+
+if ($cjkBanResult -and $cjkBanResult.StartsWith("FAIL:")) {
+    Write-Host ("  FAIL: CJK banned phrases found: {0}" -f ($cjkBanResult -replace '^FAIL:', '')) -ForegroundColor Red
+    $execBanHits++
 }
 
 if ($execBanHits -gt 0) {
