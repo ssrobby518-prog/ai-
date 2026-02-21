@@ -1497,7 +1497,7 @@ def _slide_event_ranking(
                 _v1_add_card(
                     slide, col_x, cy, col_w, card_h,
                     header_text='監控中',
-                    body_lines=['本欄暫無事件；持續掃描來源中。'],
+                    body_lines=['此欄暫無資料；持續掃描來源中。'],
                     bg_color=_V1_CARD_WHITE,
                     header_color=SUBTLE_GRAY,
                     body_color=SUBTLE_GRAY,

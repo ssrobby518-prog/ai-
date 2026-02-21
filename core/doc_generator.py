@@ -429,7 +429,14 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     ]))
     proof_token = _nc_extract(all_text)
     source_label = sanitize(getattr(card, 'source_name', '') or '')
-    proof_text = proof_token if proof_token else '詳見原始來源'
+    if not proof_token:
+        try:
+            from utils.longform_narrative import _make_date_proof_line
+            proof_token = _make_date_proof_line(card)
+        except Exception:
+            _pub = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
+            proof_token = f"來源：{source_label}（{_pub}）" if _pub else f"來源：{source_label}"
+    proof_text = proof_token
     proof_lines = [f"關鍵數據：{proof_text}"]
     if source_label:
         proof_lines.append(f"來源：{source_label}")
@@ -443,7 +450,7 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
         dc_lines = [f'{d["value"]}  {d["label"]}' for d in data_items[:2]]
     else:
         score_val = getattr(card, 'final_score', None)
-        dc_lines = [f'{score_val:.1f}/10  重要性評分'] if score_val is not None else ['詳見原始來源']
+        dc_lines = [f'{score_val:.1f}/10  重要性評分'] if score_val is not None else ['重要性評分：待確認']
     _add_callout(doc, "Data Card", [sanitize(l) for l in dc_lines])
 
     # ── Chart Type ──
