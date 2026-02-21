@@ -914,6 +914,27 @@ if ($execBanHits -gt 0) {
 Write-Host ("  EXEC TEXT BAN SCAN: PASS (0 hits)") -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
+# NARRATIVE_V2 EVIDENCE — reads outputs/narrative_v2.meta.json (audit only, no gate)
+# ---------------------------------------------------------------------------
+$nv2MetaPath = Join-Path $PSScriptRoot "..\outputs\narrative_v2.meta.json"
+if (Test-Path $nv2MetaPath) {
+    try {
+        $nv2 = Get-Content $nv2MetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $nv2Applied = if ($nv2.PSObject.Properties['narrative_v2_applied_count']) { [int]$nv2.narrative_v2_applied_count } else { 0 }
+        $nv2ZhRatio = if ($nv2.PSObject.Properties['avg_zh_ratio'])              { [double]$nv2.avg_zh_ratio }             else { 0.0 }
+        $nv2Dedup   = if ($nv2.PSObject.Properties['avg_dedup_ratio'])           { [double]$nv2.avg_dedup_ratio }          else { 0.0 }
+        $nv2Sents   = if ($nv2.PSObject.Properties['avg_sentences_used'])        { $nv2.avg_sentences_used }               else { 0 }
+        Write-Host ""
+        Write-Host ("NARRATIVE_V2: applied={0}  avg_zh_ratio={1:F3}  avg_dedup_ratio={2:F3}  avg_sentences_used={3}" -f $nv2Applied, $nv2ZhRatio, $nv2Dedup, $nv2Sents)
+    } catch {
+        Write-Host "NARRATIVE_V2: meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Host ""
+    Write-Host "NARRATIVE_V2: narrative_v2.meta.json not found (skipped)"
+}
+
+# ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE v2 — hardened: A (symbolic-ref) -> B (remote show) ->
 # C (show-ref probe main/master) -> NONE; never crashes on [gone] / missing refs
 # ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE

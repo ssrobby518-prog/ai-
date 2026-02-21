@@ -785,6 +785,21 @@ if ($voExecBanHits -gt 0) {
 }
 Write-Output "  EXEC TEXT BAN SCAN: PASS (0 hits)"
 
+# NARRATIVE_V2 evidence (audit only — reads narrative_v2.meta.json)
+$voNv2Path = Join-Path $repoRoot "outputs\narrative_v2.meta.json"
+if (Test-Path $voNv2Path) {
+    try {
+        $voNv2 = Get-Content $voNv2Path -Raw | ConvertFrom-Json
+        $voNv2Applied = if ($voNv2.PSObject.Properties['narrative_v2_applied_count']) { [int]$voNv2.narrative_v2_applied_count } else { 0 }
+        $voNv2Zh      = if ($voNv2.PSObject.Properties['avg_zh_ratio'])              { [double]$voNv2.avg_zh_ratio }             else { 0.0 }
+        $voNv2Dedup   = if ($voNv2.PSObject.Properties['avg_dedup_ratio'])           { [double]$voNv2.avg_dedup_ratio }          else { 0.0 }
+        Write-Output ""
+        Write-Output ("NARRATIVE_V2: applied={0}  avg_zh_ratio={1:F3}  avg_dedup_ratio={2:F3}" -f $voNv2Applied, $voNv2Zh, $voNv2Dedup)
+    } catch {
+        Write-Output "NARRATIVE_V2: meta parse error (non-fatal)"
+    }
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="

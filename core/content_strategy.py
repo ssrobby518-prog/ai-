@@ -5376,3 +5376,95 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
     except Exception:
         pass  # sanitizer is non-fatal
     return brief
+
+
+# ---------------------------------------------------------------------------
+# v5.2.7 — Narrative Compactor v2: 2–3 sentence clean narrative per event card
+# ---------------------------------------------------------------------------
+
+_v527_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+
+
+def _v527_split_for_brief(narrative: str) -> list[str]:
+    """Split narrative into parts at CJK terminators for brief field mapping."""
+    parts = re.split(r"(?<=[。！？])", narrative)
+    parts = [p.strip() for p in parts if p.strip() and len(p.strip()) >= 4]
+    return parts if parts else [narrative]
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
+    """V5.2.7: Apply narrative_compactor_v2 to replace event_liner/q1_meaning/q3_actions."""
+    brief = dict(_v527_prev_build_ceo_brief_blocks(card))
+    try:
+        from utils.narrative_compactor_v2 import build_narrative_v2
+
+        comp = build_narrative_v2(card)
+        narrative = comp.get("narrative_2to3_sentences_zh", "")
+        bullets = comp.get("bullets_2to3", [])
+        proof = comp.get("proof_line", "")
+        stats = comp.get("debug_stats", {})
+
+        # Map narrative sentences to slide fields
+        if narrative:
+            parts = _v527_split_for_brief(narrative)
+            if parts:
+                brief["event_liner"] = parts[0]
+            if len(parts) >= 2:
+                brief["q1_meaning"] = " ".join(parts[1:])
+            # If only 1 sentence, leave q1_meaning from prior layer (v525/v526)
+
+        # Replace q3_actions with compacted bullets (min 12 chars each)
+        if bullets:
+            valid = [str(b).strip() for b in bullets if len(str(b).strip()) >= 12]
+            if valid:
+                brief["q3_actions"] = valid[:3]
+
+        # Store proof_line in brief for downstream use (Iteration 2 will wire it fully)
+        if proof:
+            brief["proof_line"] = proof
+
+        # Attach debug stats to card for meta collection (avoid double-counting)
+        if not getattr(card, "_narrative_v2_debug", None):
+            setattr(card, "_narrative_v2_debug", {
+                "item_id": getattr(card, "item_id", "") or "",
+                **stats,
+            })
+    except Exception:
+        pass  # narrative compactor is non-fatal
+    return brief
+
+
+def write_narrative_v2_meta(cards: list, out_dir: "str | None" = None) -> None:
+    """Write outputs/narrative_v2.meta.json from per-card debug stats.
+
+    Called by ppt_generator after generation; non-fatal.
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    all_stats = [getattr(c, "_narrative_v2_debug", None) for c in cards]
+    all_stats = [s for s in all_stats if s is not None]
+    count = len(all_stats)
+
+    if count:
+        avg_dedup = round(sum(s.get("dedup_ratio", 0.0) for s in all_stats) / count, 3)
+        avg_zh = round(sum(s.get("zh_ratio", 0.0) for s in all_stats) / count, 3)
+        avg_sents = round(sum(s.get("sentences_used", 0) for s in all_stats) / count, 2)
+    else:
+        avg_dedup = avg_zh = avg_sents = 0.0
+
+    meta = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "narrative_v2_applied_count": count,
+        "avg_dedup_ratio": avg_dedup,
+        "avg_zh_ratio": avg_zh,
+        "avg_sentences_used": avg_sents,
+    }
+
+    root = Path(out_dir) if out_dir else Path(__file__).resolve().parent.parent / "outputs"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "narrative_v2.meta.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )

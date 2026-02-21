@@ -1975,6 +1975,13 @@ def _v1_write_exec_layout_meta(
     except Exception as _exc_q:
         get_logger().warning('exec_quality.meta G4 update error (non-fatal): %s', _exc_q)
 
+    # Narrative Compactor v2 meta — collect per-card debug stats written by v527 wrapper
+    try:
+        from core.content_strategy import write_narrative_v2_meta as _write_nv2_meta
+        _write_nv2_meta(event_cards, out_dir=str(meta_path.parent))
+    except Exception as _exc_nv2:
+        get_logger().warning('narrative_v2 meta write error (non-fatal): %s', _exc_nv2)
+
 
 # ---------------------------------------------------------------------------
 # Override generate_executive_ppt to write exec_layout.meta.json
