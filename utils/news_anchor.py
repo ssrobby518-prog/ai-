@@ -7,12 +7,12 @@ amounts, parameter counts, benchmarks, and product/model names.  These anchors
 are then injected into newsroom_zh_rewrite v2 to prevent generic output.
 
 Rules (only tokens that exist verbatim in source text):
-  1. version   — v\d+, model family + version (GPT-4.5, Llama-3.1-70B …)
-  2. money     — $Xm/b, Xbn, 億元, 萬美元 …
-  3. params    — \d+(B|M) where B>=1 or M>=100 (AI scale only)
-  4. benchmark — MMLU / GPQA / SWE-bench / Arena / leaderboard / 評測 …
+  1. version   — v[N]+, model family + version (GPT-4.5, Llama-3.1-70B ...)
+  2. money     — $Xm/b, Xbn, 億元, 萬美元 ...
+  3. params    — N(B|M) where B>=1 or M>=100 (AI scale only)
+  4. benchmark — MMLU / GPQA / SWE-bench / Arena / leaderboard / 評測 ...
   5. product   — known model families (conservative; passes stopword blacklist)
-  6. metric    — "Nx faster", "Y% reduction", percentage achievements
+  6. metric    — "Nx faster", "Y% reduction", time ranges, GitHub PR numbers
 
 Fallback: if none of the above → has_anchor=False (anchor_missing=True in payload)
 
@@ -133,7 +133,11 @@ _METRIC_RE = re.compile(
     r"|\b\d+(?:\.\d+)?%\s+(?:cost|latency|throughput|performance|accuracy)"
     r"|\b\d+(?:\.\d+)?\s*倍(?:提升|加速|降低|更快|更便宜)"
     r"|\b提升\d+(?:\.\d+)?%"
-    r"|\b降低\d+(?:\.\d+)?%",
+    r"|\b降低\d+(?:\.\d+)?%"
+    # Time-range anchors: "6 to 12 months", "3 to 6 weeks", "1 to 2 years"
+    r"|\b\d+\s+to\s+\d+\s+(?:months?|weeks?|years?|days?)\b"
+    # GitHub PR / issue numbers (verbatim in commit titles/PR descriptions)
+    r"|#\d{4,}\b",
     re.IGNORECASE,
 )
 
