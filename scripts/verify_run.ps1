@@ -169,7 +169,17 @@ $bannedWords = @(
     "ai???", "AI Intel", "Z1", "Z2", "Z3", "Z4", "Z5",
     "pipeline", "ETL", "verify_run", "ingestion", "ai_core",
     "Last July was", "Desktop smoke signal", "signals_insufficient=true",
-    "低信心事件候選", "source=platform", "本次無有效新聞；本次掃描統計"
+    "低信心事件候選", "source=platform", "本次無有效新聞；本次掃描統計",
+    # v5.2.6 exec sanitizer — banned template residue
+    "詳見原始來源",
+    "監控中 本欄暫無事件",
+    "Evidence summary: sources=",
+    "Key terms: ",
+    "validate source evidence and related numbers",
+    "run small-scope checks against current workflow",
+    "escalate only if next scan confirms sustained",
+    "現有策略與資源配置",
+    "的趨勢，解決方 記"
 )
 $v3Pass = $true
 $notionBannedHits = 0
@@ -799,6 +809,66 @@ if (Test-Path $longformMetaPath) {
         Write-Host "  longform daily count parse error (non-fatal): $_"
     }
 }
+
+# ---------------------------------------------------------------------------
+# EXEC TEXT BAN SCAN — fail-fast gate (v5.2.6 sanitizer validation)
+# Scans PPTX + DOCX for any banned template/internal-tag phrases.
+# These are a superset of $bannedWords already checked above; this block
+# makes the gate explicit and labeled for CI evidence.
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "EXEC TEXT BAN SCAN:" -ForegroundColor Yellow
+$execBanPhrases = @(
+    "詳見原始來源",
+    "監控中 本欄暫無事件",
+    "Evidence summary: sources=",
+    "Key terms: ",
+    "validate source evidence and related numbers",
+    "run small-scope checks against current workflow",
+    "escalate only if next scan confirms sustained",
+    "現有策略與資源配置",
+    "的趨勢，解決方 記",
+    "WATCH .*: validate",
+    "TEST .*: run small-scope",
+    "MOVE .*: escalate only"
+)
+$execBanHits = 0
+
+# Scan PPTX
+$pptxScanText = & $py -c "
+from pptx import Presentation
+prs = Presentation('outputs/executive_report.pptx')
+for slide in prs.slides:
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for p in shape.text_frame.paragraphs:
+                print(p.text, end=' ')
+" 2>$null
+
+# Scan DOCX
+$docxScanText = & $py -c "
+from docx import Document
+doc = Document('outputs/executive_report.docx')
+print(' '.join(p.text for p in doc.paragraphs))
+for t in doc.tables:
+    for row in t.rows:
+        for cell in row.cells:
+            print(cell.text, end=' ')
+" 2>$null
+
+$combinedScanText = "$pptxScanText $docxScanText"
+foreach ($bp in $execBanPhrases) {
+    if ($combinedScanText -match $bp) {
+        Write-Host ("  FAIL: Banned phrase '{0}' found in PPT/DOCX output" -f $bp) -ForegroundColor Red
+        $execBanHits++
+    }
+}
+
+if ($execBanHits -gt 0) {
+    Write-Host ("  EXEC TEXT BAN SCAN: FAIL ({0} hit(s))" -f $execBanHits) -ForegroundColor Red
+    exit 1
+}
+Write-Host ("  EXEC TEXT BAN SCAN: PASS (0 hits)") -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE v2 — hardened: A (symbolic-ref) -> B (remote show) ->

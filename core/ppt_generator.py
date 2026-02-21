@@ -1683,7 +1683,14 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     proof_token = _v1_extract_ev(all_text)
     source_label = safe_text(getattr(card, 'source_name', '') or '', 30)
     source_url = safe_text(getattr(card, 'source_url', '') or '', 60)
-    proof_text = proof_token if proof_token else '詳見原始來源'
+    if not proof_token:
+        try:
+            from utils.longform_narrative import _make_date_proof_line
+            proof_token = _make_date_proof_line(card)
+        except Exception:
+            _pub = str(getattr(card, 'published_at_parsed', '') or getattr(card, 'published_at', '') or '').strip()[:10]
+            proof_token = f"來源：{source_label}（{_pub}）" if _pub else f"來源：{source_label}"
+    proof_text = proof_token
     proof_lines = [f'關鍵數據：{proof_text}']
     if source_label:
         proof_lines.append(f'來源：{source_label}')
@@ -2006,12 +2013,41 @@ def _append_watchlist_slide(
     top_start = Cm(2.35)
     max_show = min(len(watchlist_cards), 7)
 
+    try:
+        from utils.exec_sanitizer import sanitize_exec_text as _san
+    except Exception:
+        def _san(t: str) -> str:  # type: ignore[misc]
+            return t
+
     for i, card in enumerate(watchlist_cards[:max_show]):
+        # Prefer watchlist-specific payload (lower 600-char threshold)
+        wl = getattr(card, '_watchlist_longform_payload', None) or {}
         lf = getattr(card, '_longform_v1_cache', {}) or {}
+
         title = safe_text(getattr(card, 'title_plain', '') or '', limit=100)
-        why_raw = lf.get('why', '') or getattr(card, 'why_important', '') or ''
-        why = safe_text(why_raw, limit=120)
-        proof = safe_text(lf.get('proof_line', ''), limit=100)
+
+        # what line: watchlist payload 'what' → lf 'bg'/'what_is' → what_happened
+        what_raw = (
+            wl.get('what') or
+            lf.get('bg') or lf.get('what_is') or
+            getattr(card, 'what_happened', '') or ''
+        )
+        what = safe_text(_san(str(what_raw)), limit=120)
+
+        # why line: watchlist payload 'why' → lf 'why' → why_important
+        why_raw = (
+            wl.get('why') or
+            lf.get('why') or
+            getattr(card, 'why_important', '') or ''
+        )
+        why = safe_text(_san(str(why_raw)), limit=120)
+
+        # proof line: watchlist payload 'proof_line' → lf 'proof_line'
+        proof_raw = wl.get('proof_line') or lf.get('proof_line') or ''
+        proof = safe_text(proof_raw, limit=100)
+
+        # Body text: prefer what if available, else why
+        body_text = what if what else why
         row_top = top_start + i * item_h
 
         _add_textbox(
@@ -2020,7 +2056,7 @@ def _append_watchlist_slide(
         )
         _add_textbox(
             slide, Cm(2.2), row_top + Cm(0.78), Cm(28.5), Cm(0.7),
-            why, font_size=11, color=TEXT_WHITE,
+            body_text, font_size=11, color=TEXT_WHITE,
         )
         _add_textbox(
             slide, Cm(2.2), row_top + Cm(1.44), Cm(28.5), Cm(0.6),

@@ -25,6 +25,12 @@ if TYPE_CHECKING:
 # Shared cache attribute name (must match longform_narrative._CACHE_ATTR)
 _CACHE_ATTR = "_longform_v1_cache"
 
+# Watchlist-specific payload cache (lower anchor threshold)
+_WATCHLIST_PAYLOAD_ATTR = "_watchlist_longform_payload"
+
+# Lower anchor threshold for watchlist candidates (vs 1200 for event longform)
+LONGFORM_WATCHLIST_MIN_ANCHOR_CHARS: int = 600
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -49,6 +55,76 @@ def _card_key(card) -> str:
     return cid or title
 
 
+def _pick_watchlist_anchor(card, min_chars: int = LONGFORM_WATCHLIST_MIN_ANCHOR_CHARS) -> str | None:
+    """Combine available text fields; return combined if >= min_chars, else None."""
+    parts: list[str] = []
+    for attr in (
+        "what_happened", "why_important", "technical_interpretation",
+        "title_plain", "focus_action", "metaphor",
+    ):
+        val = str(getattr(card, attr, "") or "").strip()
+        if val:
+            parts.append(val)
+    # Also include list fields (evidence, derivable_effects, etc.)
+    for attr in ("evidence_lines", "fact_check_confirmed", "derivable_effects"):
+        lst = getattr(card, attr, None) or []
+        for item in lst:
+            val = str(item or "").strip()
+            if val:
+                parts.append(val)
+    combined = " ".join(parts)
+    return combined if len(combined) >= min_chars else None
+
+
+def _build_watchlist_payload(card) -> dict:
+    """Build three-line watchlist payload: {what, why, proof_line, anchor_chars, eligible, proof_missing}.
+
+    Uses card fields directly (does NOT require 1200-char anchor).
+    Applies exec_sanitizer to all text output.
+    """
+    try:
+        from utils.exec_sanitizer import sanitize_exec_text
+    except Exception:
+        def sanitize_exec_text(t: str) -> str:  # type: ignore[misc]
+            return t
+
+    try:
+        from utils.longform_narrative import _make_date_proof_line
+        proof_line = _make_date_proof_line(card)
+    except Exception:
+        src = str(getattr(card, "source_name", "") or "未知來源").strip()
+        pub = str(getattr(card, "published_at_parsed", "") or getattr(card, "published_at", "") or "").strip()[:10]
+        proof_line = f"證據：來源：{src}（{pub}）" if pub else f"證據：來源：{src}"
+
+    # proof_missing = True if no ISO date in proof_line
+    import re as _re
+    proof_missing = not bool(_re.search(r"\d{4}-\d{2}-\d{2}", proof_line))
+
+    what = str(getattr(card, "what_happened", "") or "").strip()
+    if not what:
+        what = str(getattr(card, "title_plain", "") or "").strip()
+    what = sanitize_exec_text(what[:200])
+
+    why = str(getattr(card, "why_important", "") or "").strip()
+    if not why:
+        why = str(getattr(card, "technical_interpretation", "") or "").strip()
+    why = sanitize_exec_text(why[:200])
+
+    anchor = _pick_watchlist_anchor(card)
+    anchor_chars = len(anchor) if anchor else 0
+    eligible = anchor_chars >= LONGFORM_WATCHLIST_MIN_ANCHOR_CHARS and bool(what)
+
+    return {
+        "what": what,
+        "why": why,
+        "proof_line": proof_line,
+        "anchor_chars": anchor_chars,
+        "eligible": eligible,
+        "proof_missing": proof_missing,
+        "watchlist": True,
+    }
+
+
 # ---------------------------------------------------------------------------
 # select_watchlist_cards
 # ---------------------------------------------------------------------------
@@ -63,8 +139,10 @@ def select_watchlist_cards(
 
     Selection criteria (applied in order):
       1. Not an event card (excluded by item_id or title-prefix match).
-      2. render_bbc_longform(card)['eligible'] == True (anchor >= MIN_ANCHOR_CHARS).
-      3. render_bbc_longform(card)['proof_missing'] == False (has verifiable ISO date).
+      2. Has anchor text >= LONGFORM_WATCHLIST_MIN_ANCHOR_CHARS (600 chars).
+         First tries render_bbc_longform (1200 char threshold); falls back to
+         watchlist-specific lower threshold if that fails.
+      3. proof_missing == False (has verifiable ISO date).
 
     Sorted by anchor_chars DESC, then final_score DESC.
 
@@ -86,15 +164,43 @@ def select_watchlist_cards(
 
     needed = max(0, min_daily_total - event_longform_count)
 
-    # Find candidates: non-event, eligible, proof not missing
+    # Find candidates: non-event, eligible (watchlist threshold), proof not missing
     candidates: list[tuple[int, float, object]] = []
     for card in all_cards:
         key = _card_key(card)
         if key in event_keys:
             continue
+
+        # Try full BBC longform first (1200 char threshold)
         lf = render_bbc_longform(card)
         if lf.get("eligible") and not lf.get("proof_missing"):
+            # Store watchlist payload from full longform data
+            wl_payload = {
+                "what": lf.get("bg") or lf.get("what_is") or "",
+                "why": lf.get("why") or "",
+                "proof_line": lf.get("proof_line") or "",
+                "anchor_chars": lf.get("anchor_chars", 0),
+                "eligible": True,
+                "proof_missing": False,
+                "watchlist": True,
+            }
+            try:
+                from utils.exec_sanitizer import sanitize_exec_text
+                wl_payload["what"] = sanitize_exec_text(wl_payload["what"])
+                wl_payload["why"] = sanitize_exec_text(wl_payload["why"])
+            except Exception:
+                pass
+            setattr(card, _WATCHLIST_PAYLOAD_ATTR, wl_payload)
             anchor_chars = lf.get("anchor_chars", 0)
+            score = float(getattr(card, "final_score", 0) or 0)
+            candidates.append((anchor_chars, score, card))
+            continue
+
+        # Fall back to watchlist-specific lower threshold (600 chars)
+        wl = _build_watchlist_payload(card)
+        if wl.get("eligible") and not wl.get("proof_missing"):
+            setattr(card, _WATCHLIST_PAYLOAD_ATTR, wl)
+            anchor_chars = wl.get("anchor_chars", 0)
             score = float(getattr(card, "final_score", 0) or 0)
             candidates.append((anchor_chars, score, card))
 
@@ -165,18 +271,24 @@ def write_watchlist_meta(
         source_counts[src] = source_counts.get(src, 0) + 1
     top3 = sorted(source_counts.items(), key=lambda x: -x[1])[:3]
 
-    # Proof coverage (should be 1.0: we only select proof_missing=False cards)
-    wp_present = sum(
-        1 for c in watchlist_cards
-        if not getattr(c, _CACHE_ATTR, {}).get("proof_missing", True)
-    )
+    # Proof coverage — check watchlist payload first, then longform cache
+    def _card_proof_missing(card) -> bool:
+        wl = getattr(card, _WATCHLIST_PAYLOAD_ATTR, None)
+        if wl is not None:
+            return wl.get("proof_missing", True)
+        return getattr(card, _CACHE_ATTR, {}).get("proof_missing", True)
+
+    wp_present = sum(1 for c in watchlist_cards if not _card_proof_missing(c))
     w_proof_ratio = round(wp_present / watchlist_selected, 3) if watchlist_selected else 1.0
 
-    # Avg anchor chars
-    w_anchor_sum = sum(
-        getattr(c, _CACHE_ATTR, {}).get("anchor_chars", 0)
-        for c in watchlist_cards
-    )
+    # Avg anchor chars — prefer watchlist payload anchor_chars
+    def _card_anchor_chars(card) -> int:
+        wl = getattr(card, _WATCHLIST_PAYLOAD_ATTR, None)
+        if wl is not None:
+            return wl.get("anchor_chars", 0)
+        return getattr(card, _CACHE_ATTR, {}).get("anchor_chars", 0)
+
+    w_anchor_sum = sum(_card_anchor_chars(c) for c in watchlist_cards)
     w_avg_anchor = round(w_anchor_sum / watchlist_selected, 1) if watchlist_selected else 0.0
 
     # Selected IDs top-10

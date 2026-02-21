@@ -690,6 +690,62 @@ if (Test-Path $voLongformPath) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# EXEC TEXT BAN SCAN — fail-fast gate (v5.2.6 sanitizer validation)
+# ---------------------------------------------------------------------------
+$voPy = if ($env:PYTHON) { $env:PYTHON } elseif (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
+Write-Output ""
+Write-Output "EXEC TEXT BAN SCAN:"
+$voExecBanPhrases = @(
+    "詳見原始來源",
+    "監控中 本欄暫無事件",
+    "Evidence summary: sources=",
+    "Key terms: ",
+    "validate source evidence and related numbers",
+    "run small-scope checks against current workflow",
+    "escalate only if next scan confirms sustained",
+    "現有策略與資源配置",
+    "的趨勢，解決方 記",
+    "WATCH .*: validate",
+    "TEST .*: run small-scope",
+    "MOVE .*: escalate only"
+)
+$voExecBanHits = 0
+
+$voPptxScanText = & $voPy -c "
+from pptx import Presentation
+prs = Presentation('outputs/executive_report.pptx')
+for slide in prs.slides:
+    for shape in slide.shapes:
+        if shape.has_text_frame:
+            for p in shape.text_frame.paragraphs:
+                print(p.text, end=' ')
+" 2>$null
+
+$voDocxScanText = & $voPy -c "
+from docx import Document
+doc = Document('outputs/executive_report.docx')
+print(' '.join(p.text for p in doc.paragraphs))
+for t in doc.tables:
+    for row in t.rows:
+        for cell in row.cells:
+            print(cell.text, end=' ')
+" 2>$null
+
+$voCombined = "$voPptxScanText $voDocxScanText"
+foreach ($bp in $voExecBanPhrases) {
+    if ($voCombined -match $bp) {
+        Write-Output ("  FAIL: Banned phrase '{0}' found in PPT/DOCX output" -f $bp)
+        $voExecBanHits++
+    }
+}
+
+if ($voExecBanHits -gt 0) {
+    Write-Output ("  EXEC TEXT BAN SCAN: FAIL ({0} hit(s))" -f $voExecBanHits)
+    exit 1
+}
+Write-Output "  EXEC TEXT BAN SCAN: PASS (0 hits)"
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="

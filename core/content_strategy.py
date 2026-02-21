@@ -3587,16 +3587,27 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:
     if source_count == 0 and _v523_card_source(card) != "unknown":
         source_count = 1
 
+    # v5.2.3b — clean Chinese fallback (no WATCH/TEST/MOVE internal tags)
+    title_snippet = str(getattr(card, "title_plain", "") or "").strip()[:30]
+    what_snippet = str(getattr(card, "what_happened", "") or "").strip()
+    source_name = _v523_card_source(card)
+
     brief["q1_meaning"] = (
-        f"Evidence summary: sources={source_count}, density_score={breakdown.score}, "
-        f"entities={breakdown.entity_hits}, numbers={breakdown.numeric_hits}."
+        what_snippet if len(what_snippet) >= 20
+        else (
+            f"「{title_snippet}」：{source_name} 報導，"
+            f"資訊密度較低，建議查閱原始來源確認細節。"
+        )
     )
-    brief["q2_impact"] = f"Key terms: {', '.join(key_terms)} | Numbers: {', '.join(number_bits)}."
-    pivot = key_terms[0]
+    brief["q2_impact"] = (
+        f"來源：{source_name}；"
+        f"核心實體：{'、'.join(key_terms[:3]) if key_terms else '待確認'}；"
+        f"可核對數字：{'、'.join(number_bits[:3]) if number_bits else '尚無'}。"
+    )
     brief["q3_actions"] = [
-        f"WATCH {pivot}: validate source evidence and related numbers.",
-        f"TEST {pivot}: run small-scope checks against current workflow metrics.",
-        f"MOVE {pivot}: escalate only if next scan confirms sustained trend.",
+        f"核實「{title_snippet[:20]}」相關數據，確認來源可信度（T+3）。",
+        "評估此事件對現有工作流程的實際影響範圍。",
+        "密切追蹤後續進展，視下週指標決定行動時間點（T+7）。",
     ]
     return brief
 
@@ -5322,4 +5333,34 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
                     brief["q3_actions"] = [next_val]
     except Exception:
         pass  # longform enrichment is non-fatal
+    return brief
+
+
+# ---------------------------------------------------------------------------
+# v5.2.6 — Final-mile sanitizer layer for build_ceo_brief_blocks
+# ---------------------------------------------------------------------------
+
+_v526_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
+    """V5.2.6: Apply exec_sanitizer to all text fields after longform enrichment."""
+    brief = dict(_v526_prev_build_ceo_brief_blocks(card))
+    try:
+        from utils.exec_sanitizer import sanitize_exec_text
+
+        _STR_FIELDS = (
+            "event_liner", "ai_trend_liner",
+            "q1_meaning", "q2_impact",
+        )
+        for field in _STR_FIELDS:
+            if field in brief and isinstance(brief[field], str):
+                brief[field] = sanitize_exec_text(brief[field])
+
+        if "q3_actions" in brief and isinstance(brief["q3_actions"], list):
+            brief["q3_actions"] = [
+                sanitize_exec_text(str(a)) for a in brief["q3_actions"]
+            ]
+    except Exception:
+        pass  # sanitizer is non-fatal
     return brief
