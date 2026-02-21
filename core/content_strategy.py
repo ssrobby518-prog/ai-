@@ -4877,17 +4877,27 @@ def select_executive_items(
             break
         _add(card)
 
+    # Forced channel attribution: cards added via backfill are credited to the
+    # channel they were selected for, overriding topic-router recount.
+    # key = item_id (or id(card) fallback), value = channel name
+    _forced_channel: dict[str, str] = {}
+
     # Compute per-bucket count on selected items
     def _recount_by_bucket() -> dict[str, int]:
         _bb: dict[str, int] = {k: 0 for k in quota}
         for _card in selected:
-            _text = " ".join(filter(None, [
-                str(getattr(_card, "title_plain", "") or ""),
-                str(getattr(_card, "what_happened", "") or ""),
-            ]))
-            _url = str(getattr(_card, "source_url", "") or "")
-            _ch = classify_channels(_text, _url)
-            _b = _ch["best_channel"]
+            _iid = str(getattr(_card, "item_id", "") or id(_card))
+            if _iid in _forced_channel:
+                # Backfill-attributed: use the channel that caused selection
+                _b = _forced_channel[_iid]
+            else:
+                _text = " ".join(filter(None, [
+                    str(getattr(_card, "title_plain", "") or ""),
+                    str(getattr(_card, "what_happened", "") or ""),
+                ]))
+                _url = str(getattr(_card, "source_url", "") or "")
+                _ch = classify_channels(_text, _url)
+                _b = _ch["best_channel"]
             if _b in _bb:
                 _bb[_b] += 1
             else:
@@ -5024,6 +5034,8 @@ def select_executive_items(
             if _add(_card):
                 _iid = str(getattr(_card, "item_id", "") or id(_card))
                 _ch_bf["selected_ids"].append(_iid)
+                # Force-attribute this card to the channel it was selected for
+                _forced_channel[_iid] = _ch_name
                 if _iid in _extra_pool_ids_ch:
                     _extra_selected_count += 1
                 _needed -= 1
