@@ -142,6 +142,84 @@ if (Test-Path $metaPath) {
     } else {
         Write-Output "  => Z0 POOL HEALTH GATES: PASS"
     }
+    # ---------------------------------------------------------------------------
+    # FRONTIER AUDIT — reads outputs/z0_frontier_audit.meta.json
+    # Written by z0_collector collect_all(); shows WHY score is low.
+    # ---------------------------------------------------------------------------
+    $auditPath = Join-Path $repoRoot "outputs\z0_frontier_audit.meta.json"
+    if (Test-Path $auditPath) {
+        try {
+            $aud = Get-Content $auditPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Write-Output ""
+            Write-Output "FRONTIER AUDIT (z0_frontier_audit.meta.json):"
+
+            # Histogram
+            if ($aud.PSObject.Properties['frontier_histogram']) {
+                $h = $aud.frontier_histogram
+                Write-Output ("  frontier_histogram: 0-49={0}  50-69={1}  70-84={2}  85+={3}" `
+                    -f $h.PSObject.Properties['0_49'].Value,
+                       $h.PSObject.Properties['50_69'].Value,
+                       $h.PSObject.Properties['70_84'].Value,
+                       $h.PSObject.Properties['85plus'].Value)
+            }
+
+            # Bonus counts
+            if ($aud.PSObject.Properties['bonus_counts']) {
+                $bc = $aud.bonus_counts
+                Write-Output ("  business_signal_bonus_hits: {0}" -f $bc.business_signal_bonus_hits)
+                Write-Output ("  product_release_bonus_hits: {0}" -f $bc.product_release_bonus_hits)
+            }
+
+            # frontier_85_72h_samples (top 10)
+            if ($aud.PSObject.Properties['frontier_85_72h_samples']) {
+                $samps = $aud.frontier_85_72h_samples
+                Write-Output ("  frontier_85_72h_samples ({0} items):" -f $samps.Count)
+                $i = 0
+                foreach ($s in $samps) {
+                    $i++
+                    if ($i -gt 10) { break }
+                    $bf = ""
+                    if ($s.PSObject.Properties['bonus_flags']) {
+                        $f = $s.bonus_flags
+                        $bb = if ($f.PSObject.Properties['biz_bonus'])  { $f.biz_bonus }  else { 0 }
+                        $pb = if ($f.PSObject.Properties['prod_bonus']) { $f.prod_bonus } else { 0 }
+                        $bf = " biz=$bb prod=$pb"
+                    }
+                    Write-Output ("    [{0}] score={1} age={2}h src={3}{4}" `
+                        -f $i, $s.score, $s.age_hours, $s.source, $bf)
+                    Write-Output ("         $($s.title.Substring(0, [Math]::Min(90, $s.title.Length)))")
+                }
+            }
+
+            # near-miss samples (80-84 within 72h)
+            if ($aud.PSObject.Properties['frontier_near_miss_72h_samples']) {
+                $nm = $aud.frontier_near_miss_72h_samples
+                if ($nm.Count -gt 0) {
+                    Write-Output ("  frontier_near_miss_72h_samples (80-84, {0} items):" -f $nm.Count)
+                    $j = 0
+                    foreach ($s in $nm) {
+                        $j++
+                        if ($j -gt 5) { break }
+                        $bf = ""
+                        if ($s.PSObject.Properties['bonus_flags']) {
+                            $f = $s.bonus_flags
+                            $bb = if ($f.PSObject.Properties['biz_bonus'])  { $f.biz_bonus }  else { 0 }
+                            $pb = if ($f.PSObject.Properties['prod_bonus']) { $f.prod_bonus } else { 0 }
+                            $bf = " biz=$bb prod=$pb"
+                        }
+                        Write-Output ("    [nm$j] score={0} age={1}h src={2}{3}" `
+                            -f $s.score, $s.age_hours, $s.source, $bf)
+                        Write-Output ("           $($s.title.Substring(0, [Math]::Min(85, $s.title.Length)))")
+                    }
+                }
+            }
+        } catch {
+            Write-Output "  frontier audit parse error (non-fatal): $_"
+        }
+    } else {
+        Write-Output ""
+        Write-Output "FRONTIER AUDIT: z0_frontier_audit.meta.json not found (run collect first)"
+    }
 } else {
     Write-Output "[verify_online] ERROR: Z0 meta not found: $metaPath — pool health check cannot run."
     exit 1

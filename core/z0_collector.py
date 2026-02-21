@@ -89,6 +89,48 @@ _RELEASE_SEMANTICS_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# Business signal & product release bonus regexes (v2)
+# ---------------------------------------------------------------------------
+
+# Major AI/tech company names — primary business signal amplifier
+_BIGTECH_RE = re.compile(
+    r'\b(?:OpenAI|Microsoft|NVIDIA|Google|Anthropic|AWS|Amazon|Meta|Apple|Intel|xAI|DeepSeek)\b',
+    re.IGNORECASE,
+)
+
+# Business / M&A / financial signal terms
+_BUSINESS_TERM_RE = re.compile(
+    r'\b(?:fund(?:ing|ed|s)?|raises?|raised|Series\s+[A-F]|valuation|'
+    r'acqui(?:re[sd]?|sition)|merger|partner(?:ship|s|ed)?|contract|'
+    r'earnings|revenue|profit|pricing|IPO|unicorn|'
+    r'invest(?:ment|ed|or|ors)?|billion|million|trillion|'
+    r'monetiz(?:e[sd]?|ation)|deal)\b',
+    re.IGNORECASE,
+)
+
+# Explicit money-amount pattern: $10M, $500B, 10 billion USD, etc.
+_MONEY_AMOUNT_RE = re.compile(
+    r'\$\s*\d+(?:\.\d+)?\s*[BMK](?:illion)?\b'
+    r'|\b\d+(?:\.\d+)?\s*(?:billion|million|trillion)\b',
+    re.IGNORECASE,
+)
+
+# Product launch / release / availability terms
+_PRODUCT_LAUNCH_RE = re.compile(
+    r'\b(?:launch(?:ed|es|ing)?|releases?|launches?|'
+    r'generally\s+available|availability|roll[-\s]?out|rolled?\s+out|'
+    r'ships?|shipped|deploy(?:ed|ment|ing)?|API|SDK|'
+    r'update[sd]?|upgrades?|new\s+(?:feature|model|version))\b',
+    re.IGNORECASE,
+)
+
+# Date-based version / named release: "2026.02", "2025-01", "R1", "R2"
+_RELEASE_DATE_VER_RE = re.compile(
+    r'\b20\d\d[-./]\d{2}\b|\bR\d+\b',
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
 # HTML stripping (stdlib only)
 # ---------------------------------------------------------------------------
 
@@ -439,6 +481,30 @@ def compute_frontier_score(item: dict) -> int:
 
     score += min(struct, 40)
 
+    # --- Business signal bonus (0-25): BigTech presence + financial/M&A terms ---
+    # +15 for any BigTech name; +10 for any business/money term; cap 25
+    biz_bigtech = bool(_BIGTECH_RE.search(text_full))
+    biz_term    = bool(_BUSINESS_TERM_RE.search(text_full) or _MONEY_AMOUNT_RE.search(text_full))
+    biz_bonus   = min((15 if biz_bigtech else 0) + (10 if biz_term else 0), 25)
+    score += biz_bonus
+
+    # --- Product release bonus (0-20): launch semantics + date/release version ---
+    # +12 for any product-launch term; +8 for date-based version ("2026.02", "R1"); cap 20
+    prod_launch = bool(_PRODUCT_LAUNCH_RE.search(text_full))
+    prod_ver    = bool(_RELEASE_DATE_VER_RE.search(text_full) or _VERSION_TAG_RE.search(text_full))
+    prod_bonus  = min((12 if prod_launch else 0) + (8 if prod_ver else 0), 20)
+    score += prod_bonus
+
+    # Store bonus flags in item dict for downstream audit (internal key, prefixed _)
+    item["_bonus_flags"] = {
+        "biz_bigtech": biz_bigtech,
+        "biz_term":    biz_term,
+        "biz_bonus":   biz_bonus,
+        "prod_launch": prod_launch,
+        "prod_ver":    prod_ver,
+        "prod_bonus":  prod_bonus,
+    }
+
     return min(100, max(0, score))
 
 
@@ -690,6 +756,71 @@ def collect_all(config_path: Path, outdir: Path) -> dict:
     # Write meta
     meta_path = outdir / "latest.meta.json"
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # -----------------------------------------------------------------------
+    # Write frontier audit meta (outputs/z0_frontier_audit.meta.json)
+    # Histogram + top samples + bonus counts — lets you see "why only N hits"
+    # -----------------------------------------------------------------------
+    try:
+        _repo_root = Path(__file__).resolve().parent.parent
+        _audit_path = _repo_root / "outputs" / "z0_frontier_audit.meta.json"
+        _audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Histogram buckets
+        _hist = {
+            "0_49":  sum(1 for it in all_items if it["frontier_score"] < 50),
+            "50_69": sum(1 for it in all_items if 50 <= it["frontier_score"] < 70),
+            "70_84": sum(1 for it in all_items if 70 <= it["frontier_score"] < 85),
+            "85plus": sum(1 for it in all_items if it["frontier_score"] >= 85),
+        }
+
+        # Items within 72h window
+        _items_72h = [
+            it for it in all_items
+            if (_age_hours(it, now_utc) or float("inf")) <= 72.0
+        ]
+
+        def _fmt_sample(it: dict) -> dict:
+            _ah = _age_hours(it, now_utc)
+            return {
+                "title":       it.get("title", "")[:120],
+                "source":      it["source"].get("platform", ""),
+                "score":       it["frontier_score"],
+                "age_hours":   round(_ah, 1) if _ah is not None else None,
+                "bonus_flags": it.get("_bonus_flags", {}),
+            }
+
+        _samples_85 = sorted(
+            [it for it in _items_72h if it["frontier_score"] >= 85],
+            key=lambda x: x["frontier_score"], reverse=True,
+        )
+        _samples_near = sorted(
+            [it for it in _items_72h if 80 <= it["frontier_score"] < 85],
+            key=lambda x: x["frontier_score"], reverse=True,
+        )
+
+        _bonus_counts = {
+            "business_signal_bonus_hits": sum(
+                1 for it in all_items if it.get("_bonus_flags", {}).get("biz_bonus", 0) > 0
+            ),
+            "product_release_bonus_hits": sum(
+                1 for it in all_items if it.get("_bonus_flags", {}).get("prod_bonus", 0) > 0
+            ),
+        }
+
+        _audit_meta = {
+            "computed_at":                     now_iso,
+            "frontier_histogram":              _hist,
+            "frontier_85_72h_samples":         [_fmt_sample(it) for it in _samples_85[:10]],
+            "frontier_near_miss_72h_samples":  [_fmt_sample(it) for it in _samples_near[:10]],
+            "bonus_counts":                    _bonus_counts,
+        }
+        _audit_path.write_text(
+            json.dumps(_audit_meta, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"[Z0] Audit: {_audit_path}")
+    except Exception as _exc:
+        print(f"[Z0] WARN: frontier audit write failed: {_exc}")
 
     print(
         f"[Z0] Done. total={len(all_items)}"
