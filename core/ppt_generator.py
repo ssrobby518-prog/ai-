@@ -1994,7 +1994,7 @@ def generate_executive_ppt(
         get_logger().warning('exec_layout.meta write error (non-fatal): %s', exc)
     try:
         from utils.longform_narrative import write_longform_meta
-        write_longform_meta()
+        write_longform_meta(event_cards=ev_cards)
     except Exception as exc:
         get_logger().warning('exec_longform.meta write error (non-fatal): %s', exc)
     return result

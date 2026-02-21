@@ -55,6 +55,10 @@ class _StubCard:
     invalid_reason: str = ""
     invalid_cause: str = ""
     invalid_fix: str = ""
+    # Dynamic metadata (mirrors raw item fields used by longform_narrative)
+    published_at: str = ""
+    published_at_parsed: str = ""
+    collected_at: str = ""
 
 
 def _short_card() -> _StubCard:
@@ -198,3 +202,102 @@ def test_t4_double_call_uses_cache_no_double_stats() -> None:
     with __import__("utils.longform_narrative", fromlist=["_stats_lock"])._stats_lock:
         total = _stats["total_cards_processed"]
     assert total == 1, f"Expected 1 card in stats after 2 calls; got {total}"
+
+
+# ---------------------------------------------------------------------------
+# T5 — proof_line always contains ISO date YYYY-MM-DD and source_name
+# ---------------------------------------------------------------------------
+
+def test_t5_proof_line_contains_iso_date_and_source() -> None:
+    """T5: proof_line must contain YYYY-MM-DD ISO date; proof_missing must be False."""
+    import re as _re
+    iso_pat = _re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+
+    reset_stats()
+    # Case A: rich card (has arXiv natural token + date fallback)
+    card_rich = _rich_card()
+    result = render_bbc_longform(card_rich)
+    assert iso_pat.search(result["proof_line"]), (
+        f"No ISO date in proof_line (rich card): '{result['proof_line']}'"
+    )
+    assert result["proof_missing"] is False, (
+        f"proof_missing must be False for rich card; proof_line='{result['proof_line']}'"
+    )
+
+    # Case B: short/ineligible card — proof_line should still have ISO date
+    reset_stats()
+    card_short = _short_card()
+    result2 = render_bbc_longform(card_short)
+    assert iso_pat.search(result2["proof_line"]), (
+        f"No ISO date in proof_line (short card): '{result2['proof_line']}'"
+    )
+    assert result2["proof_missing"] is False, (
+        "proof_missing must be False even for ineligible card (date fallback must fire)"
+    )
+
+    # Case C: card with explicit published_at declared field — date must appear
+    reset_stats()
+    card_dated = _StubCard(
+        title_plain="Test dated card",
+        what_happened="Something happened on 2025-11-30.",
+        why_important="It matters for " * 100,   # pad to hit MIN_ANCHOR_CHARS
+        source_name="TestSource",
+        published_at="2025-11-30T12:00:00Z",
+    )
+    result3 = render_bbc_longform(card_dated)
+    assert "2025-11-30" in result3["proof_line"], (
+        f"Expected '2025-11-30' in proof_line; got '{result3['proof_line']}'"
+    )
+    assert "TestSource" in result3["proof_line"], (
+        f"Expected 'TestSource' in proof_line; got '{result3['proof_line']}'"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T6 — write_longform_meta(event_cards=...) counts are self-consistent
+# ---------------------------------------------------------------------------
+
+def test_t6_meta_counts_self_consistent() -> None:
+    """T6: write_longform_meta(event_cards) must satisfy:
+       - total_cards_processed == len(event_cards)
+       - eligible + ineligible == total
+       - proof_present + proof_missing_count == eligible  (only eligible counted)
+       - proof_coverage_ratio == proof_present / eligible  (>= 0.8 with fallback)
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+    from utils.longform_narrative import write_longform_meta, _CACHE_ATTR
+
+    reset_stats()
+
+    # Mix: 2 rich (eligible) + 1 short (ineligible)
+    cards = [_rich_card(), _rich_card(), _short_card()]
+    for c in cards:
+        render_bbc_longform(c)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        write_longform_meta(event_cards=cards, outdir=tmpdir)
+        meta_path = Path(tmpdir) / "exec_longform.meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+
+    total    = meta["total_cards_processed"]
+    eligible = meta["eligible_count"]
+    inelig   = meta["ineligible_count"]
+    proof_p  = meta["proof_present_count"]
+    proof_m  = meta["proof_missing_count"]
+    pcr      = meta["proof_coverage_ratio"]
+
+    assert total == len(cards), (
+        f"total_cards_processed={total} != len(cards)={len(cards)}"
+    )
+    assert eligible + inelig == total, (
+        f"eligible({eligible}) + ineligible({inelig}) != total({total})"
+    )
+    assert proof_p + proof_m == eligible, (
+        f"proof_present({proof_p}) + proof_missing({proof_m}) != eligible({eligible})"
+    )
+    # With date-fallback: all eligible cards have proof_missing=False → pcr == 1.0
+    assert pcr >= 0.8, (
+        f"proof_coverage_ratio={pcr} < 0.8 (date-fallback proof_line must drive pcr up)"
+    )

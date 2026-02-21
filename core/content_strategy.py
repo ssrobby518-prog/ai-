@@ -5302,7 +5302,7 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
     try:
         from utils.longform_narrative import render_bbc_longform
         lf = render_bbc_longform(card)
-        if lf.get("eligible"):
+        if lf.get("eligible") and not lf.get("watchlist"):
             # Slide A enrichment
             if lf.get("bg"):
                 brief["event_liner"] = lf["bg"]

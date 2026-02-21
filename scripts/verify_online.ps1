@@ -610,20 +610,33 @@ $voLongformPath = Join-Path $repoRoot "outputs\exec_longform.meta.json"
 if (Test-Path $voLongformPath) {
     try {
         $voLfm = Get-Content $voLongformPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $voLfElig   = if ($voLfm.PSObject.Properties['eligible_count'])       { $voLfm.eligible_count }       else { 0 }
-        $voLfTotal  = if ($voLfm.PSObject.Properties['total_cards_processed']){ $voLfm.total_cards_processed } else { 0 }
-        $voLfERatio = if ($voLfm.PSObject.Properties['eligible_ratio'])       { $voLfm.eligible_ratio }        else { 0 }
-        $voLfPRatio = if ($voLfm.PSObject.Properties['proof_coverage_ratio']) { $voLfm.proof_coverage_ratio }  else { 0 }
-        $voLfAvg    = if ($voLfm.PSObject.Properties['avg_anchor_chars'])     { $voLfm.avg_anchor_chars }      else { 0 }
+        $voLfElig    = if ($voLfm.PSObject.Properties['eligible_count'])       { [int]$voLfm.eligible_count }       else { 0 }
+        $voLfInelig  = if ($voLfm.PSObject.Properties['ineligible_count'])     { [int]$voLfm.ineligible_count }     else { 0 }
+        $voLfTotal   = if ($voLfm.PSObject.Properties['total_cards_processed']){ [int]$voLfm.total_cards_processed } else { 0 }
+        $voLfERatio  = if ($voLfm.PSObject.Properties['eligible_ratio'])       { [double]$voLfm.eligible_ratio }     else { 0.0 }
+        $voLfPRatio  = if ($voLfm.PSObject.Properties['proof_coverage_ratio']) { [double]$voLfm.proof_coverage_ratio } else { 0.0 }
+        $voLfAvg     = if ($voLfm.PSObject.Properties['avg_anchor_chars'])     { $voLfm.avg_anchor_chars }           else { 0 }
+        $voLfPMiss   = if ($voLfm.PSObject.Properties['proof_missing_count'])  { [int]$voLfm.proof_missing_count }   else { 0 }
+        $voLfMissIds = if ($voLfm.PSObject.Properties['proof_missing_ids'] -and $voLfm.proof_missing_ids) { ($voLfm.proof_missing_ids -join ', ') } else { '(none)' }
+        $voLfConsist = ($voLfElig + $voLfInelig) -eq $voLfTotal
 
         Write-Output ""
         Write-Output "LONGFORM EVIDENCE (exec_longform.meta.json):"
-        Write-Output ("  generated_at         : {0}" -f $voLfm.generated_at)
-        Write-Output ("  total_cards_processed: {0}" -f $voLfTotal)
-        Write-Output ("  eligible_count       : {0}  (ratio={1:P1})" -f $voLfElig, $voLfERatio)
-        Write-Output ("  avg_anchor_chars     : {0}" -f $voLfAvg)
-        Write-Output ("  proof_coverage_ratio : {0:P1}" -f $voLfPRatio)
-        Write-Output "  => LONGFORM_EVIDENCE: PASS"
+        Write-Output ("  generated_at            : {0}" -f $voLfm.generated_at)
+        Write-Output ("  total_cards_processed   : {0}" -f $voLfTotal)
+        Write-Output ("  eligible_count          : {0}  (ratio={1:P1})" -f $voLfElig, $voLfERatio)
+        Write-Output ("  ineligible_count        : {0}" -f $voLfInelig)
+        Write-Output ("  counts_consistent       : {0}" -f $(if ($voLfConsist) { 'YES' } else { 'NO — MISMATCH' }))
+        Write-Output ("  avg_anchor_chars        : {0}" -f $voLfAvg)
+        Write-Output ("  proof_missing_count     : {0}" -f $voLfPMiss)
+        Write-Output ("  proof_missing_ids(top5) : {0}" -f $voLfMissIds)
+        Write-Output ("  proof_coverage_ratio    : {0:P1}" -f $voLfPRatio)
+        $voLfPass = $voLfConsist -and ($voLfPRatio -ge 0.8 -or $voLfTotal -eq 0)
+        if ($voLfPass) {
+            Write-Output "  => LONGFORM_EVIDENCE: PASS"
+        } else {
+            Write-Output ("  => LONGFORM_EVIDENCE: WARN (proof_ratio={0:P1} consistent={1})" -f $voLfPRatio, $voLfConsist)
+        }
     } catch {
         Write-Output "  longform meta parse error (non-fatal): $_"
     }
