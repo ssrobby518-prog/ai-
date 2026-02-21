@@ -1006,6 +1006,91 @@ def _slide_structured_summary(
         y += 0.3
 
 
+# ---------------------------------------------------------------------------
+# v5.2.3 — Three-layer last-mile banned-phrase guard for Structured Summary
+# Wraps v5.2.2; applies A/B/C guards to each section item before textbox write.
+# Prevents truncation artifacts (e.g. '的趨勢，解決方 記') from reaching PPTX.
+# ---------------------------------------------------------------------------
+_v522_slide_structured_summary = _slide_structured_summary
+
+
+def _slide_structured_summary(
+    prs: Presentation,
+    cards: list[EduNewsCard],
+    metrics: dict | None = None,
+) -> None:
+    """v5.2.3: Three-layer guard on every Structured Summary section item.
+
+    Layer A — fragment guard   : is_placeholder_or_fragment → safe fallback
+    Layer B — sanitize_exec_text: exec_sanitizer banned-phrase check
+    Layer C — hard strip       : explicit BANNED_SUBSTRINGS scan (last resort)
+    """
+    _SAFE_V523 = "重點：本事件已補足關鍵錨點，詳見下方 Proof 與 Watchlist。"
+
+    try:
+        from utils.exec_sanitizer import sanitize_exec_text as _san_v523
+        from utils.exec_sanitizer import BANNED_SUBSTRINGS as _BAN_V523
+    except Exception:
+        _v522_slide_structured_summary(prs, cards, metrics=metrics)
+        return
+
+    try:
+        from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_v523
+    except Exception:
+        _is_frag_v523 = None  # type: ignore[assignment]
+
+    def _guard_item_v523(raw: str) -> str:
+        s = str(raw or "").strip()
+        # Layer A: fragment / template-remnant guard
+        if _is_frag_v523 is not None:
+            try:
+                if not s or _is_frag_v523(s):
+                    return _SAFE_V523
+            except Exception:
+                pass
+        # Layer B: exec_sanitizer (returns _SAFE_FALLBACK if banned phrase found)
+        try:
+            s = _san_v523(s)
+        except Exception:
+            pass
+        # Layer C: explicit scan — covers any edge case missed by B
+        for _bp in _BAN_V523:
+            if _bp in s:
+                return _SAFE_V523
+        return s
+
+    summary = build_structured_executive_summary(cards, metrics=metrics or {})
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    _add_textbox(slide, Cm(2), Cm(0.8), Cm(30), Cm(1.5),
+                 "Structured Summary", font_size=32, bold=True,
+                 color=HIGHLIGHT_YELLOW)
+    _add_divider(slide, Cm(2), Cm(2.3), Cm(4), color=ACCENT)
+
+    section_map = [
+        ("AI Trends", summary.get("ai_trends", [])),
+        ("Tech Landing", summary.get("tech_landing", [])),
+        ("Market Competition", summary.get("market_competition", [])),
+        ("Opportunities & Risks", summary.get("opportunities_risks", [])),
+        ("Recommended Actions", summary.get("recommended_actions", [])),
+    ]
+
+    y = 3.0
+    for sec_title, items in section_map:
+        _add_textbox(slide, Cm(2), Cm(y), Cm(30), Cm(1),
+                     sec_title, font_size=14, bold=True,
+                     color=HIGHLIGHT_YELLOW)
+        y += 1.0
+        for item in items[:2]:
+            guarded = _guard_item_v523(item)
+            _add_textbox(slide, Cm(3), Cm(y), Cm(28), Cm(0.8),
+                         f"- {safe_text(guarded, 80)}", font_size=11,
+                         color=TEXT_WHITE)
+            y += 0.8
+        y += 0.3
+
+
 def _slide_key_takeaways(
     prs: Presentation,
     cards: list[EduNewsCard],
