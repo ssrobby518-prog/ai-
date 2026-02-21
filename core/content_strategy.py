@@ -5404,18 +5404,31 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
         proof = comp.get("proof_line", "")
         stats = comp.get("debug_stats", {})
 
-        # Map narrative sentences to slide fields
+        # Map narrative sentences to slide fields — re-sanitize after replacement
+        # (v527 replaces v526-sanitized fields with new card-derived text, so we
+        # must re-run exec_sanitizer to prevent banned phrases slipping through)
+        try:
+            from utils.exec_sanitizer import sanitize_exec_text as _san_v527
+        except Exception:
+            def _san_v527(t: str) -> str:  # type: ignore[misc]
+                return t
+
         if narrative:
             parts = _v527_split_for_brief(narrative)
             if parts:
-                brief["event_liner"] = parts[0]
+                brief["event_liner"] = _san_v527(parts[0])
             if len(parts) >= 2:
-                brief["q1_meaning"] = " ".join(parts[1:])
+                brief["q1_meaning"] = _san_v527(" ".join(parts[1:]))
             # If only 1 sentence, leave q1_meaning from prior layer (v525/v526)
 
         # Replace q3_actions with compacted bullets (min 12 chars each)
         if bullets:
-            valid = [str(b).strip() for b in bullets if len(str(b).strip()) >= 12]
+            valid = [
+                _san_v527(str(b).strip())
+                for b in bullets
+                if len(str(b).strip()) >= 12
+            ]
+            valid = [v for v in valid if v.strip()]
             if valid:
                 brief["q3_actions"] = valid[:3]
 
