@@ -601,6 +601,30 @@ if (Test-Path $flowCountsPath) {
     }
 }
 
+# Filter Breakdown (optional — only printed when filter_breakdown.meta.json exists)
+$filterBdPath = Join-Path $PSScriptRoot "..\outputs\filter_breakdown.meta.json"
+if (Test-Path $filterBdPath) {
+    try {
+        $fb = Get-Content $filterBdPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ""
+        Write-Host "FILTER BREAKDOWN:"
+        Write-Host ("  input_count          : {0}" -f $fb.input_count)
+        Write-Host ("  kept                 : {0}" -f $fb.kept)
+        Write-Host ("  dropped_total        : {0}" -f $fb.dropped_total)
+        Write-Host ("  lang_not_allowed     : {0}" -f $fb.lang_not_allowed_count)
+        Write-Host ("  too_old              : {0}" -f $fb.too_old_count)
+        Write-Host ("  body_too_short       : {0}" -f $fb.body_too_short_count)
+        Write-Host ("  non_ai_topic         : {0}" -f $fb.non_ai_topic_count)
+        Write-Host ("  allow_zh_enabled     : {0}" -f $fb.allow_zh_enabled)
+        if ($fb.top5_reasons) {
+            $fbTop5Json = $fb.top5_reasons | ConvertTo-Json -Compress
+            Write-Host ("  top5_reasons         : {0}" -f $fbTop5Json)
+        }
+    } catch {
+        Write-Host "  filter_breakdown meta parse error (non-fatal): $_"
+    }
+}
+
 # Z0 Injection Gate Evidence (optional -- only printed when file exists)
 $z0InjMetaPath = Join-Path $PSScriptRoot "..\outputs\z0_injection.meta.json"
 if (Test-Path $z0InjMetaPath) {
@@ -674,17 +698,44 @@ if (Test-Path $execQualMetaPath) {
     Write-Host "EXEC QUALITY GATES: exec_quality.meta.json not found (skipped)"
 }
 
-# Git sync: show behind/ahead counts; prompt if ahead > 0
-$aheadBehind = (git rev-list --left-right --count "origin/main...HEAD" 2>$null | Out-String).Trim()
-if ($aheadBehind) {
-    $ab = ($aheadBehind -split "\s+")
-    if ($ab.Count -ge 2) {
-        Write-Host ""
-        Write-Host ("Git sync: behind={0} ahead={1}" -f $ab[0], $ab[1])
-        if ([int]$ab[1] -gt 0) {
-            Write-Host "  >> Branch is ahead of origin. Run: git push origin main" -ForegroundColor Yellow
-        }
+# ---------------------------------------------------------------------------
+# Git sync: auto-detect remote default branch; graceful WARN if gone/unknown
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "GIT SYNC:"
+$_originBranch = $null
+# Method A: git symbolic-ref (fast, works after `git fetch`)
+$_symRef = (git symbolic-ref refs/remotes/origin/HEAD 2>$null | Out-String).Trim()
+if ($_symRef -match "refs/remotes/origin/(.+)") {
+    $_originBranch = $Matches[1]
+}
+# Method B: git remote show (slower, always fresh)
+if (-not $_originBranch) {
+    $_remoteShow = (git remote show origin 2>$null | Out-String)
+    if ($_remoteShow -match "HEAD branch:\s*(.+)") {
+        $_originBranch = $Matches[1].Trim()
     }
+}
+if ($_originBranch) {
+    $originRef = "origin/$_originBranch"
+    Write-Host ("  ORIGIN_DEFAULT_BRANCH: {0}" -f $_originBranch)
+    Write-Host ("  ORIGIN_REF_USED      : {0}" -f $originRef)
+    $aheadBehind = (git rev-list --left-right --count "$originRef...HEAD" 2>$null | Out-String).Trim()
+    if ($aheadBehind) {
+        $ab = ($aheadBehind -split "\s+")
+        if ($ab.Count -ge 2) {
+            Write-Host ("  GIT_SYNC: behind={0} ahead={1}" -f $ab[0], $ab[1])
+            if ([int]$ab[1] -gt 0) {
+                Write-Host "  >> Branch is ahead of origin. Run: git push origin $_originBranch"
+            }
+        }
+    } else {
+        Write-Host "  GIT_SYNC: WARN — could not compute ahead/behind (run: git fetch origin --prune)"
+    }
+} else {
+    Write-Host "  ORIGIN_DEFAULT_BRANCH: UNKNOWN"
+    Write-Host "  ORIGIN_REF_USED      : n/a"
+    Write-Host "  GIT_SYNC: WARN — origin HEAD not resolvable; run: git fetch origin --prune"
 }
 
 # ---------------------------------------------------------------------------

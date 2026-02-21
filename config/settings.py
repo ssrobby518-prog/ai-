@@ -56,7 +56,15 @@ RSS_FEEDS: list[dict] = json.loads(os.getenv("RSS_FEEDS_JSON", _DEFAULT_FEEDS))
 # Filters
 # ---------------------------------------------------------------------------
 NEWER_THAN_HOURS: int = _env_int("NEWER_THAN_HOURS", 24)
-ALLOW_LANG: list[str] = [lang.strip() for lang in os.getenv("ALLOW_LANG", "zh,en").split(",") if lang.strip()]
+# Base lang allowlist: can be fully overridden via ALLOW_LANG env var.
+# ALLOW_ZH_SOURCES_IN_OFFLINE=1 additionally adds zh-TW, zh-tw, zh-Hant, zh-Hans, zh-CN
+# variants to help calibration/offline runs that contain Traditional-Chinese sources
+# detected as "zh-tw" by langdetect rather than plain "zh".
+_ALLOW_LANG_BASE: list[str] = [lang.strip() for lang in os.getenv("ALLOW_LANG", "zh,en").split(",") if lang.strip()]
+if os.getenv("ALLOW_ZH_SOURCES_IN_OFFLINE", "0") == "1":
+    _ZH_EXTRA = ["zh-tw", "zh-TW", "zh-cn", "zh-CN", "zh-hant", "zh-hans", "zh-hk"]
+    _ALLOW_LANG_BASE = list(dict.fromkeys(_ALLOW_LANG_BASE + _ZH_EXTRA))  # dedup, preserve order
+ALLOW_LANG: list[str] = _ALLOW_LANG_BASE
 KEYWORD_FILTER: list[str] = [k.strip() for k in os.getenv("KEYWORD_FILTER", "").split(",") if k.strip()]
 MIN_BODY_LENGTH: int = _env_int("MIN_BODY_LENGTH", 120)
 BATCH_SIZE: int = _env_int("BATCH_SIZE", 20)

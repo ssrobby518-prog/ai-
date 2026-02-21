@@ -27,6 +27,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Output ""
 
+# Initialise degraded flag (updated inside the Z0 pool health gate block)
+$pool85Degraded = $false
+
 # Print Z0 by_platform summary
 $metaPath = Join-Path $repoRoot "data\raw\z0\latest.meta.json"
 if (Test-Path $metaPath) {
@@ -61,33 +64,84 @@ if (Test-Path $metaPath) {
 
     # ---------------------------------------------------------------------------
     # Z0 POOL HEALTH GATES — always-on; override via env vars before calling script
-    #   Z0_MIN_TOTAL_ITEMS     (default 800) — guards against near-empty collection
-    #   Z0_MIN_FRONTIER85_72H  (default  10) — guards against stale / no fresh news
-    # Fail-fast: gates run BEFORE pipeline so garbage reports are never generated.
+    #   Z0_MIN_TOTAL_ITEMS            (default 800) — guards against near-empty collection
+    #   Z0_MIN_FRONTIER85_72H         (default  10) — guards against stale / no fresh news
+    #   Z0_ALLOW_DEGRADED             (default   0) — set "1" to allow fallback gate
+    #   Z0_MIN_FRONTIER85_72H_FALLBACK(default   4) — fallback target when ALLOW_DEGRADED=1
+    # Gate modes:
+    #   STRICT  : actual >= target10 → PASS; else FAIL exit 1
+    #   DEGRADED: actual >= target10 → PASS; actual >= fallback4 → DEGRADED exit 0; else FAIL exit 1
     # ---------------------------------------------------------------------------
-    $z0MinTotal   = if ($env:Z0_MIN_TOTAL_ITEMS)    { [int]$env:Z0_MIN_TOTAL_ITEMS }    else { 800 }
-    $z0Min85_72h  = if ($env:Z0_MIN_FRONTIER85_72H) { [int]$env:Z0_MIN_FRONTIER85_72H } else { 10  }
+    $z0MinTotal        = if ($env:Z0_MIN_TOTAL_ITEMS)                { [int]$env:Z0_MIN_TOTAL_ITEMS }                else { 800 }
+    $z0Min85_72h       = if ($env:Z0_MIN_FRONTIER85_72H)             { [int]$env:Z0_MIN_FRONTIER85_72H }             else { 10  }
+    $z0AllowDegraded   = ($env:Z0_ALLOW_DEGRADED -eq "1")
+    $z0Fallback85_72h  = if ($env:Z0_MIN_FRONTIER85_72H_FALLBACK)    { [int]$env:Z0_MIN_FRONTIER85_72H_FALLBACK }    else { 4   }
 
     $z0ActualTotal  = if ($meta.PSObject.Properties['total_items'])        { [int]$meta.total_items }        else { 0 }
     $z0Actual85_72h = if ($meta.PSObject.Properties['frontier_ge_85_72h']) { [int]$meta.frontier_ge_85_72h } else { 0 }
 
     $gatePoolTotal  = if ($z0ActualTotal  -ge $z0MinTotal)  { "PASS" } else { "FAIL" }
-    $gatePool85_72h = if ($z0Actual85_72h -ge $z0Min85_72h) { "PASS" } else { "FAIL" }
-    $poolAnyFail    = ($gatePoolTotal -eq "FAIL") -or ($gatePool85_72h -eq "FAIL")
+
+    # Determine frontier85_72h gate result with optional degraded mode
+    if ($z0Actual85_72h -ge $z0Min85_72h) {
+        $gatePool85_72h = "PASS"
+        $z0GateMode     = "STRICT"
+    } elseif ($z0AllowDegraded -and ($z0Actual85_72h -ge $z0Fallback85_72h)) {
+        $gatePool85_72h = "DEGRADED"
+        $z0GateMode     = "DEGRADED"
+    } else {
+        $gatePool85_72h = "FAIL"
+        $z0GateMode     = if ($z0AllowDegraded) { "DEGRADED" } else { "STRICT" }
+    }
+
+    $poolTotalFail  = ($gatePoolTotal -eq "FAIL")
+    $pool85Fail     = ($gatePool85_72h -eq "FAIL")
+    $pool85Degraded = ($gatePool85_72h -eq "DEGRADED")
+    $poolAnyFail    = $poolTotalFail -or $pool85Fail
 
     Write-Output ""
     Write-Output "Z0 POOL HEALTH GATES:"
     Write-Output ("  Z0_MIN_TOTAL_ITEMS    target={0,-5} actual={1,-5} {2}" -f $z0MinTotal,  $z0ActualTotal,  $gatePoolTotal)
-    Write-Output ("  Z0_MIN_FRONTIER85_72H target={0,-5} actual={1,-5} {2}" -f $z0Min85_72h, $z0Actual85_72h, $gatePool85_72h)
+    if ($pool85Degraded) {
+        Write-Output ("  Z0_MIN_FRONTIER85_72H target={0,-5} actual={1,-5} DEGRADED (fallback={2} PASS)" -f $z0Min85_72h, $z0Actual85_72h, $z0Fallback85_72h)
+    } else {
+        Write-Output ("  Z0_MIN_FRONTIER85_72H target={0,-5} actual={1,-5} {2}" -f $z0Min85_72h, $z0Actual85_72h, $gatePool85_72h)
+    }
+    Write-Output ("  Z0_GATE_MODE: {0}" -f $z0GateMode)
     Write-Output ("  meta_path   : {0}" -f $metaPath)
     if ($meta.PSObject.Properties['collected_at']) {
         Write-Output ("  collected_at: {0}" -f $meta.collected_at)
     }
+
+    # Write z0_gate_mode.meta.json for downstream audit
+    try {
+        $_z0GateMeta = @{
+            z0_gate_mode    = $z0GateMode
+            target10        = $z0Min85_72h
+            fallback        = $z0Fallback85_72h
+            actual          = $z0Actual85_72h
+            total_actual    = $z0ActualTotal
+            total_target    = $z0MinTotal
+            allow_degraded  = $z0AllowDegraded
+            collected_at    = if ($meta.PSObject.Properties['collected_at']) { $meta.collected_at } else { "" }
+            run_head        = (git rev-parse --short HEAD 2>$null | Out-String).Trim()
+        }
+        $_z0GateMetaPath = Join-Path $repoRoot "outputs\z0_gate_mode.meta.json"
+        New-Item -ItemType Directory -Force -Path (Split-Path $_z0GateMetaPath) | Out-Null
+        $_z0GateMeta | ConvertTo-Json -Depth 3 | Set-Content $_z0GateMetaPath -Encoding UTF8
+    } catch {
+        Write-Output "  [warn] z0_gate_mode.meta.json write failed: $_"
+    }
+
     if ($poolAnyFail) {
         Write-Output "  => Z0 POOL HEALTH GATES: FAIL"
         exit 1
+    } elseif ($pool85Degraded) {
+        Write-Output "  => Z0 POOL HEALTH GATES: DEGRADED RUN (frontier85_72h below target but above fallback)"
+        # Do NOT exit 1 — degraded is intentionally allowed; pipeline continues
+    } else {
+        Write-Output "  => Z0 POOL HEALTH GATES: PASS"
     }
-    Write-Output "  => Z0 POOL HEALTH GATES: PASS"
 } else {
     Write-Output "[verify_online] ERROR: Z0 meta not found: $metaPath — pool health check cannot run."
     exit 1
@@ -393,4 +447,8 @@ if (Test-Path $execQualMetaOnlinePath) {
 }
 
 Write-Output ""
-Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="
+if ($pool85Degraded) {
+    Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
+} else {
+    Write-Output "=== verify_online.ps1 COMPLETE: all gates passed ==="
+}

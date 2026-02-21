@@ -1,5 +1,6 @@
 """Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -626,16 +627,14 @@ def run_pipeline() -> None:
     else:
         log.info("Z5: Education report disabled")
 
-    # (A) Write flow_counts.meta.json — pipeline funnel audit for KPI visibility
+    # (A) Write flow_counts.meta.json + filter_breakdown.meta.json — pipeline funnel audit
     try:
         import json as _json
-        _too_old = int((filter_summary.dropped_by_reason or {}).get("too_old", 0))
+        _dr = dict(filter_summary.dropped_by_reason or {})
+        _too_old = int(_dr.get("too_old", 0))
         _dr_top5 = [
             {"reason": k, "count": v}
-            for k, v in sorted(
-                (filter_summary.dropped_by_reason or {}).items(),
-                key=lambda kv: kv[1], reverse=True,
-            )[:5]
+            for k, v in sorted(_dr.items(), key=lambda kv: kv[1], reverse=True)[:5]
         ]
         # Try to read exec_selected_total from exec_selection.meta.json (written by Z5)
         _exec_sel_total = 0
@@ -661,8 +660,25 @@ def run_pipeline() -> None:
         _fc_path.parent.mkdir(parents=True, exist_ok=True)
         _fc_path.write_text(_json.dumps(_flow_counts, ensure_ascii=False, indent=2), encoding="utf-8")
         log.info("flow_counts.meta.json written: %s", _fc_path)
+
+        # filter_breakdown.meta.json — full per-reason diagnostics
+        _fb = {
+            "kept": int(filter_summary.kept_count),
+            "dropped_total": int(filter_summary.input_count - filter_summary.kept_count),
+            "input_count": int(filter_summary.input_count),
+            "reasons": _dr,
+            "top5_reasons": _dr_top5,
+            "lang_not_allowed_count": int(_dr.get("lang_not_allowed", 0)),
+            "too_old_count": int(_dr.get("too_old", 0)),
+            "body_too_short_count": int(_dr.get("body_too_short", 0)),
+            "non_ai_topic_count": int(_dr.get("non_ai_topic", 0)),
+            "allow_zh_enabled": bool(int(os.getenv("ALLOW_ZH_SOURCES_IN_OFFLINE", "0"))),
+        }
+        _fb_path = Path(settings.PROJECT_ROOT) / "outputs" / "filter_breakdown.meta.json"
+        _fb_path.write_text(_json.dumps(_fb, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("filter_breakdown.meta.json written: %s", _fb_path)
     except Exception as _fc_exc:
-        log.warning("flow_counts.meta.json write failed (non-blocking): %s", _fc_exc)
+        log.warning("flow_counts / filter_breakdown meta write failed (non-blocking): %s", _fc_exc)
 
     elapsed = time.time() - t_start
     passed = sum(1 for r in all_results if r.passed_gate)
