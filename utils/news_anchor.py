@@ -146,6 +146,28 @@ _METRIC_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# AI / Big-Tech company name anchor (last-resort fallback)
+# Catches events that have no numeric anchor but name a verifiable entity.
+# Only major AI / AI-adjacent companies included to limit false positives.
+# ---------------------------------------------------------------------------
+
+_COMPANY_RE = re.compile(
+    r"\b(?:"
+    r"NVIDIA|nVidia|Nvidia|"
+    r"OpenAI|Anthropic|DeepSeek|Mistral|Cohere|Perplexity|"
+    r"xAI|Grok|"
+    r"Hugging\s*Face|Scale\s*AI|Runway\s*AI|Stability\s*AI|"
+    r"Microsoft|Google\s*DeepMind|Google|"
+    r"Meta\s*AI|Meta(?=\s+(?:AI|deepens|launches|opens|builds|funds|backs|partners|invests|plans|buys|acquires|raises|expands|hires|cuts|says|reports|announces|will|has|is|to))|"
+    r"Amazon|AWS|Salesforce|Databricks|Snowflake|Palantir|"
+    r"Samsung|Baidu|Alibaba|Tencent|ByteDance|Huawei|"
+    r"Arm\s*Holdings|Arm(?=\s+\w)|"
+    r"Mozilla|Firefox|Cloudflare|Vercel|Replit|Cursor\s*AI"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# ---------------------------------------------------------------------------
 # Stopword blacklist for product/model name validation
 # ---------------------------------------------------------------------------
 
@@ -172,6 +194,7 @@ _TYPE_PRIORITY: dict[str, int] = {
     "params": 3,
     "version": 2,
     "metric": 1,
+    "company": 0,    # company name — last resort; always verifiable
 }
 
 
@@ -302,6 +325,13 @@ def extract_anchors(
         if candidate:
             _add(_TYPE_PRIORITY["metric"] * 100, "metric", candidate)
 
+    # 7. AI / Big-Tech company name fallback (only if no higher-priority anchor)
+    if not typed_anchors:
+        for m in _COMPANY_RE.finditer(src):
+            candidate = _clean_match(m.group(0))
+            if candidate and len(candidate) >= 3:
+                _add(_TYPE_PRIORITY["company"] * 100, "company", candidate)
+
     # Sort by priority descending, keep top 5
     typed_anchors.sort(key=lambda x: -x[0])
     top5 = typed_anchors[:5]
@@ -335,7 +365,7 @@ def pick_primary_anchor(anchors: list[str], anchor_types: dict | None = None) ->
         return anchors[0]
 
     # Try each type in priority order
-    for atype in ("product", "benchmark", "money", "params", "version", "metric"):
+    for atype in ("product", "benchmark", "money", "params", "version", "metric", "company"):
         if anchor_types.get(atype, 0) > 0:
             # Find first anchor of this type by checking which anchor matches patterns
             for a in anchors:
@@ -352,6 +382,8 @@ def pick_primary_anchor(anchors: list[str], anchor_types: dict | None = None) ->
                 if atype == "version" and _GENERIC_VERSION_RE.search(a):
                     return a
                 if atype == "metric" and _METRIC_RE.search(a):
+                    return a
+                if atype == "company" and _COMPANY_RE.search(a):
                     return a
 
     # Fallback to first anchor
