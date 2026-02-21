@@ -815,8 +815,6 @@ if (Test-Path $longformMetaPath) {
 Write-Host ""
 Write-Host "EXEC TEXT BAN SCAN:" -ForegroundColor Yellow
 $execBanPhrases = @(
-    "詳見原始來源",
-    "監控中 本欄暫無事件",
     "Evidence summary: sources=",
     "Key terms: ",
     "validate source evidence and related numbers",
@@ -826,6 +824,7 @@ $execBanPhrases = @(
     "TEST .*: run small-scope",
     "MOVE .*: escalate only"
 )
+# Note: CJK banned phrases are checked below via Python subprocess (UTF-8 safe)
 $execBanHits = 0
 
 # Scan PPTX
@@ -852,7 +851,14 @@ for t in doc.tables:
 
 $combinedScanText = "$pptxScanText $docxScanText"
 foreach ($bp in $execBanPhrases) {
-    if ($combinedScanText -match $bp) {
+    # Use IndexOf for literal matching; avoid regex interpretation of PPTX/DOCX content
+    $isRegexPat = $bp -match '[\.\*\+\?\^\$\{\}\[\]\(\)\|\\]'
+    $matched = if ($isRegexPat) {
+        $combinedScanText -match $bp
+    } else {
+        $combinedScanText.IndexOf($bp, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    }
+    if ($matched) {
         Write-Host ("  FAIL: Banned phrase '{0}' found in PPT/DOCX output" -f $bp) -ForegroundColor Red
         $execBanHits++
     }
