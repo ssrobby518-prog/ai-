@@ -128,6 +128,16 @@
     {"q": "site:xiaohongshu.com AI when:3d",                                                      "tag": "platform_proxy"},
     {"q": "site:csdn.net AI when:3d",                                                             "tag": "platform_proxy"},
     {"q": "site:dcard.tw AI when:3d",                                                             "tag": "platform_proxy"},
-    {"q": "site:douyin.com AI when:3d",                                                           "tag": "platform_proxy"}
+    {"q": "site:douyin.com AI when:3d",                                                           "tag": "platform_proxy"},
+    {"q": "site:36kr.com AI 融資 when:72h",                                                       "tag": "zh_tw_business_72h"},
+    {"q": "site:36kr.com AI 收購 when:72h",                                                       "tag": "zh_tw_business_72h"},
+    {"q": "site:ithome.com.tw AI 發布 when:72h",                                                  "tag": "zh_tw_product_72h"},
+    {"q": "site:ithome.com.tw AI 模型 when:72h",                                                  "tag": "zh_tw_product_72h"},
+    {"q": "AI 模型 發布 when:72h",                                                                 "tag": "zh_tw_cutting_edge_72h"},
+    {"q": "AI 權重 開源 when:72h",                                                                 "tag": "zh_tw_cutting_edge_72h"},
+    {"q": "AI 推理 加速 when:72h",                                                                 "tag": "zh_tw_tech_72h"},
+    {"q": "AI 融資 when:72h",                                                                      "tag": "zh_tw_business_72h"},
+    {"q": "AI 收購 when:72h",                                                                      "tag": "zh_tw_business_72h"},
+    {"q": "AI 合作 when:72h",                                                                      "tag": "zh_tw_business_72h"}
   ]
 }

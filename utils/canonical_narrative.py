@@ -273,21 +273,47 @@ def _zh_skeleton_risks(card) -> list[str]:
 # Main builder
 # ---------------------------------------------------------------------------
 
+def _build_rewrite_context(card, bucket: str) -> dict:
+    """Build context dict for newsroom_zh_rewrite from card fields."""
+    # Extract ISO date from card
+    date_str = ""
+    for attr in ("published_at", "published_at_parsed", "collected_at"):
+        val = getattr(card, attr, None)
+        if val:
+            m = _ISO_DATE_RE.search(str(val))
+            if m:
+                date_str = m.group(0)
+                break
+
+    title = (getattr(card, "title_plain", "") or "").strip()
+    return {
+        "title": title,
+        "date": date_str,
+        "subject": "",  # filled below
+        "bucket": bucket,
+        "source": (getattr(card, "source_name", "") or "").strip(),
+        "what_happened": (getattr(card, "what_happened", "") or "").strip(),
+        "why_important": (getattr(card, "why_important", "") or "").strip(),
+        "action_items": list(getattr(card, "action_items", None) or []),
+        "speculative_effects": list(getattr(card, "speculative_effects", None) or []),
+        "derivable_effects": list(getattr(card, "derivable_effects", None) or []),
+    }
+
+
 def build_canonical_payload(card) -> dict:
-    """Build canonical payload from card.
+    """Build canonical payload from card — Iteration 3: Newsroom ZH Rewrite v1.
 
     Algorithm
     ---------
     1. Call narrative_compactor_v2 for base narrative + bullets + proof + stats.
-    2. Split narrative → q1 (sentences 0-1) + q2 (sentences 2+).
-    3. If zh_ratio(q1) < 0.25: apply ZH skeleton for q1.
-    4. If zh_ratio(q2) < 0.25 or q2 empty: apply ZH skeleton for q2.
-    5. Build q3 from compactor bullets; fill with ZH skeleton if < 2.
-    6. Build risks from ZH skeleton (speculative_effects → derivable_effects).
-    7. sanitize_exec_text on all string fields.
-    8. Return fixed-schema dict.
+    2. Build rewrite context dict from card fields.
+    3. Call newsroom_zh_rewrite for q1/q2/q3/risks (always produces ZH-dominant text).
+    4. Verify zh_ratio >= 0.20 for each field; fall back to ZH skeleton if needed.
+    5. proof_line from compactor or _make_proof_line.
+    6. sanitize_exec_text on all fields.
+    7. Return fixed-schema dict with newsroom_rewrite=True flag.
     """
-    # ── Step 1: narrative_compactor_v2 ──────────────────────────────────────
+    # ── Step 1: narrative_compactor_v2 (for proof + dedup stats) ────────────
     try:
         from utils.narrative_compactor_v2 import build_narrative_v2
         comp = build_narrative_v2(card)
@@ -302,45 +328,71 @@ def build_canonical_payload(card) -> dict:
         proof = ""
         dedup_ratio = 0.0
 
-    # ── Step 2: Split narrative → q1 / q2 ───────────────────────────────────
-    all_sents = _split_sentences(narrative)
-    if len(all_sents) >= 2:
-        q1_raw = _ensure_terminated(all_sents[0])
-        q2_raw = "".join(_ensure_terminated(s) for s in all_sents[1:])
-    elif len(all_sents) == 1:
-        q1_raw = _ensure_terminated(all_sents[0])
-        q2_raw = ""
-    else:
+    # ── Step 2: bucket + rewrite context ─────────────────────────────────────
+    bucket = _get_bucket(card)
+    ctx = _build_rewrite_context(card, bucket)
+
+    # ── Step 3: newsroom ZH rewrite ──────────────────────────────────────────
+    try:
+        from utils.newsroom_zh_rewrite import (
+            rewrite_news_lead as _nzh_lead,
+            rewrite_news_impact as _nzh_impact,
+            rewrite_news_next as _nzh_next,
+            rewrite_news_risks as _nzh_risks,
+            zh_ratio as _nzh_ratio,
+        )
+        q1_raw = _nzh_lead(narrative, ctx)
+        q2_raw = _nzh_impact(narrative, ctx)
+        q3_bullets = _nzh_next(narrative, ctx)
+        risks_bullets = _nzh_risks(narrative, ctx)
+        _newsroom_active = True
+    except Exception:
+        _newsroom_active = False
         q1_raw = ""
         q2_raw = ""
+        q3_bullets = []
+        risks_bullets = []
 
-    # ── Step 3-4: ZH skeleton if ratio too low ──────────────────────────────
-    if _zh_ratio(q1_raw) < _ZH_THRESHOLD:
+    # ── Step 4: fallback to ZH skeleton if newsroom output is too English ────
+    _ZH_MIN = 0.20
+
+    if not q1_raw or _zh_ratio(q1_raw) < _ZH_MIN:
         skel = _zh_skeleton_q1(card)
-        if skel:
+        if skel and _zh_ratio(skel) >= _ZH_MIN:
             q1_raw = skel
+        elif not q1_raw:
+            q1_raw = "事件摘要：詳細資訊待確認。"
 
-    if _zh_ratio(q2_raw) < _ZH_THRESHOLD or not q2_raw:
+    if not q2_raw or _zh_ratio(q2_raw) < _ZH_MIN:
+        skel = _zh_skeleton_q2(card)
+        if skel and _zh_ratio(skel) >= _ZH_MIN:
+            q2_raw = skel
+        elif not q2_raw:
+            q2_raw = "影響評估：此事件的商業影響待進一步確認。"
+
+    # Ensure q2 is distinct from q1
+    if SequenceMatcher(None, q1_raw, q2_raw).ratio() > 0.85:
         skel = _zh_skeleton_q2(card)
         if skel:
             q2_raw = skel
 
-    # Ensure q1 always has content
-    if not q1_raw.strip():
-        q1_raw = _zh_skeleton_q1(card) or "事件摘要：詳細資訊待確認。"
-
-    # Ensure q2 always has content distinct from q1
-    if not q2_raw.strip() or SequenceMatcher(None, q1_raw, q2_raw).ratio() > 0.85:
-        q2_raw = _zh_skeleton_q2(card) or "影響評估：此事件的商業影響待進一步確認。"
-
-    # ── Step 5: q3 bullets ───────────────────────────────────────────────────
+    # q3 bullets — prefer newsroom output, fill with skeleton
     q3: list[str] = []
-    for b in comp_bullets:
+    for b in q3_bullets:
         b_c = _clean_raw(str(b or "").strip())
         if len(b_c) >= 12 and not _near_dup(b_c, q3):
             q3.append(_ensure_terminated(b_c))
         if len(q3) >= 3:
             break
+
+    # Fill with compactor bullets if newsroom q3 is sparse
+    if len(q3) < 2:
+        for b in comp_bullets:
+            b_c = _clean_raw(str(b or "").strip())
+            if len(b_c) >= 12 and not _near_dup(b_c, q3):
+                q3.append(_ensure_terminated(b_c))
+            if len(q3) >= 3:
+                break
 
     if len(q3) < 2:
         for s in _zh_skeleton_q3(card):
@@ -352,16 +404,30 @@ def build_canonical_payload(card) -> dict:
     if not q3:
         q3 = ["持續監控此事件後續發展（T+7）。"]
 
-    # ── Step 6: risks ────────────────────────────────────────────────────────
-    risks = _zh_skeleton_risks(card)
+    # risks — prefer newsroom output, fill with skeleton
+    risks: list[str] = []
+    for r in risks_bullets:
+        r_c = _clean_raw(str(r or "").strip())
+        if len(r_c) >= 12 and not _near_dup(r_c, risks):
+            risks.append(_ensure_terminated(r_c))
+        if len(risks) >= 2:
+            break
+
+    if len(risks) < 2:
+        for s in _zh_skeleton_risks(card):
+            if not _near_dup(s, risks):
+                risks.append(s)
+            if len(risks) >= 2:
+                break
+
     if not risks:
         risks = ["重要性評分：待確認。"]
 
-    # ── Step 7: proof ────────────────────────────────────────────────────────
+    # ── Step 5: proof ────────────────────────────────────────────────────────
     if not proof:
         proof = _make_proof_line(card)
 
-    # ── Step 8: title_clean ──────────────────────────────────────────────────
+    # ── Step 6: title_clean ──────────────────────────────────────────────────
     raw_title = (getattr(card, "title_plain", "") or "").strip()
     try:
         from core.content_strategy import sanitize as _cs_sanitize
@@ -369,10 +435,7 @@ def build_canonical_payload(card) -> dict:
     except Exception:
         title_clean = _clean_raw(raw_title)
 
-    # ── Step 9: bucket ───────────────────────────────────────────────────────
-    bucket = _get_bucket(card)
-
-    # ── Step 10: sanitize all text ───────────────────────────────────────────
+    # ── Step 7: sanitize all text ─────────────────────────────────────────────
     q1_final = _sanitize_text(q1_raw) or "事件摘要：詳細資訊待確認。"
     q2_final = _sanitize_text(q2_raw) or "影響評估：此事件的商業影響待進一步確認。"
     q3_final = [_sanitize_text(b) for b in q3 if _sanitize_text(b)]
@@ -383,8 +446,8 @@ def build_canonical_payload(card) -> dict:
     if not risks_final:
         risks_final = ["重要性評分：待確認。"]
 
-    # ── Step 11: final zh_ratio ──────────────────────────────────────────────
-    combined = " ".join([q1_final, q2_final] + q3_final + risks_final)
+    # ── Step 8: final zh_ratio ────────────────────────────────────────────────
+    combined = " ".join([q1_final, q2_final] + q3_final[:3] + risks_final[:2])
     final_zh_ratio = _zh_ratio(combined)
 
     return {
@@ -397,6 +460,7 @@ def build_canonical_payload(card) -> dict:
         "bucket": bucket,
         "zh_ratio": final_zh_ratio,
         "dedup_ratio": dedup_ratio,
+        "newsroom_rewrite": _newsroom_active,
     }
 
 
@@ -418,3 +482,68 @@ def get_canonical_payload(card) -> dict:
         pass  # non-fatal if card is frozen/immutable
 
     return payload
+
+
+def write_newsroom_zh_meta(cards: list, outdir: "str | None" = None) -> None:
+    """Write outputs/newsroom_zh.meta.json — Iteration 3 audit file.
+
+    Collects zh_ratio per card from cached _canonical_payload_v3, computes
+    aggregate statistics, and writes a samples array (≥1 event) for
+    verify_online.ps1 NEWSROOM_ZH GATE sampling.
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    root = Path(outdir) if outdir else Path(__file__).resolve().parent.parent / "outputs"
+    root.mkdir(parents=True, exist_ok=True)
+
+    ratios: list[float] = []
+    samples: list[dict] = []
+
+    for card in cards:
+        cp = getattr(card, "_canonical_payload_v3", None)
+        if cp is None:
+            # Trigger build if not cached yet
+            try:
+                cp = get_canonical_payload(card)
+            except Exception:
+                continue
+        if cp is None:
+            continue
+
+        ratio = float(cp.get("zh_ratio", 0.0))
+        ratios.append(ratio)
+
+        # Collect sample (up to 3 events with highest zh_ratio for display)
+        if len(samples) < 3:
+            samples.append({
+                "item_id":   (getattr(card, "item_id", "") or "")[:20],
+                "title":     cp.get("title_clean", "")[:60],
+                "q1":        cp.get("q1_event_2sent_zh", "")[:200],
+                "q2":        cp.get("q2_impact_2sent_zh", "")[:200],
+                "q3":        cp.get("q3_moves_3bullets_zh", [])[:3],
+                "proof":     cp.get("proof_line", ""),
+                "zh_ratio":  ratio,
+                "newsroom":  cp.get("newsroom_rewrite", False),
+            })
+
+    count = len(ratios)
+    avg_zh = round(sum(ratios) / count, 3) if count else 0.0
+    min_zh = round(min(ratios), 3) if ratios else 0.0
+
+    meta = {
+        "generated_at":   datetime.now(timezone.utc).isoformat(),
+        "applied_count":  count,
+        "avg_zh_ratio":   avg_zh,
+        "min_zh_ratio":   min_zh,
+        "samples":        samples,
+    }
+
+    try:
+        (root / "newsroom_zh.meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # non-fatal

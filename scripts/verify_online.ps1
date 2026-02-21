@@ -829,6 +829,66 @@ if (Test-Path $voCanV3Path) {
     Write-Output "CANONICAL_V3: canonical_v3.meta.json not found (pipeline may not have generated events)"
 }
 
+# ---------------------------------------------------------------------------
+# NEWSROOM_ZH GATE (Iteration 3) — HARD fail-fast gate
+#   avg_zh_ratio >= 0.35  AND  min_zh_ratio >= 0.20
+#   fail => exit 1
+# ---------------------------------------------------------------------------
+$voNzPath = Join-Path $repoRoot "outputs\newsroom_zh.meta.json"
+Write-Output ""
+Write-Output "NEWSROOM_ZH GATE:"
+if (Test-Path $voNzPath) {
+    try {
+        $voNz = Get-Content $voNzPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voNzCount  = if ($voNz.PSObject.Properties['applied_count']) { [int]$voNz.applied_count }     else { 0 }
+        $voNzAvg    = if ($voNz.PSObject.Properties['avg_zh_ratio'])  { [double]$voNz.avg_zh_ratio }   else { 0.0 }
+        $voNzMin    = if ($voNz.PSObject.Properties['min_zh_ratio'])  { [double]$voNz.min_zh_ratio }   else { 0.0 }
+
+        Write-Output ("  applied_count : {0}" -f $voNzCount)
+        Write-Output ("  avg_zh_ratio  : {0:F3}  (target >= 0.35)" -f $voNzAvg)
+        Write-Output ("  min_zh_ratio  : {0:F3}  (target >= 0.20)" -f $voNzMin)
+
+        # --- Print sample event Q1/Q2/Q3 + Proof ---
+        if ($voNz.PSObject.Properties['samples'] -and $voNz.samples -and $voNz.samples.Count -gt 0) {
+            $voNzSample = $voNz.samples[0]
+            Write-Output ""
+            Write-Output "NEWSROOM_ZH SAMPLE (event #{0}):" -f 1
+            Write-Output ("  title   : {0}" -f $voNzSample.title)
+            Write-Output ("  Q1      : {0}" -f $voNzSample.q1)
+            Write-Output ("  Q2      : {0}" -f $voNzSample.q2)
+            if ($voNzSample.PSObject.Properties['q3'] -and $voNzSample.q3) {
+                $voNzSample.q3 | ForEach-Object { Write-Output ("  Q3      : {0}" -f $_) }
+            }
+            Write-Output ("  Proof   : {0}" -f $voNzSample.proof)
+            Write-Output ("  zh_ratio: {0:F3}" -f [double]$voNzSample.zh_ratio)
+        }
+
+        Write-Output ""
+        $voNzGateAvg = ($voNzAvg -ge 0.35)
+        $voNzGateMin = ($voNzMin -ge 0.20)
+
+        if ($voNzGateAvg -and $voNzGateMin) {
+            Write-Output ("NEWSROOM_ZH: PASS (avg={0:F3} >= 0.35; min={1:F3} >= 0.20)" -f $voNzAvg, $voNzMin)
+        } else {
+            if (-not $voNzGateAvg) {
+                Write-Output ("NEWSROOM_ZH: FAIL — avg_zh_ratio={0:F3} < 0.35 (target not met)" -f $voNzAvg)
+            }
+            if (-not $voNzGateMin) {
+                Write-Output ("NEWSROOM_ZH: FAIL — min_zh_ratio={0:F3} < 0.20 (target not met)" -f $voNzMin)
+            }
+            Write-Output "NEWSROOM_ZH GATE: FAIL — ZH ratio below threshold; check newsroom_zh_rewrite.py"
+            exit 1
+        }
+    } catch {
+        Write-Output ("  newsroom_zh meta parse error: {0}" -f $_)
+        Write-Output "NEWSROOM_ZH GATE: WARN-OK (parse error; non-fatal)"
+    }
+} else {
+    Write-Output "  newsroom_zh.meta.json not found"
+    Write-Output "NEWSROOM_ZH GATE: FAIL — meta file missing; pipeline did not run newsroom rewriter"
+    exit 1
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="

@@ -76,10 +76,18 @@ def _pick_watchlist_anchor(card, min_chars: int = LONGFORM_WATCHLIST_MIN_ANCHOR_
     return combined if len(combined) >= min_chars else None
 
 
+def _zh_ratio_simple(text: str) -> float:
+    """Quick CJK ratio check without importing newsroom module."""
+    if not text:
+        return 0.0
+    zh = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    return zh / max(1, len(text))
+
+
 def _build_watchlist_payload(card) -> dict:
     """Build three-line watchlist payload: {what, why, proof_line, anchor_chars, eligible, proof_missing}.
 
-    Uses card fields directly (does NOT require 1200-char anchor).
+    Uses canonical newsroom rewrite (Iteration 3) for ZH-dominant output.
     Applies exec_sanitizer to all text output.
     """
     try:
@@ -100,15 +108,69 @@ def _build_watchlist_payload(card) -> dict:
     import re as _re
     proof_missing = not bool(_re.search(r"\d{4}-\d{2}-\d{2}", proof_line))
 
-    what = str(getattr(card, "what_happened", "") or "").strip()
-    if not what:
-        what = str(getattr(card, "title_plain", "") or "").strip()
-    what = sanitize_exec_text(what[:200])
+    # ── Newsroom ZH rewrite for what/why (Iteration 3) ──────────────────────
+    what_raw = str(getattr(card, "what_happened", "") or "").strip()
+    if not what_raw:
+        what_raw = str(getattr(card, "title_plain", "") or "").strip()
+    why_raw = str(getattr(card, "why_important", "") or "").strip()
+    if not why_raw:
+        why_raw = str(getattr(card, "technical_interpretation", "") or "").strip()
 
-    why = str(getattr(card, "why_important", "") or "").strip()
-    if not why:
-        why = str(getattr(card, "technical_interpretation", "") or "").strip()
-    why = sanitize_exec_text(why[:200])
+    _ZH_MIN_WL = 0.20  # Watchlist ZH threshold
+
+    try:
+        from utils.newsroom_zh_rewrite import (
+            rewrite_news_lead as _nzh_wl_lead,
+            rewrite_news_impact as _nzh_wl_impact,
+            zh_ratio as _nzh_wl_ratio,
+        )
+        # Build minimal context for rewriter
+        _wl_bucket = "business"
+        try:
+            from utils.topic_router import route_topic as _rt_wl
+            _ch = (_rt_wl(card).get("channel", "") or "").lower()
+            if _ch in ("product", "tech", "business", "dev"):
+                _wl_bucket = _ch
+        except Exception:
+            pass
+
+        _wl_ctx = {
+            "title":   str(getattr(card, "title_plain", "") or "").strip(),
+            "date":    "",
+            "subject": "",
+            "bucket":  _wl_bucket,
+            "source":  str(getattr(card, "source_name", "") or "").strip(),
+            "what_happened":  what_raw,
+            "why_important":  why_raw,
+            "action_items":   list(getattr(card, "action_items", None) or []),
+            "speculative_effects": list(getattr(card, "speculative_effects", None) or []),
+            "derivable_effects":   list(getattr(card, "derivable_effects", None) or []),
+        }
+        # Extract date for context
+        import re as _re2
+        for _attr in ("published_at", "published_at_parsed", "collected_at"):
+            _val = getattr(card, _attr, None)
+            if _val:
+                _dm = _re2.search(r"\d{4}-\d{2}-\d{2}", str(_val))
+                if _dm:
+                    _wl_ctx["date"] = _dm.group(0)
+                    break
+
+        what_rewritten = _nzh_wl_lead(what_raw, _wl_ctx)
+        why_rewritten = _nzh_wl_impact(why_raw, _wl_ctx)
+
+        # Use rewritten if zh_ratio improved enough
+        what = what_rewritten if _nzh_wl_ratio(what_rewritten) >= _ZH_MIN_WL else what_raw
+        why = why_rewritten if _nzh_wl_ratio(why_rewritten) >= _ZH_MIN_WL else why_raw
+
+    except Exception:
+        # Fallback: use raw fields
+        what = what_raw
+        why = why_raw
+
+    # Final sanitize
+    what = sanitize_exec_text(what[:300])
+    why = sanitize_exec_text(why[:300])
 
     anchor = _pick_watchlist_anchor(card)
     anchor_chars = len(anchor) if anchor else 0
