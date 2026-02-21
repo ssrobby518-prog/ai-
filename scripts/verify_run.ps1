@@ -640,8 +640,14 @@ if (Test-Path $execQualMetaPath) {
         $fragLeaked   = if ($eqm.PSObject.Properties['fragments_leaked'])       { $eqm.fragments_leaked }       else { 0 }
         $fragDetected = if ($eqm.PSObject.Properties['fragments_detected'])     { $eqm.fragments_detected }     else { 0 }
         $fragFixed    = if ($eqm.PSObject.Properties['fragments_fixed'])        { $eqm.fragments_fixed }        else { 0 }
-        $enHeavyFixed = if ($eqm.PSObject.Properties['english_heavy_paragraphs_fixed_count']) { $eqm.english_heavy_paragraphs_fixed_count } else { 0 }
-        $glossApplied = if ($eqm.PSObject.Properties['proper_noun_gloss_applied_count'])      { $eqm.proper_noun_gloss_applied_count }      else { 0 }
+        $enHeavyFixed    = if ($eqm.PSObject.Properties['english_heavy_paragraphs_fixed_count']) { $eqm.english_heavy_paragraphs_fixed_count } else { 0 }
+        $glossApplied    = if ($eqm.PSObject.Properties['proper_noun_gloss_applied_count'])      { $eqm.proper_noun_gloss_applied_count }      else { 0 }
+        $actionsNorm     = if ($eqm.PSObject.Properties['actions_normalized_count'])             { $eqm.actions_normalized_count }             else { 0 }
+        $actionsLeak     = if ($eqm.PSObject.Properties['actions_fragment_leak_count'])          { $eqm.actions_fragment_leak_count }          else { 0 }
+        $zhSkeletonize   = if ($eqm.PSObject.Properties['english_heavy_skeletonized_count'])     { $eqm.english_heavy_skeletonized_count }     else { 0 }
+        $proofEmptyGate  = if ($eqm.PSObject.Properties['proof_empty_gate'])                     { $eqm.proof_empty_gate }                     else { "PASS" }
+        $proofEmptyCount = if ($eqm.PSObject.Properties['proof_empty_event_count'])              { $eqm.proof_empty_event_count }              else { 0 }
+        $actNormStatus   = if ($actionsLeak -eq 0) { "PASS" } else { "FAIL" }
 
         Write-Host ""
         Write-Host "EXEC QUALITY GATES:"
@@ -650,8 +656,11 @@ if (Test-Path $execQualMetaPath) {
         Write-Host ("  PROOF_COVERAGE_GATE  : {0} (ratio={1:P1})" -f $g3Status, $proofRatio)
         Write-Host ("  FRAGMENT_LEAK_GATE   : {0} (leaked={1} detected={2} fixed={3})" -f $g4Status, $fragLeaked, $fragDetected, $fragFixed)
         Write-Host ("  EN_ZH_HYBRID_GLOSS   : english_heavy_fixed={0}  proper_noun_glossed={1}" -f $enHeavyFixed, $glossApplied)
+        Write-Host ("  ACTIONS_NORMALIZATION: {0} (normalized={1} leaked={2})" -f $actNormStatus, $actionsNorm, $actionsLeak)
+        Write-Host ("  ZH_SKELETONIZE       : count={0}" -f $zhSkeletonize)
+        Write-Host ("  PROOF_EMPTY_GATE     : {0} (empty={1})" -f $proofEmptyGate, $proofEmptyCount)
 
-        $qualAnyFail = ($g2Status -eq "FAIL") -or ($g3Status -eq "FAIL") -or ($g4Status -eq "FAIL")
+        $qualAnyFail = ($g2Status -eq "FAIL") -or ($g3Status -eq "FAIL") -or ($g4Status -eq "FAIL") -or ($actNormStatus -eq "FAIL") -or ($proofEmptyGate -eq "FAIL")
         if ($qualAnyFail -and -not $eqSparseDay) {
             Write-Host "  => EXEC QUALITY GATES: FAIL" -ForegroundColor Red
             exit 1

@@ -57,6 +57,30 @@ _ALL_HARD_EVIDENCE = [
 ]
 
 # ---------------------------------------------------------------------------
+# Strict proof-evidence whitelist (for G3 proof-coverage gate only)
+# Excludes bare percentages, K/GB/TB unit numbers, and generic sequence numbers.
+# Only counts: version, named-benchmark+score, B/M params, money, ISO date.
+# ---------------------------------------------------------------------------
+_PROOF_PARAMS_RE = re.compile(
+    r'\b\d+(?:\.\d+)?\s*[BM]\b',   # 70B, 7B, 1.5B, 500M etc. (params / size)
+    re.IGNORECASE,
+)
+_PROOF_BENCHMARK_RE = re.compile(
+    r'\b(?:SWE-bench|MMLU|GPQA|Arena|AIME|latency|throughput|accuracy|BLEU|ROUGE)\b'
+    r'[\s:=]*[\d.]+',
+    re.IGNORECASE,
+)
+_PROOF_DATE_RE = re.compile(r'\b20\d{2}-\d{2}-\d{2}\b')  # only ISO full dates
+
+_PROOF_EVIDENCE_STRICT = [
+    _VERSION_RE,          # v1.2.3
+    _PROOF_BENCHMARK_RE,  # MMLU 90.2, SWE-bench 72, AIME 50
+    _PROOF_PARAMS_RE,     # 70B, 7B, 1.5B
+    _MONEY_RE,            # $100M, $6.6B, 融資100億
+    _PROOF_DATE_RE,       # 2026-02-20
+]
+
+# ---------------------------------------------------------------------------
 # Action-verb patterns for sentence-1 subject extraction
 # ---------------------------------------------------------------------------
 _ACTION_VERB_RE = re.compile(
@@ -208,5 +232,21 @@ def count_hard_evidence_tokens(text: str) -> int:
     """Count distinct hard evidence token matches in text (for stats)."""
     total = 0
     for pattern in _ALL_HARD_EVIDENCE:
+        total += len(pattern.findall(text))
+    return total
+
+
+def count_proof_evidence_tokens(text: str) -> int:
+    """Count STRICT proof-evidence tokens for the G3 proof-coverage gate.
+
+    Whitelist: version (v1.2.3), named benchmark + score (MMLU 90.2),
+    B/M params/size (70B, 1.5B), money ($100M, $6.6B, 融資100億),
+    ISO date (2026-02-20).
+
+    Excluded on purpose: bare percentages, K/GB/TB unit numbers,
+    generic year numbers (2025), sequence numbers (10 1).
+    """
+    total = 0
+    for pattern in _PROOF_EVIDENCE_STRICT:
         total += len(pattern.findall(text))
     return total

@@ -5158,10 +5158,17 @@ def _compute_source_diversity(selected_cards: list, max_share: float = 0.45) -> 
 
 
 def _compute_proof_coverage(selected_cards: list, min_coverage: float = 0.85) -> dict:
-    """Compute proof token coverage (G3) over selected event cards."""
-    from utils.narrative_compact import count_hard_evidence_tokens
+    """Compute proof token coverage (G3) over selected event cards.
+
+    Uses the strict whitelist (count_proof_evidence_tokens) so that bare
+    percentages, generic year numbers, and K/GB/TB unit counts do NOT count
+    as hard evidence.  Also computes PROOF_EMPTY_GATE: cards with zero
+    whitelisted proof tokens are listed separately.
+    """
+    from utils.narrative_compact import count_proof_evidence_tokens
 
     proof_missing_ids: list = []
+    proof_empty_ids: list = []
     proof_covered = 0
     for card in selected_cards:
         cid = str(getattr(card, "id", None) or getattr(card, "item_id", None) or "?")
@@ -5171,18 +5178,33 @@ def _compute_proof_coverage(selected_cards: list, min_coverage: float = 0.85) ->
             str(getattr(card, "why_important", "") or ""),
             str(getattr(card, "technical_interpretation", "") or ""),
         ]))
-        if count_hard_evidence_tokens(text) > 0:
+        token_count = count_proof_evidence_tokens(text)
+        if token_count > 0:
             proof_covered += 1
         else:
             proof_missing_ids.append(cid)
+            proof_empty_ids.append(cid)
+
     if not selected_cards:
-        return {"proof_coverage_ratio": 1.0, "proof_missing_event_ids": [], "proof_coverage_gate": "PASS"}
+        return {
+            "proof_coverage_ratio": 1.0,
+            "proof_missing_event_ids": [],
+            "proof_coverage_gate": "PASS",
+            "proof_empty_event_count": 0,
+            "proof_empty_event_ids": [],
+            "proof_empty_gate": "PASS",
+        }
+
     ratio = round(proof_covered / len(selected_cards), 4)
     gate = "PASS" if ratio >= min_coverage else "FAIL"
+    proof_empty_count = len(proof_empty_ids)
     return {
         "proof_coverage_ratio": ratio,
         "proof_missing_event_ids": proof_missing_ids[:10],
         "proof_coverage_gate": gate,
+        "proof_empty_event_count": proof_empty_count,
+        "proof_empty_event_ids": proof_empty_ids[:10],
+        "proof_empty_gate": "PASS" if proof_empty_count == 0 else "FAIL",
     }
 
 
@@ -5232,6 +5254,11 @@ def write_exec_quality_meta(
             "fragments_fixed": 0,
             "fragments_leaked": 0,
             "fragment_leak_gate": "PASS",
+            # Actions normalization placeholders — updated by ppt_generator
+            "actions_normalized_count": 0,
+            "actions_fragment_leak_count": 0,
+            # ZH skeletonization placeholder — updated by ppt_generator
+            "english_heavy_skeletonized_count": 0,
         }
 
         (out_dir / "exec_quality.meta.json").write_text(
@@ -5239,7 +5266,7 @@ def write_exec_quality_meta(
             encoding="utf-8",
         )
 
-        # Fail-fast for G2 and G3 (skip on sparse day to allow thin-data fallback)
+        # Fail-fast for G2, G3, PROOF_EMPTY (skip on sparse day)
         if not sparse_day:
             if g2["source_diversity_gate"] == "FAIL":
                 raise RuntimeError(
@@ -5250,6 +5277,11 @@ def write_exec_quality_meta(
                 raise RuntimeError(
                     f"PROOF_COVERAGE_GATE FAIL: coverage={g3['proof_coverage_ratio']:.1%} "
                     f"< {min_proof:.1%}  missing_ids={g3['proof_missing_event_ids'][:5]}"
+                )
+            if g3.get("proof_empty_gate") == "FAIL":
+                raise RuntimeError(
+                    f"PROOF_EMPTY_GATE FAIL: {g3['proof_empty_event_count']} events "
+                    f"have no whitelisted proof tokens  ids={g3['proof_empty_event_ids'][:5]}"
                 )
     except RuntimeError:
         raise  # propagate fail-fast gates

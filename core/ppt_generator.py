@@ -805,13 +805,15 @@ def _slide_recommended_moves(prs: Presentation, cards: list[EduNewsCard]) -> Non
         return
 
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_ppt
+    _gloss_seen_moves: set = set()
     for act in actions[:6]:
         tag_color = type_colors.get(act["action_type"], SUBTLE_GRAY)
 
-        # Guard (D): replace fragment detail with safe fallback
+        # Guard (D): replace fragment detail with safe fallback, then normalize
         detail_text = act["detail"]
         if not detail_text or _is_frag_ppt(detail_text):
             detail_text = "持續監控此事件發展（T+7）"
+        detail_text = _v1_norm_gloss(detail_text, _V1_GLOSSARY, _gloss_seen_moves)
 
         # Action type badge
         _add_textbox(slide, Cm(2), Cm(y), Cm(4), Cm(0.9),
@@ -1759,6 +1761,12 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     if not raw_risks:
         raw_risks = [safe_text(brief.get('q1_meaning', ''), 55) or '持續監控此事件後續影響。']
     risks = _v1_norm_bullets_safe(raw_risks[:2])
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_risk
+    risks = [
+        _v1_norm_gloss(rk, _V1_GLOSSARY, _gloss_seen_p2) if not _is_frag_risk(rk)
+        else '持續監控此事件後續影響。'
+        for rk in risks
+    ]
     for ri, rk in enumerate(risks[:2]):
         _add_textbox(
             slide, Cm(3), Cm(16.2 + ri * 0.9), Cm(18), Cm(0.8),
@@ -1913,12 +1921,30 @@ def _v1_write_exec_layout_meta(
     except Exception as exc:
         get_logger().warning('Failed to write exec_layout.meta.json: %s', exc)
 
-    # G4: update exec_quality.meta.json with fragment leak data
+    # G4: update exec_quality.meta.json with fragment leak + actions normalization data
     try:
         import json as _json_q
+        from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_act
         _q_path = meta_path.parent / 'exec_quality.meta.json'
         fragments_leaked = max(0, fragments_detected - fragments_fixed)
         fragment_leak_gate = 'PASS' if fragments_leaked == 0 else 'FAIL'
+
+        # Actions/Risks normalization stats
+        actions_normalized_count = 0
+        actions_fragment_leak_count = 0
+        for _c in event_cards:
+            _brief_c = build_ceo_brief_blocks(_c)
+            _dc_c = build_decision_card(_c)
+            _raw_acts = _brief_c.get('q3_actions', []) or []
+            _raw_risks = _dc_c.get('risks', []) or []
+            _all_items = [safe_text(a, 60) for a in (_raw_acts[:3] + _raw_risks[:2])]
+            _normed = _v1_norm_bullets_safe(_all_items)
+            for _item in _normed:
+                if _item and _item.strip():
+                    actions_normalized_count += 1
+                    if _is_frag_act(_item):
+                        actions_fragment_leak_count += 1
+
         if _q_path.exists():
             _qm = _json_q.loads(_q_path.read_text(encoding='utf-8'))
         else:
@@ -1930,7 +1956,10 @@ def _v1_write_exec_layout_meta(
             'fragments_leaked': fragments_leaked,
             'fragment_leak_gate': fragment_leak_gate,
             'english_heavy_paragraphs_fixed_count': _gloss.get('english_heavy_paragraphs_fixed_count', 0),
+            'english_heavy_skeletonized_count': _gloss.get('english_heavy_skeletonized_count', 0),
             'proper_noun_gloss_applied_count': _gloss.get('proper_noun_gloss_applied_count', 0),
+            'actions_normalized_count': actions_normalized_count,
+            'actions_fragment_leak_count': actions_fragment_leak_count,
         })
         _q_path.write_text(
             _json_q.dumps(_qm, ensure_ascii=False, indent=2),

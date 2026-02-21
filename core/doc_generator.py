@@ -451,12 +451,18 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     chart_type = chart_spec.get("type", "bar")
     _add_callout(doc, "Chart Type", [f"Chart Type: {chart_type}"])
 
-    # ── Q3 Moves (3 bullets, bullet_normalizer) ──
+    # ── Q3 Moves (3 bullets, bullet_normalizer + fragment guard + glossing) ──
     _add_heading(doc, "Q3 — 現在要做什麼 / Moves", level=3)
     raw_actions = brief.get("q3_actions", []) or []
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_mv
     moves = _nb_safe([sanitize(a) for a in raw_actions[:3]])
     if not moves:
         moves = ["持續監控此事件後續發展（T+7）。"]
+    moves = [
+        _doc_norm_gloss(m, _DOC_GLOSSARY, _gloss_seen) if not _is_frag_mv(m)
+        else "持續監控此事件後續發展（T+7）。"
+        for m in moves
+    ]
     move_lines = [f"{i}. {m}" for i, m in enumerate(moves[:3], 1)]
     _add_callout(doc, "Q3 — 現在要做什麼", move_lines)
 
@@ -471,9 +477,15 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
             vid_lines.append(vid_url)
         _add_callout(doc, "Video Source", [sanitize(l) for l in vid_lines])
 
-    # ── Risks (2 bullets) ──
+    # ── Risks (2 bullets, fragment guard + glossing) ──
     raw_risks = dc.get("risks", []) or []
+    from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_rk
     risks = _nb_safe([sanitize(r) for r in raw_risks[:2]])
+    risks = [
+        _doc_norm_gloss(r, _DOC_GLOSSARY, _gloss_seen) if not _is_frag_rk(r)
+        else "持續監控此事件後續影響（T+7）。"
+        for r in risks
+    ]
     if risks:
         _add_callout(doc, "Risks / Watch", [f"• {r}" for r in risks[:2]])
 
@@ -636,11 +648,13 @@ def _build_recommended_moves(doc: Document, cards: list[EduNewsCard]) -> None:
         return
 
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_mv
+    _gloss_seen_moves: set = set()
     for act in actions[:6]:
         detail_text = sanitize(act["detail"])
-        # Guard (D): skip fragment/placeholder detail lines
+        # Guard (D): replace fragment/placeholder detail lines, then normalize
         if not detail_text or _is_frag_mv(detail_text):
             detail_text = "持續監控此事件發展（T+7）"
+        detail_text = _doc_norm_gloss(detail_text, _DOC_GLOSSARY, _gloss_seen_moves)
         lines = [
             detail_text,
             f"Owner: {act['owner']}",

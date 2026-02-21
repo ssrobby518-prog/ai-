@@ -27,7 +27,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 _stats: dict = {
-    "english_heavy_paragraphs_fixed_count": 0,
+    "english_heavy_paragraphs_fixed_count": 0,   # backward-compat alias
+    "english_heavy_skeletonized_count": 0,        # new: tracks zh_skeletonize calls
     "proper_noun_gloss_applied_count": 0,
 }
 
@@ -73,6 +74,7 @@ _FALSE_POSITIVES: frozenset = frozenset({
 def reset_gloss_stats() -> None:
     """Reset per-run counters to zero.  Call once at the start of each pipeline run."""
     _stats["english_heavy_paragraphs_fixed_count"] = 0
+    _stats["english_heavy_skeletonized_count"] = 0
     _stats["proper_noun_gloss_applied_count"] = 0
 
 
@@ -175,17 +177,27 @@ def apply_glossary(text: str, glossary: dict, seen: "set | None" = None) -> str:
     return result
 
 
-def ensure_not_all_english(text: str) -> str:
-    """Prepend a ZH skeleton when a paragraph is overwhelmingly English.
+def zh_skeletonize_if_english_heavy(
+    text: str,
+    context: "dict | None" = None,
+) -> str:
+    """Produce 2–3 deterministic ZH skeleton sentences for English-heavy paragraphs.
 
-    Condition: ASCII (non-space) ratio > 60 % **and** CJK char count < 12.
-    The skeleton is built from entities and numbers already present in *text*
-    so no facts are fabricated.
+    Condition: ASCII (non-space) ratio > 60 % AND CJK char count < 12 AND len >= 15.
 
-    Returns the original text unchanged when:
-      * It already has sufficient ZH content.
-      * It is shorter than 15 characters (likely a fragment — leave to semantic_guard_text).
-      * It is empty or whitespace-only.
+    Output format (key tokens preserved, no facts invented):
+        事件：{entity} {verb_zh}（{number}）。
+        影響：{impact_text}。
+        [證據：{proof_token}。]   # only when a proof token is found
+
+    Args:
+        text:    Input text (English or lightly ZH-mixed).
+        context: Optional dict with card-level hints:
+                   "title"       (str) — for entity extraction
+                   "why"         (str) — why_important for impact sentence
+                   "proof_token" (str) — pre-extracted hard evidence token
+
+    Returns the original text unchanged when the condition is not met.
     """
     if not text or not text.strip():
         return text
@@ -210,49 +222,102 @@ def ensure_not_all_english(text: str) -> str:
     if ascii_ratio <= 0.60 or zh_chars >= 12:
         return text
 
-    # Extract existing entities and numbers (no fabrication)
+    # --- Extract entities and numbers from the text (no fabrication) ---
     nouns = extract_proper_nouns(stripped)
     numbers = re.findall(r"[$€£¥]?\d+(?:\.\d+)?[%BMKbmk]?|\bv\d+\.\d+", stripped)
 
-    # Detect action type from English keywords
+    # --- Sentence 1: Event verb ---
     action_lower = stripped.lower()
-    if any(k in action_lower for k in ("release", "launch", "publish", "ship", "announce", "debut")):
-        action_zh = "發布新版本或重要公告"
+    if any(k in action_lower for k in ("release", "launch", "publish", "ship", "debut")):
+        verb_zh = "發布"
+    elif any(k in action_lower for k in ("announce", "reveal", "unveil", "introduce")):
+        verb_zh = "宣布"
     elif any(k in action_lower for k in ("fund", "raise", "invest", "capital", "billion", "million", "series")):
-        action_zh = "完成新一輪融資或投資"
-    elif any(k in action_lower for k in ("acqui", "merger", "deal", "partner", "agreement")):
-        action_zh = "達成重要合作或收購協議"
+        verb_zh = "宣布融資"
+    elif any(k in action_lower for k in ("acqui", "merger")):
+        verb_zh = "宣布收購"
+    elif any(k in action_lower for k in ("partner", "deal", "agreement")):
+        verb_zh = "達成合作"
     elif any(k in action_lower for k in ("benchmark", "score", "achiev", "outperform", "surpass", "sota")):
-        action_zh = "在基準測試中取得優異成績"
+        verb_zh = "達到新里程碑"
     elif any(k in action_lower for k in ("model", "train", "inference", "gpu", "chip", "hardware")):
-        action_zh = "推出新的 AI 模型或硬體"
+        verb_zh = "推出新模型"
     elif any(k in action_lower for k in ("open source", "open-source", "github")):
-        action_zh = "開源或公開發布"
+        verb_zh = "開源發布"
     else:
-        action_zh = "有新進展"
+        verb_zh = "更新"
 
-    # Build skeleton referencing only existing entities / numbers
-    entity = nouns[0] if nouns else "AI 相關方"
-    if numbers:
-        skeleton = f"【{entity}{action_zh}（{numbers[0]}）】 {stripped}"
+    # Entity: prefer context title, then first extracted proper noun, then fallback
+    if context and context.get("title"):
+        title_nouns = extract_proper_nouns(str(context["title"]))
+        entity = title_nouns[0] if title_nouns else (nouns[0] if nouns else "相關方")
     else:
-        skeleton = f"【{entity}{action_zh}】 {stripped}"
+        entity = nouns[0] if nouns else "相關方"
 
-    _stats["english_heavy_paragraphs_fixed_count"] += 1
-    return skeleton
+    s1 = (f"事件：{entity} {verb_zh}（{numbers[0]}）。" if numbers
+          else f"事件：{entity} {verb_zh}。")
+
+    # --- Sentence 2: Impact ---
+    s2_text = ""
+    if context and context.get("why"):
+        why_raw = str(context["why"]).strip()
+        if sum(1 for c in why_raw if "\u4e00" <= c <= "\u9fff") >= 4:
+            s2_text = why_raw[:60]
+    if not s2_text:
+        if "融資" in verb_zh or any(k in action_lower for k in ("billion", "million", "fund")):
+            s2_text = "可能加速產品研發並改變競爭格局"
+        elif "模型" in verb_zh or "benchmark" in action_lower or "score" in action_lower:
+            s2_text = "將推動技術生態演進，影響採用成本與競爭"
+        elif any(k in verb_zh for k in ("收購", "合作")):
+            s2_text = "可能重塑市場競爭格局"
+        else:
+            s2_text = "可能影響採用決策、成本結構及競爭態勢"
+    s2 = f"影響：{s2_text}。"
+
+    # --- Sentence 3 (optional): Proof token ---
+    proof_token = ""
+    if context and context.get("proof_token"):
+        proof_token = str(context["proof_token"]).strip()
+    if not proof_token:
+        for _pat in (
+            re.compile(r"\bv\d+(?:\.\d+)+\b", re.IGNORECASE),
+            re.compile(r"\$\d+(?:\.\d+)?[MB]\b"),
+            re.compile(r"\b\d+(?:\.\d+)?\s*[BM]\b"),
+            re.compile(r"\b20\d{2}-\d{2}-\d{2}\b"),
+        ):
+            _m = _pat.search(stripped)
+            if _m:
+                proof_token = _m.group()
+                break
+
+    parts = [s1, s2]
+    if proof_token:
+        parts.append(f"證據：{proof_token}。")
+
+    _stats["english_heavy_skeletonized_count"] += 1
+    _stats["english_heavy_paragraphs_fixed_count"] += 1  # backward-compat
+    return " ".join(parts)
+
+
+def ensure_not_all_english(text: str) -> str:
+    """Backward-compat alias for zh_skeletonize_if_english_heavy (no context)."""
+    return zh_skeletonize_if_english_heavy(text)
 
 
 def normalize_exec_text(
     text: str,
     glossary: "dict | None" = None,
     seen: "set | None" = None,
+    context: "dict | None" = None,
 ) -> str:
-    """Full normalization pipeline: glossary annotation → English-heavy detection.
+    """Full normalization pipeline: glossary annotation → ZH skeletonization.
 
     Args:
         text:     Input text to normalize.
         glossary: Proper noun glossary dict; loads from default path if None.
         seen:     Shared seen-set across fields of the same event (term dedup).
+        context:  Optional card-level hints passed to zh_skeletonize_if_english_heavy
+                  (keys: "title", "why", "proof_token").
 
     Returns:
         Normalized text safe for PPT / DOCX insertion.
@@ -262,5 +327,5 @@ def normalize_exec_text(
     if glossary is None:
         glossary = load_glossary()
     t = apply_glossary(text, glossary, seen)
-    t = ensure_not_all_english(t)
+    t = zh_skeletonize_if_english_heavy(t, context)
     return t

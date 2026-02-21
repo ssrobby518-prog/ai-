@@ -358,8 +358,14 @@ if (Test-Path $execQualMetaOnlinePath) {
         $leakedO   = if ($eqmO.PSObject.Properties['fragments_leaked'])       { $eqmO.fragments_leaked }       else { 0 }
         $detectedO = if ($eqmO.PSObject.Properties['fragments_detected'])     { $eqmO.fragments_detected }     else { 0 }
         $fixedO    = if ($eqmO.PSObject.Properties['fragments_fixed'])        { $eqmO.fragments_fixed }        else { 0 }
-        $enHeavyO  = if ($eqmO.PSObject.Properties['english_heavy_paragraphs_fixed_count']) { $eqmO.english_heavy_paragraphs_fixed_count } else { 0 }
-        $glossedO  = if ($eqmO.PSObject.Properties['proper_noun_gloss_applied_count'])      { $eqmO.proper_noun_gloss_applied_count }      else { 0 }
+        $enHeavyO       = if ($eqmO.PSObject.Properties['english_heavy_paragraphs_fixed_count']) { $eqmO.english_heavy_paragraphs_fixed_count } else { 0 }
+        $glossedO       = if ($eqmO.PSObject.Properties['proper_noun_gloss_applied_count'])      { $eqmO.proper_noun_gloss_applied_count }      else { 0 }
+        $actionsNormO   = if ($eqmO.PSObject.Properties['actions_normalized_count'])             { $eqmO.actions_normalized_count }             else { 0 }
+        $actionsLeakO   = if ($eqmO.PSObject.Properties['actions_fragment_leak_count'])          { $eqmO.actions_fragment_leak_count }          else { 0 }
+        $zhSkeletonizeO = if ($eqmO.PSObject.Properties['english_heavy_skeletonized_count'])     { $eqmO.english_heavy_skeletonized_count }     else { 0 }
+        $proofEmptyGateO  = if ($eqmO.PSObject.Properties['proof_empty_gate'])                   { $eqmO.proof_empty_gate }                   else { "PASS" }
+        $proofEmptyCountO = if ($eqmO.PSObject.Properties['proof_empty_event_count'])            { $eqmO.proof_empty_event_count }            else { 0 }
+        $actNormStatusO = if ($actionsLeakO -eq 0) { "PASS" } else { "FAIL" }
 
         Write-Output ""
         Write-Output "EXEC QUALITY GATES:"
@@ -368,8 +374,11 @@ if (Test-Path $execQualMetaOnlinePath) {
         Write-Output ("  PROOF_COVERAGE_GATE  : {0} (ratio={1:P1})" -f $g3O, $proofO)
         Write-Output ("  FRAGMENT_LEAK_GATE   : {0} (leaked={1} detected={2} fixed={3})" -f $g4O, $leakedO, $detectedO, $fixedO)
         Write-Output ("  EN_ZH_HYBRID_GLOSS   : english_heavy_fixed={0}  proper_noun_glossed={1}" -f $enHeavyO, $glossedO)
+        Write-Output ("  ACTIONS_NORMALIZATION: {0} (normalized={1} leaked={2})" -f $actNormStatusO, $actionsNormO, $actionsLeakO)
+        Write-Output ("  ZH_SKELETONIZE       : count={0}" -f $zhSkeletonizeO)
+        Write-Output ("  PROOF_EMPTY_GATE     : {0} (empty={1})" -f $proofEmptyGateO, $proofEmptyCountO)
 
-        $qualAnyFailO = ($g2O -eq "FAIL") -or ($g3O -eq "FAIL") -or ($g4O -eq "FAIL")
+        $qualAnyFailO = ($g2O -eq "FAIL") -or ($g3O -eq "FAIL") -or ($g4O -eq "FAIL") -or ($actNormStatusO -eq "FAIL") -or ($proofEmptyGateO -eq "FAIL")
         if ($qualAnyFailO) {
             Write-Output "  => EXEC QUALITY GATES: FAIL"
             exit 1

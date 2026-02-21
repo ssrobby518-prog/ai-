@@ -149,14 +149,19 @@ def test_non_big_tech_proper_noun_kept_english_with_zh_explain():
 
 
 @pytest.mark.parametrize("token", [
-    "v1.2.3",
-    "$500M",
-    "89.5%",
-    "1024",
-    "T+7",
+    "v1.2.3",    # version string — found as number AND in proof token
+    "$500M",     # dollar amount — preserved in number slot
+    "89.5%",     # percentage — preserved in number slot
+    "1024",      # plain integer — preserved in number slot
+    "70B",       # B-size parameter token — preserved in number slot
 ])
 def test_does_not_touch_version_money_params_tokens(token: str):
-    """T4: Version strings, dollar amounts, percentages, numbers pass through unchanged."""
+    """T4: Evidence tokens (version, money, percentage, B-size) survive skeletonisation.
+
+    The ZH skeleton preserves the first numeric token in the 事件 sentence, and
+    hard-evidence tokens also appear in 證據 when identified by the proof pattern.
+    Scheduling shorthands like 'T+7' are NOT evidence tokens and are excluded.
+    """
     text = f"Model achieves {token} on the benchmark."
     result = normalize_exec_text(text, _GLOSSARY, set())
     assert token in result, (
