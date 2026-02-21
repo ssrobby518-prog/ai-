@@ -5519,6 +5519,13 @@ def write_narrative_v2_meta(cards: list, out_dir: "str | None" = None) -> None:
     except Exception:
         pass  # newsroom_zh meta is non-fatal
 
+    # Also write news_anchor.meta.json (Iteration 4 audit)
+    try:
+        from utils.canonical_narrative import write_news_anchor_meta as _write_na_meta
+        _write_na_meta(cards, out_dir)
+    except Exception:
+        pass  # news_anchor meta is non-fatal
+
 
 # ---------------------------------------------------------------------------
 # v5.2.8 — Canonical Payload v3: single source of truth for ALL text exits

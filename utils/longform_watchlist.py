@@ -120,8 +120,8 @@ def _build_watchlist_payload(card) -> dict:
 
     try:
         from utils.newsroom_zh_rewrite import (
-            rewrite_news_lead as _nzh_wl_lead,
-            rewrite_news_impact as _nzh_wl_impact,
+            rewrite_news_lead_v2 as _nzh_wl_lead,
+            rewrite_news_impact_v2 as _nzh_wl_impact,
             zh_ratio as _nzh_wl_ratio,
         )
         # Build minimal context for rewriter
@@ -156,8 +156,29 @@ def _build_watchlist_payload(card) -> dict:
                     _wl_ctx["date"] = _dm.group(0)
                     break
 
-        what_rewritten = _nzh_wl_lead(what_raw, _wl_ctx)
-        why_rewritten = _nzh_wl_impact(why_raw, _wl_ctx)
+        # Extract anchors for v2 injection (Iteration 4)
+        _wl_anchors: list[str] = []
+        _wl_primary: "str | None" = None
+        try:
+            from utils.news_anchor import (
+                extract_anchors_from_card as _wl_eafc,
+                pick_primary_anchor as _wl_ppa,
+            )
+            _wl_ar = _wl_eafc(card)
+            _wl_anchors = _wl_ar.get("anchors", []) or []
+            _wl_at      = _wl_ar.get("anchor_types", {}) or {}
+            _wl_primary = _wl_ppa(_wl_anchors, _wl_at) if _wl_anchors else None
+        except Exception:
+            pass
+
+        what_rewritten = _nzh_wl_lead(
+            what_raw, _wl_ctx,
+            anchors=_wl_anchors, primary_anchor=_wl_primary,
+        )
+        why_rewritten = _nzh_wl_impact(
+            why_raw, _wl_ctx,
+            anchors=_wl_anchors, primary_anchor=_wl_primary,
+        )
 
         # Use rewritten if zh_ratio improved enough
         what = what_rewritten if _nzh_wl_ratio(what_rewritten) >= _ZH_MIN_WL else what_raw
@@ -232,6 +253,15 @@ def select_watchlist_cards(
         key = _card_key(card)
         if key in event_keys:
             continue
+
+        # Skip cards with no concrete anchors (Iteration 4: anchor-missing filter)
+        try:
+            from utils.news_anchor import extract_anchors_from_card as _wl_sel_eafc
+            _wl_sel_ar = _wl_sel_eafc(card)
+            if not _wl_sel_ar.get("has_anchor", False):
+                continue
+        except Exception:
+            pass  # if news_anchor unavailable, don't skip
 
         # Try full BBC longform first (1200 char threshold)
         lf = render_bbc_longform(card)

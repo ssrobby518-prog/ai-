@@ -301,17 +301,19 @@ def _build_rewrite_context(card, bucket: str) -> dict:
 
 
 def build_canonical_payload(card) -> dict:
-    """Build canonical payload from card — Iteration 3: Newsroom ZH Rewrite v1.
+    """Build canonical payload from card — Iteration 4: News Anchor Perfect v1.
 
     Algorithm
     ---------
     1. Call narrative_compactor_v2 for base narrative + bullets + proof + stats.
-    2. Build rewrite context dict from card fields.
-    3. Call newsroom_zh_rewrite for q1/q2/q3/risks (always produces ZH-dominant text).
-    4. Verify zh_ratio >= 0.20 for each field; fall back to ZH skeleton if needed.
-    5. proof_line from compactor or _make_proof_line.
-    6. sanitize_exec_text on all fields.
-    7. Return fixed-schema dict with newsroom_rewrite=True flag.
+    2. Extract concrete anchors from card (news_anchor.extract_anchors_from_card).
+    3. Build rewrite context dict from card fields.
+    4. Call newsroom_zh_rewrite v2 for q1/q2 (anchor-injected);
+       v1 for q3/risks (unchanged).
+    5. Verify zh_ratio >= 0.20 for each field; fall back to ZH skeleton if needed.
+    6. proof_line from compactor or _make_proof_line.
+    7. sanitize_exec_text on all fields.
+    8. Return fixed-schema dict with anchor debug fields.
     """
     # ── Step 1: narrative_compactor_v2 (for proof + dedup stats) ────────────
     try:
@@ -328,21 +330,45 @@ def build_canonical_payload(card) -> dict:
         proof = ""
         dedup_ratio = 0.0
 
-    # ── Step 2: bucket + rewrite context ─────────────────────────────────────
+    # ── Step 2: Extract concrete anchors (Iteration 4) ───────────────────────
+    _anchors: list[str] = []
+    _anchor_types: dict = {}
+    _primary_anchor: str | None = None
+    _has_anchor: bool = False
+    try:
+        from utils.news_anchor import (
+            extract_anchors_from_card as _eafc,
+            pick_primary_anchor as _ppa,
+        )
+        _anchor_result = _eafc(card)
+        _anchors       = _anchor_result.get("anchors", []) or []
+        _anchor_types  = _anchor_result.get("anchor_types", {}) or {}
+        _has_anchor    = bool(_anchor_result.get("has_anchor", False))
+        _primary_anchor = _ppa(_anchors, _anchor_types) if _anchors else None
+    except Exception:
+        pass
+
+    # ── Step 3: bucket + rewrite context ─────────────────────────────────────
     bucket = _get_bucket(card)
     ctx = _build_rewrite_context(card, bucket)
 
-    # ── Step 3: newsroom ZH rewrite ──────────────────────────────────────────
+    # ── Step 4: newsroom ZH rewrite v2 (anchor-injected) ─────────────────────
     try:
         from utils.newsroom_zh_rewrite import (
-            rewrite_news_lead as _nzh_lead,
-            rewrite_news_impact as _nzh_impact,
+            rewrite_news_lead_v2 as _nzh_lead,
+            rewrite_news_impact_v2 as _nzh_impact,
             rewrite_news_next as _nzh_next,
             rewrite_news_risks as _nzh_risks,
             zh_ratio as _nzh_ratio,
         )
-        q1_raw = _nzh_lead(narrative, ctx)
-        q2_raw = _nzh_impact(narrative, ctx)
+        q1_raw = _nzh_lead(
+            narrative, ctx,
+            anchors=_anchors, primary_anchor=_primary_anchor,
+        )
+        q2_raw = _nzh_impact(
+            narrative, ctx,
+            anchors=_anchors, primary_anchor=_primary_anchor,
+        )
         q3_bullets = _nzh_next(narrative, ctx)
         risks_bullets = _nzh_risks(narrative, ctx)
         _newsroom_active = True
@@ -461,6 +487,11 @@ def build_canonical_payload(card) -> dict:
         "zh_ratio": final_zh_ratio,
         "dedup_ratio": dedup_ratio,
         "newsroom_rewrite": _newsroom_active,
+        # Iteration 4 anchor debug fields
+        "anchor_missing": not _has_anchor,
+        "primary_anchor": _primary_anchor or "",
+        "anchors_top3": _anchors[:3],
+        "anchor_types": _anchor_types,
     }
 
 
@@ -482,6 +513,87 @@ def get_canonical_payload(card) -> dict:
         pass  # non-fatal if card is frozen/immutable
 
     return payload
+
+
+def write_news_anchor_meta(cards: list, outdir: "str | None" = None) -> None:
+    """Write outputs/news_anchor.meta.json — Iteration 4 anchor audit file.
+
+    Reads anchor debug fields from cached _canonical_payload_v3 on each card.
+    Computes coverage statistics and writes samples for verify_online.ps1
+    NEWS_ANCHOR_GATE inspection.
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    root = Path(outdir) if outdir else Path(__file__).resolve().parent.parent / "outputs"
+    root.mkdir(parents=True, exist_ok=True)
+
+    events_total       = 0
+    anchor_present     = 0
+    anchor_missing_ids: list[str] = []
+    anchor_type_counts: dict[str, int] = {}
+    samples: list[dict] = []
+
+    for card in cards:
+        cp = getattr(card, "_canonical_payload_v3", None)
+        if cp is None:
+            try:
+                cp = get_canonical_payload(card)
+            except Exception:
+                continue
+        if cp is None:
+            continue
+
+        events_total += 1
+        is_missing = bool(cp.get("anchor_missing", True))
+        cid = (getattr(card, "item_id", "") or (getattr(card, "title_plain", "") or "")[:30])
+
+        if is_missing:
+            if len(anchor_missing_ids) < 5:
+                anchor_missing_ids.append(str(cid))
+        else:
+            anchor_present += 1
+
+        # Aggregate anchor type counts
+        for atype, count in (cp.get("anchor_types", {}) or {}).items():
+            anchor_type_counts[atype] = anchor_type_counts.get(atype, 0) + count
+
+        # Collect samples: up to 3, prefer anchor-present
+        if len(samples) < 3 and not is_missing:
+            samples.append({
+                "item_id":       str(cid)[:30],
+                "title":         cp.get("title_clean", "")[:60],
+                "primary_anchor": cp.get("primary_anchor", ""),
+                "anchors_top3":  cp.get("anchors_top3", []),
+                "anchor_types":  cp.get("anchor_types", {}),
+                "q1":            cp.get("q1_event_2sent_zh", "")[:220],
+                "q2":            cp.get("q2_impact_2sent_zh", "")[:220],
+                "proof":         cp.get("proof_line", ""),
+                "zh_ratio":      cp.get("zh_ratio", 0.0),
+            })
+
+    anchor_missing_count = events_total - anchor_present
+    coverage_ratio = round(anchor_present / events_total, 3) if events_total else 1.0
+
+    meta = {
+        "generated_at":           datetime.now(timezone.utc).isoformat(),
+        "events_total":           events_total,
+        "anchor_present_count":   anchor_present,
+        "anchor_missing_count":   anchor_missing_count,
+        "anchor_coverage_ratio":  coverage_ratio,
+        "missing_event_ids_top5": anchor_missing_ids[:5],
+        "top_anchor_types_count": anchor_type_counts,
+        "samples":                samples,
+    }
+
+    try:
+        (root / "news_anchor.meta.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # non-fatal
 
 
 def write_newsroom_zh_meta(cards: list, outdir: "str | None" = None) -> None:

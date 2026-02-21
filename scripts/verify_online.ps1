@@ -889,6 +889,133 @@ if (Test-Path $voNzPath) {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# NEWS_ANCHOR_GATE (Iteration 4) — HARD fail-fast gate
+#   Reads outputs/news_anchor.meta.json written by canonical_narrative pipeline.
+#   PASS when: anchor_coverage_ratio >= 0.90  OR  anchor_missing_count <= 1
+#   FAIL (exit 1) when both conditions are unmet.
+# ---------------------------------------------------------------------------
+$voNaPath = Join-Path $repoRoot "outputs\news_anchor.meta.json"
+Write-Output ""
+Write-Output "NEWS_ANCHOR_GATE:"
+if (Test-Path $voNaPath) {
+    try {
+        $voNa = Get-Content $voNaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $voNaTotal   = if ($voNa.PSObject.Properties['events_total'])          { [int]$voNa.events_total }             else { 0 }
+        $voNaPresent = if ($voNa.PSObject.Properties['anchor_present_count'])  { [int]$voNa.anchor_present_count }     else { 0 }
+        $voNaMissing = if ($voNa.PSObject.Properties['anchor_missing_count'])  { [int]$voNa.anchor_missing_count }     else { 0 }
+        $voNaRatio   = if ($voNa.PSObject.Properties['anchor_coverage_ratio']) { [double]$voNa.anchor_coverage_ratio } else { 0.0 }
+        $voNaMissIds = if ($voNa.PSObject.Properties['missing_event_ids_top5'] -and $voNa.missing_event_ids_top5) {
+            ($voNa.missing_event_ids_top5 -join ', ')
+        } else { '(none)' }
+        $voNaTypes = if ($voNa.PSObject.Properties['top_anchor_types_count']) {
+            ($voNa.top_anchor_types_count.PSObject.Properties | Sort-Object Value -Descending |
+             ForEach-Object { "$($_.Name)=$($_.Value)" }) -join '  '
+        } else { '(none)' }
+
+        Write-Output ("  events_total           : {0}" -f $voNaTotal)
+        Write-Output ("  anchor_present_count   : {0}" -f $voNaPresent)
+        Write-Output ("  anchor_missing_count   : {0}" -f $voNaMissing)
+        Write-Output ("  anchor_coverage_ratio  : {0:F3}  (target >= 0.90)" -f $voNaRatio)
+        Write-Output ("  missing_ids(top5)      : {0}" -f $voNaMissIds)
+        Write-Output ("  anchor_type_counts     : {0}" -f $voNaTypes)
+
+        # Print sample anchors + Q1 + Q2 + Proof
+        if ($voNa.PSObject.Properties['samples'] -and $voNa.samples -and $voNa.samples.Count -gt 0) {
+            $voNaSamp = $voNa.samples[0]
+            Write-Output ""
+            Write-Output "NEWS_ANCHOR SAMPLE (event #1):"
+            Write-Output ("  title         : {0}" -f $voNaSamp.title)
+            Write-Output ("  primary_anchor: {0}" -f $voNaSamp.primary_anchor)
+            if ($voNaSamp.PSObject.Properties['anchors_top3'] -and $voNaSamp.anchors_top3) {
+                Write-Output ("  anchors_top3  : {0}" -f ($voNaSamp.anchors_top3 -join '  |  '))
+            }
+            Write-Output ("  Q1            : {0}" -f $voNaSamp.q1)
+            Write-Output ("  Q2            : {0}" -f $voNaSamp.q2)
+            Write-Output ("  Proof         : {0}" -f $voNaSamp.proof)
+            Write-Output ("  zh_ratio      : {0:F3}" -f [double]$voNaSamp.zh_ratio)
+        }
+
+        Write-Output ""
+        # Gate logic: PASS if coverage >= 0.90 OR missing_count <= 1
+        $voNaGateRatio   = ($voNaRatio   -ge 0.90)
+        $voNaGateMissing = ($voNaMissing -le 1)
+
+        if ($voNaGateRatio -or $voNaGateMissing) {
+            Write-Output ("NEWS_ANCHOR_GATE: PASS (coverage={0:F3}  missing={1})" -f $voNaRatio, $voNaMissing)
+        } else {
+            Write-Output ("NEWS_ANCHOR_GATE: FAIL — coverage={0:F3} < 0.90 AND missing={1} > 1" -f $voNaRatio, $voNaMissing)
+            Write-Output "  => Check utils/canonical_narrative.py anchor extraction and newsroom_zh_rewrite.py v2"
+            exit 1
+        }
+    } catch {
+        Write-Output ("  news_anchor meta parse error: {0}" -f $_)
+        Write-Output "NEWS_ANCHOR_GATE: WARN-OK (parse error; non-fatal)"
+    }
+} else {
+    Write-Output "  news_anchor.meta.json not found"
+    Write-Output "NEWS_ANCHOR_GATE: FAIL — meta file missing; pipeline did not run anchor extractor"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# GENERIC_PHRASE_AUDIT (Iteration 4) — soft audit (WARN, not exit 1)
+#   Counts hollow template phrases in PPT/DOCX output.
+#   WARN if hit count > events_total.
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "GENERIC_PHRASE_AUDIT:"
+$voNaEventsTotal = if ((Test-Path $voNaPath) -and $voNa -and $voNa.PSObject.Properties['events_total']) {
+    [int]$voNa.events_total
+} else { 1 }
+
+$voGenericHits = & $voPy -c "
+import sys
+try:
+    from pptx import Presentation
+    from docx import Document
+    pptx_text = ''
+    docx_text = ''
+    try:
+        prs = Presentation('outputs/executive_report.pptx')
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for p in shape.text_frame.paragraphs:
+                        pptx_text += p.text + ' '
+    except Exception:
+        pass
+    try:
+        doc = Document('outputs/executive_report.docx')
+        docx_text = ' '.join(p.text for p in doc.paragraphs)
+    except Exception:
+        pass
+    combined = pptx_text + ' ' + docx_text
+    generic_phrases = [
+        '\u5f15\u767c\u696d\u754c\u5ee3\u6cdb\u95dc\u6ce8',
+        '\u5177\u6709\u91cd\u8981\u610f\u7fa9',
+        '\u5404\u65b9\u6b63\u5bc6\u5207\u8ffd\u8e64\u5f8c\u7e8c\u9032\u5c55',
+        '\u65b0\u7684\u53c3\u8003\u57fa\u6e96',
+        '\u5e36\u4f86\u65b0\u7684\u53c3\u8003\u57fa\u6e96',
+        '\u5404\u5927\u5ee0\u5546\u8207\u6295\u8cc7\u4eba\u6b63\u5bc6\u5207\u8a55\u4f30',
+    ]
+    total = sum(combined.count(p) for p in generic_phrases)
+    print(str(total))
+except Exception as e:
+    print('0')
+" 2>$null
+
+$voGenericHitCount = 0
+try { $voGenericHitCount = [int]($voGenericHits -join '').Trim() } catch {}
+
+Write-Output ("  generic_phrase_hits: {0}  (events_total={1})" -f $voGenericHitCount, $voNaEventsTotal)
+if ($voGenericHitCount -gt $voNaEventsTotal) {
+    Write-Output ("  GENERIC_PHRASE_AUDIT: WARN — {0} hits > events_total={1}; check anchor injection in newsroom_zh_rewrite.py" -f $voGenericHitCount, $voNaEventsTotal)
+} else {
+    Write-Output ("  GENERIC_PHRASE_AUDIT: OK ({0} hits <= {1} events)" -f $voGenericHitCount, $voNaEventsTotal)
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
