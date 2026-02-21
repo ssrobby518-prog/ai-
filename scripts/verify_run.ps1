@@ -756,6 +756,51 @@ if (Test-Path $longformMetaPath) {
 }
 
 # ---------------------------------------------------------------------------
+# LONGFORM DAILY COUNT (Watchlist/Developing Pool Expansion v1)
+# ---------------------------------------------------------------------------
+if (Test-Path $longformMetaPath) {
+    try {
+        $ldm = Get-Content $longformMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($ldm.PSObject.Properties['longform_daily_total'] -or $ldm.PSObject.Properties['event_longform_count']) {
+            $ldMinTarget = if ($ldm.PSObject.Properties['longform_min_daily_total'])      { [int]$ldm.longform_min_daily_total }      else { 6 }
+            $ldEvCount   = if ($ldm.PSObject.Properties['event_longform_count'])          { [int]$ldm.event_longform_count }          else { 0 }
+            $ldWlCands   = if ($ldm.PSObject.Properties['watchlist_longform_candidates']) { [int]$ldm.watchlist_longform_candidates } else { 0 }
+            $ldWlSel     = if ($ldm.PSObject.Properties['watchlist_longform_selected'])   { [int]$ldm.watchlist_longform_selected }   else { 0 }
+            $ldTotal     = if ($ldm.PSObject.Properties['longform_daily_total'])          { [int]$ldm.longform_daily_total }          else { $ldEvCount }
+            $ldWlAvg     = if ($ldm.PSObject.Properties['watchlist_avg_anchor_chars'])    { $ldm.watchlist_avg_anchor_chars }         else { 0 }
+            $ldWlPRatio  = if ($ldm.PSObject.Properties['watchlist_proof_coverage_ratio']){ [double]$ldm.watchlist_proof_coverage_ratio } else { 1.0 }
+            $ldWlIds     = if ($ldm.PSObject.Properties['watchlist_selected_ids_top10'] -and $ldm.watchlist_selected_ids_top10) {
+                ($ldm.watchlist_selected_ids_top10 -join ', ')
+            } else { '(none)' }
+            $ldWlTop3    = if ($ldm.PSObject.Properties['watchlist_sources_share_top3'] -and $ldm.watchlist_sources_share_top3.Count -gt 0) {
+                ($ldm.watchlist_sources_share_top3 | ForEach-Object { "$($_.source)=$($_.count)" }) -join ', '
+            } else { '(none)' }
+
+            $ldGate = if ($ldTotal -ge $ldMinTarget) { "PASS" } else { "WARN-OK" }
+
+            Write-Host ""
+            Write-Host "LONGFORM DAILY COUNT (exec_longform.meta.json):"
+            Write-Host ("  longform_min_daily_total       : {0}" -f $ldMinTarget)
+            Write-Host ("  event_longform_count           : {0}" -f $ldEvCount)
+            Write-Host ("  watchlist_longform_candidates  : {0}" -f $ldWlCands)
+            Write-Host ("  watchlist_longform_selected    : {0}" -f $ldWlSel)
+            Write-Host ("  longform_daily_total           : {0}  (target >= {1})" -f $ldTotal, $ldMinTarget)
+            Write-Host ("  watchlist_avg_anchor_chars     : {0}" -f $ldWlAvg)
+            Write-Host ("  watchlist_proof_coverage_ratio : {0:P1}" -f $ldWlPRatio)
+            Write-Host ("  watchlist_selected_ids(top10)  : {0}" -f $ldWlIds)
+            Write-Host ("  watchlist_sources_top3         : {0}" -f $ldWlTop3)
+            if ($ldGate -eq "PASS") {
+                Write-Host ("  => LONGFORM_DAILY_TOTAL target={0} actual={1} PASS" -f $ldMinTarget, $ldTotal)
+            } else {
+                Write-Host ("  => LONGFORM_DAILY_TOTAL target={0} actual={1} WARN-OK (watchlist pool may be small)" -f $ldMinTarget, $ldTotal)
+            }
+        }
+    } catch {
+        Write-Host "  longform daily count parse error (non-fatal): $_"
+    }
+}
+
+# ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE v2 — hardened: A (symbolic-ref) -> B (remote show) ->
 # C (show-ref probe main/master) -> NONE; never crashes on [gone] / missing refs
 # ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE

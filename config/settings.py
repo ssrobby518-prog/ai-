@@ -284,3 +284,11 @@ Z0_EXEC_MIN_CHANNEL: int = int(os.getenv("Z0_EXEC_MIN_CHANNEL", "55"))
 # Z0_EXEC_MIN_CHANNEL.  Defaults to 45 (allows articles up to ~72 h old from
 # aggregator sources while the standard Track A still requires frontier >= 65).
 Z0_EXEC_MIN_FRONTIER_BIZ: int = int(os.getenv("Z0_EXEC_MIN_FRONTIER_BIZ", "45"))
+
+# ---------------------------------------------------------------------------
+# Longform Watchlist (Pool Expansion v1)
+# ---------------------------------------------------------------------------
+# Minimum total longform articles per day (event + watchlist combined)
+LONGFORM_MIN_DAILY_TOTAL: int = _env_int("LONGFORM_MIN_DAILY_TOTAL", 6)
+# Maximum watchlist cards selected per run (caps the top-up)
+LONGFORM_WATCHLIST_MAX: int   = _env_int("LONGFORM_WATCHLIST_MAX", 8)

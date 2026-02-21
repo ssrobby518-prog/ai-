@@ -645,6 +645,51 @@ if (Test-Path $voLongformPath) {
     Write-Output "LONGFORM EVIDENCE: exec_longform.meta.json not found (skipped)"
 }
 
+# ---------------------------------------------------------------------------
+# LONGFORM DAILY COUNT (Watchlist/Developing Pool Expansion v1)
+# ---------------------------------------------------------------------------
+if (Test-Path $voLongformPath) {
+    try {
+        $voLdm = Get-Content $voLongformPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($voLdm.PSObject.Properties['longform_daily_total'] -or $voLdm.PSObject.Properties['event_longform_count']) {
+            $voLdMin    = if ($voLdm.PSObject.Properties['longform_min_daily_total'])      { [int]$voLdm.longform_min_daily_total }      else { 6 }
+            $voLdEv     = if ($voLdm.PSObject.Properties['event_longform_count'])          { [int]$voLdm.event_longform_count }          else { 0 }
+            $voLdWlC    = if ($voLdm.PSObject.Properties['watchlist_longform_candidates']) { [int]$voLdm.watchlist_longform_candidates } else { 0 }
+            $voLdWlS    = if ($voLdm.PSObject.Properties['watchlist_longform_selected'])   { [int]$voLdm.watchlist_longform_selected }   else { 0 }
+            $voLdTotal  = if ($voLdm.PSObject.Properties['longform_daily_total'])          { [int]$voLdm.longform_daily_total }          else { $voLdEv }
+            $voLdWlAvg  = if ($voLdm.PSObject.Properties['watchlist_avg_anchor_chars'])    { $voLdm.watchlist_avg_anchor_chars }         else { 0 }
+            $voLdWlPR   = if ($voLdm.PSObject.Properties['watchlist_proof_coverage_ratio']){ [double]$voLdm.watchlist_proof_coverage_ratio } else { 1.0 }
+            $voLdWlIds  = if ($voLdm.PSObject.Properties['watchlist_selected_ids_top10'] -and $voLdm.watchlist_selected_ids_top10) {
+                ($voLdm.watchlist_selected_ids_top10 -join ', ')
+            } else { '(none)' }
+            $voLdTop3   = if ($voLdm.PSObject.Properties['watchlist_sources_share_top3'] -and $voLdm.watchlist_sources_share_top3.Count -gt 0) {
+                ($voLdm.watchlist_sources_share_top3 | ForEach-Object { "$($_.source)=$($_.count)" }) -join ', '
+            } else { '(none)' }
+
+            $voLdGate = if ($voLdTotal -ge $voLdMin) { "PASS" } else { "WARN-OK" }
+
+            Write-Output ""
+            Write-Output "LONGFORM DAILY COUNT (exec_longform.meta.json):"
+            Write-Output ("  longform_min_daily_total       : {0}" -f $voLdMin)
+            Write-Output ("  event_longform_count           : {0}" -f $voLdEv)
+            Write-Output ("  watchlist_longform_candidates  : {0}" -f $voLdWlC)
+            Write-Output ("  watchlist_longform_selected    : {0}" -f $voLdWlS)
+            Write-Output ("  longform_daily_total           : {0}  (target >= {1})" -f $voLdTotal, $voLdMin)
+            Write-Output ("  watchlist_avg_anchor_chars     : {0}" -f $voLdWlAvg)
+            Write-Output ("  watchlist_proof_coverage_ratio : {0:P1}" -f $voLdWlPR)
+            Write-Output ("  watchlist_selected_ids(top10)  : {0}" -f $voLdWlIds)
+            Write-Output ("  watchlist_sources_top3         : {0}" -f $voLdTop3)
+            if ($voLdGate -eq "PASS") {
+                Write-Output ("  => LONGFORM_DAILY_TOTAL target={0} actual={1} PASS" -f $voLdMin, $voLdTotal)
+            } else {
+                Write-Output ("  => LONGFORM_DAILY_TOTAL target={0} actual={1} WARN-OK (watchlist pool may be small)" -f $voLdMin, $voLdTotal)
+            }
+        }
+    } catch {
+        Write-Output "  longform daily count parse error (non-fatal): $_"
+    }
+}
+
 Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="

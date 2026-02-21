@@ -1973,6 +1973,71 @@ def _v1_write_exec_layout_meta(
 # Override generate_executive_ppt to write exec_layout.meta.json
 # ---------------------------------------------------------------------------
 
+def _append_watchlist_slide(
+    pptx_path: 'Path',
+    watchlist_cards: list,
+    theme: str = 'light',
+) -> None:
+    """Append a Developing Watchlist slide to an existing PPTX file.
+
+    Opens the saved file, adds one slide with compact 3-line entries
+    (title / why / proof_line) for each watchlist card, then saves back.
+    Non-fatal: caller wraps in try/except.
+    """
+    _apply_theme(theme)
+    prs = Presentation(str(pptx_path))
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    _set_slide_bg(slide)
+
+    # --- Header ---
+    _add_textbox(
+        slide, Cm(2), Cm(0.6), Cm(20), Cm(1.4),
+        'DEVELOPING WATCHLIST', font_size=22, color=HIGHLIGHT_YELLOW, bold=True,
+    )
+    _add_textbox(
+        slide, Cm(22.5), Cm(0.6), Cm(9), Cm(1.4),
+        f'\u9577\u6587\u5ef6\u4f38\u95b1\u8b80 \u2736 {len(watchlist_cards)} \u5247',
+        font_size=16, color=DARK_MUTED,
+    )
+    _add_divider(slide, Cm(2), Cm(2.0), Cm(29.8), color=HIGHLIGHT_YELLOW)
+
+    # --- Compact card entries (3 lines each) ---
+    item_h = Cm(2.2)
+    top_start = Cm(2.35)
+    max_show = min(len(watchlist_cards), 7)
+
+    for i, card in enumerate(watchlist_cards[:max_show]):
+        lf = getattr(card, '_longform_v1_cache', {}) or {}
+        title = safe_text(getattr(card, 'title_plain', '') or '', limit=100)
+        why_raw = lf.get('why', '') or getattr(card, 'why_important', '') or ''
+        why = safe_text(why_raw, limit=120)
+        proof = safe_text(lf.get('proof_line', ''), limit=100)
+        row_top = top_start + i * item_h
+
+        _add_textbox(
+            slide, Cm(2.2), row_top, Cm(28.5), Cm(0.8),
+            title, font_size=13, color=HIGHLIGHT_YELLOW, bold=True,
+        )
+        _add_textbox(
+            slide, Cm(2.2), row_top + Cm(0.78), Cm(28.5), Cm(0.7),
+            why, font_size=11, color=TEXT_WHITE,
+        )
+        _add_textbox(
+            slide, Cm(2.2), row_top + Cm(1.44), Cm(28.5), Cm(0.6),
+            proof, font_size=10, color=DARK_MUTED,
+        )
+
+    if len(watchlist_cards) > max_show:
+        extra = len(watchlist_cards) - max_show
+        _add_textbox(
+            slide, Cm(2), top_start + max_show * item_h, Cm(28), Cm(0.8),
+            f'\u2026 \u53e6\u6709 {extra} \u5247 Watchlist \u9805\u76ee\uff08\u8a73\u898b exec_longform.meta.json\uff09',
+            font_size=11, color=DARK_MUTED,
+        )
+
+    prs.save(str(pptx_path))
+
+
 def generate_executive_ppt(
     cards: list[EduNewsCard],
     health: 'SystemHealthReport',
@@ -1997,5 +2062,24 @@ def generate_executive_ppt(
         write_longform_meta(event_cards=ev_cards)
     except Exception as exc:
         get_logger().warning('exec_longform.meta write error (non-fatal): %s', exc)
+    # --- Watchlist track (Longform Pool Expansion v1) ---
+    try:
+        from config.settings import LONGFORM_MIN_DAILY_TOTAL, LONGFORM_WATCHLIST_MAX
+        from utils.longform_watchlist import select_watchlist_cards, write_watchlist_meta
+        wl_cards, wl_candidates_total = select_watchlist_cards(
+            cards, ev_cards,
+            min_daily_total=LONGFORM_MIN_DAILY_TOTAL,
+            max_watchlist=LONGFORM_WATCHLIST_MAX,
+        )
+        if wl_cards:
+            _append_watchlist_slide(result, wl_cards, theme=theme)
+        write_watchlist_meta(
+            event_cards=ev_cards,
+            watchlist_cards=wl_cards,
+            candidates_total=wl_candidates_total,
+            min_daily_total=LONGFORM_MIN_DAILY_TOTAL,
+        )
+    except Exception as exc:
+        get_logger().warning('watchlist longform error (non-fatal): %s', exc)
     return result
 
