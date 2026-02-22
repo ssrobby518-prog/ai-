@@ -105,7 +105,11 @@ def _apply_theme(theme: str) -> None:
 
 def safe_text(text: str, limit: int = 200) -> str:
     """Sanitize text; truncate at word boundary if needed."""
-    t = sanitize(text)
+    try:
+        from utils.text_final_sanitizer import final_sanitize as _fs_safe
+        t = _fs_safe(sanitize(text))
+    except Exception:
+        t = sanitize(text)
     if len(t) <= limit:
         return t
     cut = t[:limit]
@@ -1801,6 +1805,14 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
 def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     """T3: Growth Steps staircase for WHY IT MATTERS — Action Plan slide."""
     brief = build_ceo_brief_blocks(card)
+
+    # ── Canonical payload v3：Slide2 100% 來自 canonical，不重新跑 bucket 模板 ──
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_cp_T3p2
+        _cp_T3p2 = _get_cp_T3p2(card)
+    except Exception:
+        _cp_T3p2 = {}
+
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
 
@@ -1813,15 +1825,21 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     _add_divider(slide, Cm(2), Cm(1.8), Cm(4), color=ACCENT)
 
     # Q3 actions → staircase steps
-    # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across actions on this slide
+    # 直接讀 canonical q3_moves_3bullets_zh，不套 bucket 模板
     _gloss_seen_p2: set = set()
-    actions = brief.get('q3_actions', [])
+    _canon_q3 = list(_cp_T3p2.get('q3_moves_3bullets_zh', []) or [])
+    if _canon_q3:
+        actions = _canon_q3[:3]
+    else:
+        # canonical 無內容時，從 build_ceo_brief_blocks 取（已經過 v5.2.8 canonical 過濾）
+        actions = list(brief.get('q3_actions', []) or [])
     actions = _v1_norm_bullets_safe(
-        [safe_text(a, 60) for a in (actions or [])],
+        [safe_text(a, 60) for a in actions],
     )
     actions = [_v1_norm_gloss(a, _V1_GLOSSARY, _gloss_seen_p2) for a in actions]
+    # 若 canonical 無資料，不補空話模板——只顯示有內容的步驟（留空而非捏造）
     while len(actions) < 3:
-        actions.append('持續追蹤後續發展，確認關鍵指標後決定行動方向。')
+        actions.append('')
 
     # Staircase layout
     step_configs = [
@@ -1830,10 +1848,13 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         (9.5, 7.0, 11.0, 3.5, _V1_GREEN, 'Q3-C  Move 3'),
     ]
     for step_i, (sx, sy, sw, sh, sc, slabel) in enumerate(step_configs):
+        action_text = actions[step_i] if step_i < len(actions) else ''
+        if not action_text.strip():
+            continue  # 不補空話模板，略過空步驟
         _v1_add_card(
             slide, sx, sy, sw, sh,
-            header_text=f'{slabel}: {actions[step_i][:48]}',
-            body_lines=[safe_text(actions[step_i], 80)],
+            header_text=f'{slabel}: {action_text[:48]}',
+            body_lines=[safe_text(action_text, 80)],
             bg_color=_V1_SOFT_BG,
             header_color=sc,
             body_color=_V1_TEXT_GRAY,
@@ -1842,16 +1863,14 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
             shape_type=_V1_ROUNDED_RECT,
         )
 
-    # Risks / Watch — canonical risks_2bullets_zh preferred
+    # Risks / Watch — 直接讀 canonical risks_2bullets_zh（與 Slide1 同源）
     _add_divider(slide, Cm(2), Cm(15.0), Cm(29), color=SUBTLE_GRAY)
     _add_textbox(
         slide, Cm(2), Cm(15.2), Cm(18), Cm(0.8),
         'Risks / Watch', font_size=13, bold=True, color=TEXT_WHITE,
     )
     try:
-        from utils.canonical_narrative import get_canonical_payload as _get_cp_T3
-        _cp_T3 = _get_cp_T3(card)
-        raw_risks = list(_cp_T3.get('risks_2bullets_zh', []) or [])
+        raw_risks = list(_cp_T3p2.get('risks_2bullets_zh', []) or [])
     except Exception:
         raw_risks = []
     if not raw_risks:
@@ -1872,8 +1891,8 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
             f'• {safe_text(rk, 60)}', font_size=11, color=SUBTLE_GRAY,
         )
 
-    # Proof line (canonical — fixed format)
-    _proof_t3 = brief.get('proof_line', '')
+    # Proof line（canonical 100% 單源：Slide1 與 Slide2 同一個 payload）
+    _proof_t3 = _cp_T3p2.get('proof_line', '') or brief.get('proof_line', '')
     if _proof_t3:
         _add_textbox(
             slide, Cm(2), Cm(18.0), Cm(29), Cm(0.7),

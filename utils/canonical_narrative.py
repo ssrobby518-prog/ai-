@@ -32,6 +32,106 @@ if TYPE_CHECKING:
     pass  # no schema import at runtime; use getattr throughout
 
 # ---------------------------------------------------------------------------
+# Raw text cleaner（UI 垃圾清洗，stdlib only）
+# ---------------------------------------------------------------------------
+
+def _import_raw_cleaner():
+    """Lazy import to avoid circular; returns (clean_fn, score_fn, token_fn) or None."""
+    try:
+        from utils.raw_text_cleaner import (
+            clean_raw_text as _crt,
+            ui_garbage_score as _ugs,
+            contains_disallowed_ui_tokens as _cdt,
+        )
+        return _crt, _ugs, _cdt
+    except Exception:
+        return None
+
+
+def _import_final_sanitizer():
+    """Lazy import of final_sanitize."""
+    try:
+        from utils.text_final_sanitizer import final_sanitize as _fs
+        return _fs
+    except Exception:
+        return None
+
+
+_CARD_RAW_TEXT_ATTRS: tuple[str, ...] = (
+    "title_plain", "what_happened", "why_important", "technical_interpretation",
+)
+
+
+def _apply_raw_cleaner_to_card(card) -> dict:
+    """清洗 card 文字欄位中的 UI 垃圾，回傳 debug 統計（one-shot via flag）。
+
+    不修改 schema 欄位——使用 setattr 附加執行期屬性。
+    """
+    _CACHE_FLAG = "_raw_cleaner_applied_v6"
+    _CACHE_STATS = "_raw_cleaner_stats_v6"
+
+    cached_stats = getattr(card, _CACHE_STATS, None)
+    if getattr(card, _CACHE_FLAG, False) and cached_stats is not None:
+        return cached_stats
+
+    cleaner = _import_raw_cleaner()
+    if cleaner is None:
+        stats = {"raw_len": 0, "clean_len": 0, "ui_garbage_score": 0.0, "ui_token_hit": False}
+        try:
+            setattr(card, _CACHE_FLAG, True)
+            setattr(card, _CACHE_STATS, stats)
+        except Exception:
+            pass
+        return stats
+
+    clean_fn, score_fn, token_fn = cleaner
+
+    # 組合 raw_joined（用於整體統計）
+    parts: list[str] = []
+    for attr in _CARD_RAW_TEXT_ATTRS:
+        val = getattr(card, attr, None)
+        if isinstance(val, str) and val.strip():
+            parts.append(val)
+    # 也嘗試讀 body（run-time attribute，可能由早期 pipeline 設置）
+    body_val = getattr(card, "body", None)
+    if isinstance(body_val, str) and body_val.strip():
+        parts.append(body_val)
+
+    raw_joined = "\n".join(parts)
+    raw_len = len(raw_joined)
+
+    # 統計垃圾分數（用 raw_joined 原始文字）
+    garbage_score = score_fn(raw_joined)
+    # 清洗並計算 clean_len
+    raw_clean = clean_fn(raw_joined)
+    clean_len = len(raw_clean)
+    token_hit = token_fn(raw_clean)
+
+    # 逐欄位清洗 card 文字屬性（setattr，不動 schema）
+    for attr in _CARD_RAW_TEXT_ATTRS:
+        val = getattr(card, attr, None)
+        if isinstance(val, str) and val.strip():
+            cleaned = clean_fn(val)
+            if cleaned != val:
+                try:
+                    setattr(card, attr, cleaned)
+                except Exception:
+                    pass
+
+    stats = {
+        "raw_len": raw_len,
+        "clean_len": clean_len,
+        "ui_garbage_score": garbage_score,
+        "ui_token_hit": token_hit,
+    }
+    try:
+        setattr(card, _CACHE_FLAG, True)
+        setattr(card, _CACHE_STATS, stats)
+    except Exception:
+        pass
+    return stats
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -305,6 +405,7 @@ def build_canonical_payload(card) -> dict:
 
     Algorithm
     ---------
+    0. [v6] 清洗 card 文字欄位（UI 垃圾清除），取得 debug 統計。
     1. Call narrative_compactor_v2 for base narrative + bullets + proof + stats.
     2. Extract concrete anchors from card (news_anchor.extract_anchors_from_card).
     3. Build rewrite context dict from card fields.
@@ -315,6 +416,9 @@ def build_canonical_payload(card) -> dict:
     7. sanitize_exec_text on all fields.
     8. Return fixed-schema dict with anchor debug fields.
     """
+    # ── Step 0 [v6]: 清洗 UI 垃圾（single entry point） ─────────────────────
+    _cleaner_debug = _apply_raw_cleaner_to_card(card)
+
     # ── Step 1: narrative_compactor_v2 (for proof + dedup stats) ────────────
     try:
         from utils.narrative_compactor_v2 import build_narrative_v2
@@ -462,10 +566,18 @@ def build_canonical_payload(card) -> dict:
         title_clean = _clean_raw(raw_title)
 
     # ── Step 7: sanitize all text ─────────────────────────────────────────────
-    q1_final = _sanitize_text(q1_raw) or "事件摘要：詳細資訊待確認。"
-    q2_final = _sanitize_text(q2_raw) or "影響評估：此事件的商業影響待進一步確認。"
-    q3_final = [_sanitize_text(b) for b in q3 if _sanitize_text(b)]
-    risks_final = [_sanitize_text(r) for r in risks if _sanitize_text(r)]
+    _fs = _import_final_sanitizer()
+
+    def _sanitize_final(text: str) -> str:
+        t = _sanitize_text(text)
+        if _fs and t:
+            t = _fs(t)
+        return t
+
+    q1_final = _sanitize_final(q1_raw) or "事件摘要：詳細資訊待確認。"
+    q2_final = _sanitize_final(q2_raw) or "影響評估：此事件的商業影響待進一步確認。"
+    q3_final = [_sanitize_final(b) for b in q3 if _sanitize_final(b)]
+    risks_final = [_sanitize_final(r) for r in risks if _sanitize_final(r)]
 
     if not q3_final:
         q3_final = ["持續監控此事件後續發展（T+7）。"]
@@ -549,6 +661,13 @@ def build_canonical_payload(card) -> dict:
         "primary_anchor": _primary_anchor or "",
         "anchors_top3": _anchors[:3],
         "anchor_types": _anchor_types,
+        # [v6] UI 垃圾清洗 debug（不改 schema，掛在 payload.debug）
+        "debug": {
+            "raw_len": _cleaner_debug.get("raw_len", 0),
+            "clean_len": _cleaner_debug.get("clean_len", 0),
+            "ui_garbage_score": _cleaner_debug.get("ui_garbage_score", 0.0),
+            "ui_token_hit": bool(_cleaner_debug.get("ui_token_hit", False)),
+        },
     }
 
 

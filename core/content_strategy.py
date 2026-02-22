@@ -3775,6 +3775,27 @@ def get_event_cards_for_deck(
         if not _relevant:
             continue
 
+        # [v6] 事件降級規則：UI 垃圾 / 內容過短 / anchor 缺失 → 不得進 event
+        _demotion_block = False
+        try:
+            from utils.canonical_narrative import get_canonical_payload as _gcp_dem
+            _cp_dem = _gcp_dem(card)
+            _dbg_dem = _cp_dem.get("debug", {}) or {}
+            _clean_len_dem = int(_dbg_dem.get("clean_len", 9999))
+            _ui_score_dem = float(_dbg_dem.get("ui_garbage_score", 0.0))
+            _ui_hit_dem = bool(_dbg_dem.get("ui_token_hit", False))
+            _anchor_missing_dem = bool(_cp_dem.get("anchor_missing", False))
+            if _clean_len_dem < 300:
+                _demotion_block = True
+            elif _ui_score_dem >= 0.15 or _ui_hit_dem:
+                _demotion_block = True
+            elif _anchor_missing_dem:
+                _demotion_block = True
+        except Exception:
+            pass  # 非致命；canonical 不可用時跳過降級規則
+        if _demotion_block:
+            continue
+
         score = float(getattr(card, "final_score", 0.0) or 0.0)
         strict_ok = (
             not is_non_event_or_index(card)
