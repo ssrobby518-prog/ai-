@@ -960,6 +960,61 @@ if (Test-Path $voNaPath) {
 }
 
 # ---------------------------------------------------------------------------
+# FAITHFUL_ZH_NEWS GATE (Iteration 5) — non-fatal audit
+#   Reads outputs/faithful_zh_news.meta.json written when Ollama is available.
+#   WARN-OK when meta is absent (Ollama offline) — not a hard fail.
+#   Prints: applied_count / avg_zh_ratio / anchor_coverage / generic_hits / sample
+# ---------------------------------------------------------------------------
+$voFznPath = Join-Path $repoRoot "outputs\faithful_zh_news.meta.json"
+Write-Output ""
+Write-Output "FAITHFUL_ZH_NEWS GATE:"
+if (Test-Path $voFznPath) {
+    try {
+        $voFzn = Get-Content $voFznPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $voFznApplied  = if ($voFzn.PSObject.Properties['applied_count'])             { [int]$voFzn.applied_count }               else { 0 }
+        $voFznAvgZh    = if ($voFzn.PSObject.Properties['avg_zh_ratio'])              { [double]$voFzn.avg_zh_ratio }             else { 0.0 }
+        $voFznAnchor   = if ($voFzn.PSObject.Properties['anchor_coverage_ratio'])     { [double]$voFzn.anchor_coverage_ratio }    else { 0.0 }
+        $voFznGeneric  = if ($voFzn.PSObject.Properties['generic_phrase_hits_total']) { [int]$voFzn.generic_phrase_hits_total }   else { 0 }
+
+        Write-Output ("  applied_count          : {0}" -f $voFznApplied)
+        Write-Output ("  avg_zh_ratio           : {0:F3}  (target >= 0.35)" -f $voFznAvgZh)
+        Write-Output ("  anchor_coverage_ratio  : {0:F3}  (target >= 0.50)" -f $voFznAnchor)
+        Write-Output ("  generic_phrase_hits    : {0}" -f $voFznGeneric)
+
+        # Print sample
+        if ($voFzn.PSObject.Properties['sample_1'] -and $voFzn.sample_1 -and $voFzn.sample_1.q1) {
+            $voFznSamp = $voFzn.sample_1
+            Write-Output ""
+            Write-Output "FAITHFUL_ZH SAMPLE (event #1):"
+            if ($voFznSamp.PSObject.Properties['anchors_top3'] -and $voFznSamp.anchors_top3) {
+                Write-Output ("  anchors_top3: {0}" -f ($voFznSamp.anchors_top3 -join '  |  '))
+            }
+            Write-Output ("  Q1  : {0}" -f $voFznSamp.q1)
+            Write-Output ("  Q2  : {0}" -f $voFznSamp.q2)
+            Write-Output ("  Proof: {0}" -f $voFznSamp.proof)
+        }
+
+        Write-Output ""
+        if ($voFznApplied -eq 0) {
+            Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (applied_count=0 — all cards are ZH-source or EN source too short)"
+        } elseif ($voFznAvgZh -ge 0.35 -and $voFznAnchor -ge 0.50) {
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: PASS (avg_zh={0:F3} >= 0.35 anchor={1:F3} >= 0.50)" -f $voFznAvgZh, $voFznAnchor)
+        } elseif ($voFznAvgZh -lt 0.35) {
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN — avg_zh_ratio={0:F3} < 0.35; check Ollama output quality" -f $voFznAvgZh)
+        } else {
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN — anchor_coverage={0:F3} < 0.50; faithful output lacks concrete anchors" -f $voFznAnchor)
+        }
+    } catch {
+        Write-Output ("  faithful_zh_news meta parse error: {0}" -f $_)
+        Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (parse error; non-fatal)"
+    }
+} else {
+    Write-Output "  faithful_zh_news.meta.json not found"
+    Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (Ollama unavailable or no EN-source cards >= 1200 chars)"
+}
+
+# ---------------------------------------------------------------------------
 # GENERIC_PHRASE_AUDIT (Iteration 4) — soft audit (WARN, not exit 1)
 #   Counts hollow template phrases in PPT/DOCX output.
 #   WARN if hit count > events_total.

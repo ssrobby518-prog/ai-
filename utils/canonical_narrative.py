@@ -476,6 +476,47 @@ def build_canonical_payload(card) -> dict:
     combined = " ".join([q1_final, q2_final] + q3_final[:3] + risks_final[:2])
     final_zh_ratio = _zh_ratio(combined)
 
+    # ── Step 9 (Iteration 5): faithful_zh_news override (EN source, Ollama) ──
+    # Condition: source text is mostly English (zh_ratio < 0.25) AND >= 1200 chars.
+    # Non-fatal: any exception falls through to original output.
+    _faithful_applied = False
+    try:
+        from utils.faithful_zh_news import (
+            build_source_text as _fzh_src,
+            generate_faithful_zh as _fzh_gen,
+            _zh_ratio as _fzh_zhr,
+        )
+        _src_text = _fzh_src(card)
+        _src_en   = len(_src_text) >= 1200 and _fzh_zhr(_src_text) < 0.25
+        if _src_en:
+            _fzh = _fzh_gen(card, source_text=_src_text)
+            if _fzh is not None:
+                q1_final       = _fzh.get("q1", q1_final) or q1_final
+                q2_final       = _fzh.get("q2", q2_final) or q2_final
+                _fzh_q3        = _fzh.get("q3_bullets", [])
+                if _fzh_q3:
+                    q3_final   = _fzh_q3[:3]
+                proof          = _fzh.get("proof_line", proof) or proof
+                # Merge anchors: faithful anchors take precedence
+                _fzh_anchors   = _fzh.get("anchors_top3", [])
+                if _fzh_anchors:
+                    _anchors   = _fzh_anchors + [a for a in _anchors if a not in _fzh_anchors]
+                    _has_anchor = True
+                # Recompute zh_ratio and _primary_anchor with faithful output
+                combined       = " ".join([q1_final, q2_final] + q3_final[:3])
+                final_zh_ratio = _zh_ratio(combined)
+                if _anchors:
+                    from utils.news_anchor import pick_primary_anchor as _ppa2
+                    _primary_anchor = _ppa2(_anchors, _anchor_types) or _anchors[0]
+                _faithful_applied = True
+                # Store faithful meta on card (non-schema, runtime only)
+                try:
+                    setattr(card, "_faithful_zh_result", _fzh)
+                except Exception:
+                    pass
+    except Exception:
+        pass  # non-fatal; original output remains
+
     return {
         "q1_event_2sent_zh": q1_final,
         "q2_impact_2sent_zh": q2_final,
@@ -487,6 +528,7 @@ def build_canonical_payload(card) -> dict:
         "zh_ratio": final_zh_ratio,
         "dedup_ratio": dedup_ratio,
         "newsroom_rewrite": _newsroom_active,
+        "faithful_zh_applied": _faithful_applied,
         # Iteration 4 anchor debug fields
         "anchor_missing": not _has_anchor,
         "primary_anchor": _primary_anchor or "",

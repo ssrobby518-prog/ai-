@@ -5526,6 +5526,18 @@ def write_narrative_v2_meta(cards: list, out_dir: "str | None" = None) -> None:
     except Exception:
         pass  # news_anchor meta is non-fatal
 
+    # Also write faithful_zh_news.meta.json (Iteration 5 audit)
+    try:
+        from utils.faithful_zh_news import write_faithful_zh_news_meta as _write_fzh_meta
+        _fzh_results = []
+        for _c in cards:
+            _fzh_r = getattr(_c, "_faithful_zh_result", None)
+            if _fzh_r is not None:
+                _fzh_results.append(_fzh_r)
+        _write_fzh_meta(_fzh_results, out_dir)
+    except Exception:
+        pass  # faithful_zh_news meta is non-fatal
+
 
 # ---------------------------------------------------------------------------
 # v5.2.8 — Canonical Payload v3: single source of truth for ALL text exits
