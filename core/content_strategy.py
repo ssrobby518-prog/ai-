@@ -5613,3 +5613,30 @@ def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
     except Exception:
         pass  # canonical enrichment is non-fatal
     return brief
+
+
+# ---------------------------------------------------------------------------
+# v5.2.9 — Ellipsis enforcement: strip U+2026 and "..." from all brief fields
+# ---------------------------------------------------------------------------
+
+_v529_prev_build_ceo_brief_blocks = build_ceo_brief_blocks
+_ELLIPSIS_RE_529 = re.compile(r"\u2026|\.{3,}")
+
+
+def _strip_ellipsis_val_529(v):
+    if isinstance(v, str):
+        return _ELLIPSIS_RE_529.sub("", v)
+    if isinstance(v, list):
+        return [_strip_ellipsis_val_529(i) for i in v]
+    return v
+
+
+def build_ceo_brief_blocks(card: EduNewsCard) -> dict:  # type: ignore[misc]
+    """V5.2.9: Strip U+2026 / three-dot ellipsis from every brief field value."""
+    brief = dict(_v529_prev_build_ceo_brief_blocks(card))
+    try:
+        for _k529, _v529 in list(brief.items()):
+            brief[_k529] = _strip_ellipsis_val_529(_v529)
+    except Exception:
+        pass  # ellipsis stripping is non-fatal
+    return brief

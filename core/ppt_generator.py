@@ -2193,6 +2193,17 @@ def generate_executive_ppt(
     metrics: dict | None = None,
 ) -> 'Path':
     """V1 wrapper: runs original generator then writes exec_layout.meta.json."""
+    # Pre-pass: strip U+2026 / three-dot ellipsis from ALL card fields before
+    # any slide generation reads them directly (Iteration 5.2 ellipsis enforcement).
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _prepass_gcp
+        for _pc in cards:
+            try:
+                _prepass_gcp(_pc)
+            except Exception:
+                pass
+    except Exception:
+        pass
     result = _v1_prev_generate_executive_ppt(
         cards, health, report_time, total_items,
         output_path=output_path, theme=theme, metrics=metrics,

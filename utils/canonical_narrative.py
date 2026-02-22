@@ -552,14 +552,62 @@ def build_canonical_payload(card) -> dict:
     }
 
 
+_ELLIPSIS_STRIP_RE = re.compile(r"\u2026|\.{3,}")
+
+_CARD_TEXT_ATTRS: tuple[str, ...] = (
+    "title_plain", "what_happened", "why_important",
+    "technical_interpretation", "source_name",
+)
+_CARD_LIST_ATTRS: tuple[str, ...] = (
+    "action_items", "speculative_effects", "derivable_effects",
+    "evidence_lines", "fact_check_confirmed", "observation_metrics",
+)
+
+
+def _strip_card_ellipsis(card) -> None:
+    """Strip U+2026 (…) and three-plus dots from card text fields (runtime only).
+
+    Called once per card before payload build. Does NOT modify the schema —
+    only sets runtime attribute values via setattr. Iteration 5.2 ellipsis ban.
+    """
+    if getattr(card, "_ellipsis_stripped_v52", False):
+        return
+    try:
+        for attr in _CARD_TEXT_ATTRS:
+            val = getattr(card, attr, None)
+            if isinstance(val, str) and _ELLIPSIS_STRIP_RE.search(val):
+                try:
+                    setattr(card, attr, _ELLIPSIS_STRIP_RE.sub("", val))
+                except Exception:
+                    pass
+        for attr in _CARD_LIST_ATTRS:
+            lst = getattr(card, attr, None)
+            if isinstance(lst, list):
+                cleaned = [
+                    _ELLIPSIS_STRIP_RE.sub("", str(item)) if isinstance(item, str) else item
+                    for item in lst
+                ]
+                try:
+                    setattr(card, attr, cleaned)
+                except Exception:
+                    pass
+        setattr(card, "_ellipsis_stripped_v52", True)
+    except Exception:
+        pass  # non-fatal
+
+
 def get_canonical_payload(card) -> dict:
     """Return canonical payload; cache result on card._canonical_payload_v3 (runtime only).
 
     Does NOT modify card schema — attaches runtime attribute only.
+    Iteration 5.2: strips ellipsis from card text fields before build.
     """
     cached = getattr(card, "_canonical_payload_v3", None)
     if cached is not None:
         return cached
+
+    # Iteration 5.2: pre-sanitize card fields to remove ellipsis (U+2026 / ...)
+    _strip_card_ellipsis(card)
 
     payload = build_canonical_payload(card)
 

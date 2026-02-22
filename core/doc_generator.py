@@ -723,6 +723,17 @@ def generate_executive_docx(
     metrics: dict | None = None,
 ) -> Path:
     log = get_logger()
+    # Pre-pass: strip U+2026 / three-dot ellipsis from ALL card fields before
+    # any section builder reads them directly (Iteration 5.2 ellipsis enforcement).
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _prepass_gcp_doc
+        for _pc in cards:
+            try:
+                _prepass_gcp_doc(_pc)
+            except Exception:
+                pass
+    except Exception:
+        pass
     if output_path is None:
         project_root = Path(__file__).resolve().parent.parent
         output_path = project_root / "outputs" / "executive_report.docx"
