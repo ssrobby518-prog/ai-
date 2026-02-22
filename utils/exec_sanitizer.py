@@ -42,6 +42,9 @@ BANNED_SUBSTRINGS: list[str] = [
     "本欄暫無資料",
 ]
 
+# Ellipsis characters — stripped (not replaced) in sanitize_exec_text (Iteration 5.2)
+_ELLIPSIS_CHARS: tuple[str, ...] = ("\u2026", "...")  # … and three dots
+
 # ---------------------------------------------------------------------------
 # Internal tag prefix patterns — stripped from action items
 # ---------------------------------------------------------------------------
@@ -80,12 +83,16 @@ def sanitize_exec_text(text: str) -> str:
     """Full sanitization pipeline:
 
     1. Strip internal tag prefix (WATCH:/TEST:/MOVE:).
-    2. If result contains any banned substring → return _SAFE_FALLBACK.
-    3. Otherwise return cleaned text.
+    2. Hard-strip ellipsis: U+2026 (…) and three-plus dots (...) — Iteration 5.2.
+    3. If result contains any banned substring → return _SAFE_FALLBACK.
+    4. Otherwise return cleaned text.
     """
     if not text:
         return text
     cleaned = strip_internal_tags(str(text))
+    # Strip ellipsis before banned check (remove, do not replace with fallback)
+    for ec in _ELLIPSIS_CHARS:
+        cleaned = cleaned.replace(ec, "")
     if is_banned(cleaned):
         return _SAFE_FALLBACK
     return cleaned

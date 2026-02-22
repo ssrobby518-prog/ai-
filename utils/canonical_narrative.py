@@ -476,20 +476,26 @@ def build_canonical_payload(card) -> dict:
     combined = " ".join([q1_final, q2_final] + q3_final[:3] + risks_final[:2])
     final_zh_ratio = _zh_ratio(combined)
 
-    # ── Step 9 (Iteration 5): faithful_zh_news override (EN source, llama.cpp) ──
-    # Condition: source text is mostly English (zh_ratio < 0.25) AND >= 1200 chars.
+    # ── Step 9 (Iteration 5.2): faithful_zh_news override (rule-based, no LLM) ──
+    # Condition: source text EN-dominant (zh_ratio < 0.35) AND >= 450 chars.
     # Non-fatal: any exception falls through to original output.
     _faithful_applied = False
     try:
-        from utils.faithful_zh_news_llama import (
-            build_source_text as _fzh_src,
-            generate_faithful_zh as _fzh_gen,
-            _zh_ratio as _fzh_zhr,
+        from utils.faithful_zh_news import (
+            should_apply_faithful as _fzh_should,
+            decide_source_text as _fzh_src,
+            generate_faithful_zh_v2 as _fzh_gen,
         )
-        _src_text = _fzh_src(card)
-        _src_en   = len(_src_text) >= 1200 and _fzh_zhr(_src_text) < 0.25
-        if _src_en:
-            _fzh = _fzh_gen(card, source_text=_src_text)
+        if _fzh_should(card):
+            _src_text = _fzh_src(card)
+            _fzh = _fzh_gen(
+                card,
+                q1_zh=q1_final,
+                q2_zh=q2_final,
+                q3_zh=q3_final,
+                anchors=_anchors,
+                source_text=_src_text,
+            )
             if _fzh is not None:
                 q1_final       = _fzh.get("q1", q1_final) or q1_final
                 q2_final       = _fzh.get("q2", q2_final) or q2_final
@@ -506,12 +512,21 @@ def build_canonical_payload(card) -> dict:
                 combined       = " ".join([q1_final, q2_final] + q3_final[:3])
                 final_zh_ratio = _zh_ratio(combined)
                 if _anchors:
-                    from utils.news_anchor import pick_primary_anchor as _ppa2
-                    _primary_anchor = _ppa2(_anchors, _anchor_types) or _anchors[0]
+                    try:
+                        from utils.news_anchor import pick_primary_anchor as _ppa2
+                        _primary_anchor = _ppa2(_anchors, _anchor_types) or _anchors[0]
+                    except Exception:
+                        pass
                 _faithful_applied = True
-                # Store faithful meta on card (non-schema, runtime only)
+                # Store faithful result on card (non-schema, runtime only)
                 try:
                     setattr(card, "_faithful_zh_result", _fzh)
+                except Exception:
+                    pass
+            else:
+                # generate returned None (shouldn't happen when should_apply is True)
+                try:
+                    setattr(card, "_faithful_zh_fail", True)
                 except Exception:
                     pass
     except Exception:

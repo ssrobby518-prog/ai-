@@ -704,7 +704,9 @@ $voExecBanPhrases = @(
     "escalate only if next scan confirms sustained",
     "WATCH .*: validate",
     "TEST .*: run small-scope",
-    "MOVE .*: escalate only"
+    "MOVE .*: escalate only",
+    "\.\.\.",        # three-dot ellipsis (Iteration 5.2)
+    "\u2026"         # U+2026 ellipsis character (Iteration 5.2)
 )
 # Chinese-script phrases must be passed via Python to avoid PowerShell encoding issues
 $voCjkBanCheck = & $voPy -c "
@@ -734,6 +736,8 @@ try:
         '\u76e3\u63a7\u4e2d \u672c\u6b04\u66ab\u7121\u4e8b\u4ef6',
         '\u73fe\u6709\u7b56\u7565\u8207\u8cc7\u6e90\u914d\u7f6e',
         '\u7684\u8da8\u52e2\uff0c\u89e3\u6c7a\u65b9 \u8a18',
+        '\u2026',
+        '...',
     ]
     hits = [b for b in cjk_banned if b in combined]
     if hits:
@@ -960,33 +964,47 @@ if (Test-Path $voNaPath) {
 }
 
 # ---------------------------------------------------------------------------
-# FAITHFUL_ZH_NEWS GATE (Iteration 5 — llama.cpp) — HARD gate
-#   Reads outputs/faithful_zh_news.meta.json written by pipeline after LLM run.
-#   FAIL (exit 1) if meta is absent or parse error — this is the primary deliverable.
-#   WARN-OK only when applied_count=0 (all cards ZH-source or EN source too short).
-#   Prints: applied/avg_zh_ratio/anchor_coverage/generic_hits + SAMPLE_1
+# FAITHFUL_ZH_NEWS GATE (Iteration 5.2 — rule-based, no LLM) — HARD gate
+#   Reads outputs/faithful_zh_news.meta.json written by pipeline.
+#   FAIL (exit 1) conditions (non-sparse-day):
+#     applied_count < 4  OR  quote_coverage_ratio < 0.90  OR  ellipsis_hits > 0
+#   Sparse-day: applied_min_required = 2 (instead of 4); other conditions unchanged.
+#   Prints: applied/quote_coverage/ellipsis + SAMPLE_1 with quote_tokens_found.
 # ---------------------------------------------------------------------------
 $voFznPath = Join-Path $repoRoot "outputs\faithful_zh_news.meta.json"
 Write-Output ""
 Write-Output "FAITHFUL_ZH_NEWS GATE:"
+$voFznAppliedMin = 4
 if (Test-Path $voFznPath) {
     try {
         $voFzn = Get-Content $voFznPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
-        $voFznTotal    = if ($voFzn.PSObject.Properties['events_total'])              { [int]$voFzn.events_total }                else { 0 }
-        $voFznApplied  = if ($voFzn.PSObject.Properties['applied_count'])             { [int]$voFzn.applied_count }               else { 0 }
-        $voFznAvgZh    = if ($voFzn.PSObject.Properties['avg_zh_ratio'])              { [double]$voFzn.avg_zh_ratio }             else { 0.0 }
-        $voFznAnchorP  = if ($voFzn.PSObject.Properties['anchor_present_count'])      { [int]$voFzn.anchor_present_count }        else { 0 }
-        $voFznAnchorM  = if ($voFzn.PSObject.Properties['anchor_missing_count'])      { [int]$voFzn.anchor_missing_count }        else { 0 }
-        $voFznAnchor   = if ($voFzn.PSObject.Properties['anchor_coverage_ratio'])     { [double]$voFzn.anchor_coverage_ratio }    else { 0.0 }
-        $voFznGeneric  = if ($voFzn.PSObject.Properties['generic_phrase_hits_total']) { [int]$voFzn.generic_phrase_hits_total }   else { 0 }
+        $voFznTotal      = if ($voFzn.PSObject.Properties['events_total'])           { [int]$voFzn.events_total }               else { 0 }
+        $voFznApplied    = if ($voFzn.PSObject.Properties['applied_count'])          { [int]$voFzn.applied_count }              else { 0 }
+        $voFznFailCount  = if ($voFzn.PSObject.Properties['applied_fail_count'])     { [int]$voFzn.applied_fail_count }         else { 0 }
+        $voFznQtPresent  = if ($voFzn.PSObject.Properties['quote_present_count'])    { [int]$voFzn.quote_present_count }        else { 0 }
+        $voFznQtMissing  = if ($voFzn.PSObject.Properties['quote_missing_count'])    { [int]$voFzn.quote_missing_count }        else { 0 }
+        $voFznQtCoverage = if ($voFzn.PSObject.Properties['quote_coverage_ratio'])   { [double]$voFzn.quote_coverage_ratio }    else { 0.0 }
+        $voFznEllipsis   = if ($voFzn.PSObject.Properties['ellipsis_hits_total'])    { [int]$voFzn.ellipsis_hits_total }        else { 0 }
+        $voFznAvgZh      = if ($voFzn.PSObject.Properties['avg_zh_ratio'])           { [double]$voFzn.avg_zh_ratio }            else { 0.0 }
+        $voFznAnchorP    = if ($voFzn.PSObject.Properties['anchor_present_count'])   { [int]$voFzn.anchor_present_count }       else { 0 }
+        $voFznAnchorCov  = if ($voFzn.PSObject.Properties['anchor_coverage_ratio'])  { [double]$voFzn.anchor_coverage_ratio }   else { 0.0 }
+        $voFznGeneric    = if ($voFzn.PSObject.Properties['generic_phrase_hits_total']) { [int]$voFzn.generic_phrase_hits_total } else { 0 }
 
+        # Sparse-day: lower applied minimum to 2
+        $voFznSparseDay = if (Get-Variable -Name 'sparseDay' -ErrorAction SilentlyContinue) { $sparseDay } else { $false }
+        $voFznAppliedMinEff = if ($voFznSparseDay) { 2 } else { $voFznAppliedMin }
+
+        Write-Output ("  applied_min_required   : {0}  (sparse_day={1}  effective={2})" -f $voFznAppliedMin, $voFznSparseDay, $voFznAppliedMinEff)
         Write-Output ("  events_total           : {0}" -f $voFznTotal)
-        Write-Output ("  applied_count          : {0}" -f $voFznApplied)
-        Write-Output ("  avg_zh_ratio           : {0:F3}  (target >= 0.35)" -f $voFznAvgZh)
-        Write-Output ("  anchor_present_count   : {0}" -f $voFznAnchorP)
-        Write-Output ("  anchor_missing_count   : {0}" -f $voFznAnchorM)
-        Write-Output ("  anchor_coverage_ratio  : {0:F3}  (target >= 0.50)" -f $voFznAnchor)
+        Write-Output ("  applied_count          : {0}  (target >= {1})" -f $voFznApplied, $voFznAppliedMinEff)
+        Write-Output ("  applied_fail_count     : {0}" -f $voFznFailCount)
+        Write-Output ("  quote_present_count    : {0}" -f $voFznQtPresent)
+        Write-Output ("  quote_missing_count    : {0}" -f $voFznQtMissing)
+        Write-Output ("  quote_coverage_ratio   : {0:F3}  (target >= 0.90)" -f $voFznQtCoverage)
+        Write-Output ("  ellipsis_hits          : {0}  (must be 0)" -f $voFznEllipsis)
+        Write-Output ("  avg_zh_ratio           : {0:F3}" -f $voFznAvgZh)
+        Write-Output ("  anchor_present_count   : {0}  ratio={1:F3}" -f $voFznAnchorP, $voFznAnchorCov)
         Write-Output ("  generic_phrase_hits    : {0}" -f $voFznGeneric)
 
         # Print SAMPLE_1
@@ -995,40 +1013,57 @@ if (Test-Path $voFznPath) {
             Write-Output ""
             Write-Output "FAITHFUL_ZH SAMPLE_1:"
             if ($voFznSamp.PSObject.Properties['anchors_top3'] -and $voFznSamp.anchors_top3) {
-                Write-Output ("  anchors_top3: {0}" -f ($voFznSamp.anchors_top3 -join '  |  '))
+                Write-Output ("  anchors_top3       : {0}" -f ($voFznSamp.anchors_top3 -join '  |  '))
             }
             if ($voFznSamp.PSObject.Properties['q1']) {
-                Write-Output ("  Q1  : {0}" -f $voFznSamp.q1)
+                Write-Output ("  Q1                 : {0}" -f $voFznSamp.q1)
             }
             if ($voFznSamp.PSObject.Properties['q2']) {
-                Write-Output ("  Q2  : {0}" -f $voFznSamp.q2)
+                Write-Output ("  Q2                 : {0}" -f $voFznSamp.q2)
             }
             if ($voFznSamp.PSObject.Properties['proof']) {
-                Write-Output ("  Proof: {0}" -f $voFznSamp.proof)
+                Write-Output ("  Proof              : {0}" -f $voFznSamp.proof)
+            }
+            if ($voFznSamp.PSObject.Properties['quote_tokens_found'] -and $voFznSamp.quote_tokens_found) {
+                Write-Output ("  quote_tokens_found : {0}" -f ($voFznSamp.quote_tokens_found -join '  |  '))
             }
         }
 
         Write-Output ""
-        if ($voFznApplied -eq 0) {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN-OK (applied_count=0 — all {0} cards are ZH-source or EN source < 1200 chars)" -f $voFznTotal)
-        } elseif ($voFznAvgZh -ge 0.35 -and $voFznAnchor -ge 0.50) {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: PASS (applied={0} avg_zh={1:F3} >= 0.35 anchor={2:F3} >= 0.50)" -f $voFznApplied, $voFznAvgZh, $voFznAnchor)
-        } elseif ($voFznAvgZh -lt 0.35) {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN (avg_zh_ratio={0:F3} < 0.35; check llama-server output quality)" -f $voFznAvgZh)
+        # Gate evaluation
+        $voFznGateApplied  = ($voFznApplied  -ge $voFznAppliedMinEff)
+        $voFznGateQtCov    = ($voFznQtCoverage -ge 0.90)
+        $voFznGateEllipsis = ($voFznEllipsis -eq 0)
+
+        if ($voFznGateApplied -and $voFznGateQtCov -and $voFznGateEllipsis) {
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: PASS (applied={0}>={1}  quote_coverage={2:F3}>=0.90  ellipsis={3}=0)" `
+                -f $voFznApplied, $voFznAppliedMinEff, $voFznQtCoverage, $voFznEllipsis)
         } else {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN (anchor_coverage={0:F3} < 0.50; output lacks concrete anchors)" -f $voFznAnchor)
+            if (-not $voFznGateApplied) {
+                Write-Output ("FAITHFUL_ZH_NEWS GATE: FAIL — applied_count={0} < {1} (min_required)" `
+                    -f $voFznApplied, $voFznAppliedMinEff)
+                Write-Output "  => Check utils/faithful_zh_news.py should_apply_faithful threshold (MIN_CHARS_FOR_FAITHFUL=450, zh_ratio<0.35)"
+            }
+            if (-not $voFznGateQtCov) {
+                Write-Output ("FAITHFUL_ZH_NEWS GATE: FAIL — quote_coverage_ratio={0:F3} < 0.90" -f $voFznQtCoverage)
+                Write-Output "  => Check _inject_token in utils/faithful_zh_news.py: every applied card must produce 'token' tokens"
+            }
+            if (-not $voFznGateEllipsis) {
+                Write-Output ("FAITHFUL_ZH_NEWS GATE: FAIL — ellipsis_hits={0} > 0 (hard ban)" -f $voFznEllipsis)
+                Write-Output "  => Check _remove_ellipsis in utils/faithful_zh_news.py and sanitize_exec_text in exec_sanitizer.py"
+            }
+            Write-Output "  => FAITHFUL_ZH_NEWS GATE: FAIL"
+            exit 1
         }
     } catch {
         Write-Output ("  FAIL: faithful_zh_news meta parse error: {0}" -f $_)
         Write-Output "FAITHFUL_ZH_NEWS GATE: FAIL (parse error)"
-        Write-Output "  => Ensure llama-server is running: scripts\llama_server.ps1"
         exit 1
     }
 } else {
     Write-Output "  FAIL: faithful_zh_news.meta.json not found"
-    Write-Output "FAITHFUL_ZH_NEWS GATE: FAIL (meta missing — pipeline did not call llama-server)"
-    Write-Output "  => Start llama-server first: powershell -File scripts\llama_server.ps1"
-    Write-Output "  => Then re-run verify_online.ps1"
+    Write-Output "FAITHFUL_ZH_NEWS GATE: FAIL (meta missing — pipeline did not generate faithful meta)"
+    Write-Output "  => Check that write_faithful_zh_news_meta is called in write_narrative_v2_meta"
     exit 1
 }
 
