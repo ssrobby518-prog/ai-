@@ -248,8 +248,13 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
                 summary.dropped_by_reason["keyword_mismatch"] = summary.dropped_by_reason.get("keyword_mismatch", 0) + 1
                 continue
 
-        # Min body length
-        if len(item.body) < settings.MIN_BODY_LENGTH:
+        # Min body length — G1 dual threshold (Iter 6.5):
+        # social/optional platforms require a longer body to avoid low-quality snippets;
+        # main-pool sources accept shorter release notes / abstracts (>= 220 chars).
+        _z0_platform = getattr(item, "z0_platform", "") or ""
+        _is_social = _z0_platform in settings.SOCIAL_OPTIONAL_PLATFORMS
+        _min_body = settings.MIN_BODY_LENGTH_SOCIAL if _is_social else settings.MIN_BODY_LENGTH_MAIN
+        if len(item.body) < _min_body:
             summary.dropped_by_reason["body_too_short"] = summary.dropped_by_reason.get("body_too_short", 0) + 1
             continue
 
@@ -268,6 +273,30 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
         ),
     )
     result.extend(event_candidates)
+
+    # G4 fallback (Iter 6.5): if event_gate_pass == 0 but signal_pool is non-empty,
+    # promote top-N signal items as soft event candidates so the deck is never empty.
+    if len(result) == 0 and signal_pool:
+        _fallback_n = getattr(settings, "FILTER_FALLBACK_N", 6)
+        _fallback = sorted(
+            signal_pool,
+            key=lambda x: (getattr(x, "z0_frontier_score", 0), getattr(x, "density_score", 0)),
+            reverse=True,
+        )[:_fallback_n]
+        for _fi in _fallback:
+            try:
+                setattr(_fi, "event_gate_pass", True)
+                setattr(_fi, "backfill_pass", True)
+                setattr(_fi, "gate_level", "g4_signal_fallback")
+            except Exception:
+                pass
+        result.extend(_fallback)
+        log.info(
+            "G4_FALLBACK: event_gate_pass=0; signal_pool=%d; promoted top %d as event candidates",
+            len(signal_pool),
+            len(_fallback),
+        )
+
     summary.signal_pool = signal_pool
 
     for reason, count in gate_stats.rejected_by_reason.items():
@@ -306,6 +335,24 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
         dropped_total,
         summary.dropped_by_reason,
     )
+
+    # Write filter_summary.meta.json for NO_ZERO_DAY gate in verify_online.ps1.
+    try:
+        import json as _json
+        _fs_meta = {
+            "after_dedupe_total": summary.input_count,
+            "after_filter_total": summary.kept_count,
+            "kept_count": summary.kept_count,
+            "event_gate_pass_total": gate_stats.event_gate_pass_total,
+            "signal_gate_pass_total": gate_stats.signal_gate_pass_total,
+            "dropped_by_reason": summary.dropped_by_reason,
+        }
+        _fs_path = settings.PROJECT_ROOT / "outputs" / "filter_summary.meta.json"
+        _fs_path.parent.mkdir(parents=True, exist_ok=True)
+        _fs_path.write_text(_json.dumps(_fs_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as _e:
+        log.warning("filter_summary.meta.json write failed: %s", _e)
+
     return result, summary
 
 

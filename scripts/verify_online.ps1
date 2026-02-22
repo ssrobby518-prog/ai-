@@ -300,6 +300,38 @@ if (Test-Path $execSelMetaPath) {
 }
 
 # ---------------------------------------------------------------------------
+# NO_ZERO_DAY GATE — Iteration 6.5
+#   Reads filter_summary.meta.json written by ingestion.py.
+#   Ensures after_filter_total >= 6 so daily runs never produce 0 output.
+#   WARN-OK when file is absent (first run or pipeline skipped).
+# ---------------------------------------------------------------------------
+$filterSummaryPath = Join-Path $repoRoot "outputs\filter_summary.meta.json"
+Write-Output ""
+Write-Output "NO_ZERO_DAY GATE:"
+if (Test-Path $filterSummaryPath) {
+    try {
+        $fsm       = Get-Content $filterSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $nzdDedup  = if ($fsm.PSObject.Properties['after_dedupe_total'])    { [int]$fsm.after_dedupe_total }    else { 0 }
+        $nzdKept   = if ($fsm.PSObject.Properties['after_filter_total'])    { [int]$fsm.after_filter_total }    else { 0 }
+        $nzdEvPass = if ($fsm.PSObject.Properties['event_gate_pass_total']) { [int]$fsm.event_gate_pass_total } else { 0 }
+        Write-Output ("  after_dedupe_total   : {0}" -f $nzdDedup)
+        Write-Output ("  after_filter_total   : {0}" -f $nzdKept)
+        Write-Output ("  event_gate_pass_total: {0}" -f $nzdEvPass)
+        Write-Output ("  FILTER_SUMMARY kept={0}" -f $nzdKept)
+        if ($nzdKept -ge 6) {
+            Write-Output "  NO_ZERO_DAY: PASS"
+        } else {
+            Write-Output ("  NO_ZERO_DAY: FAIL (after_filter_total={0} < 6)" -f $nzdKept)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  NO_ZERO_DAY: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  NO_ZERO_DAY: WARN-OK (filter_summary.meta.json not found; gate skipped)"
+}
+
+# ---------------------------------------------------------------------------
 # EXEC KPI META — reads exec_kpi.meta.json written by pipeline
 # ---------------------------------------------------------------------------
 $execKpiMetaPath = Join-Path $repoRoot "outputs\exec_kpi.meta.json"

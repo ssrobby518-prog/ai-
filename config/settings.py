@@ -67,6 +67,16 @@ if os.getenv("ALLOW_ZH_SOURCES_IN_OFFLINE", "0") == "1":
 ALLOW_LANG: list[str] = _ALLOW_LANG_BASE
 KEYWORD_FILTER: list[str] = [k.strip() for k in os.getenv("KEYWORD_FILTER", "").split(",") if k.strip()]
 MIN_BODY_LENGTH: int = _env_int("MIN_BODY_LENGTH", 120)
+# G1: Dual body-length thresholds (Iter 6.5) — main pool vs social/optional
+MIN_BODY_LENGTH_MAIN: int = _env_int("MIN_BODY_LENGTH_MAIN", 220)
+MIN_BODY_LENGTH_SOCIAL: int = _env_int("MIN_BODY_LENGTH_SOCIAL", 500)
+# Platforms treated as social/optional for the dual threshold
+SOCIAL_OPTIONAL_PLATFORMS: list[str] = [
+    p.strip() for p in os.getenv("SOCIAL_OPTIONAL_PLATFORMS", "tiktok,douyin,xiaohongshu").split(",")
+    if p.strip()
+]
+# G4: max items promoted from signal_pool as event-fallback when event_gate_pass==0
+FILTER_FALLBACK_N: int = _env_int("FILTER_FALLBACK_N", 6)
 BATCH_SIZE: int = _env_int("BATCH_SIZE", 20)
 CONTENT_GATE_MIN_KEEP_ITEMS: int = _env_int("CONTENT_GATE_MIN_KEEP_ITEMS", 12)
 CONTENT_GATE_MIN_KEEP_SIGNALS: int = _env_int("CONTENT_GATE_MIN_KEEP_SIGNALS", 9)

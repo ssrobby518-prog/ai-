@@ -20,16 +20,30 @@ SIGNAL_GATE_LEVEL: tuple[int, int] = (300, 2)
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?。？！]+")
 _SENTENCE_PUNCT_RE = re.compile(r"[.!?。？！]")
 
-REJECT_KEYWORDS = (
+# G3 (Iter 6.5): split keyword sets so UI footer words don't kill full articles.
+# Hard UI tokens — always reject regardless of body length (page-not-loaded garbage).
+_HARD_UI_TOKENS: tuple[str, ...] = (
+    "enable javascript",
+    "javascript is required",
+    "javascript required",
+    "please enable javascript",
+)
+# Newsletter / aggregator markers — always reject (these are roundup posts, not news).
+_NEWSLETTER_KEYWORDS: tuple[str, ...] = (
     "roundup",
     "digest",
-    "index",
     "weekly",
     "top links",
+)
+# Weak UI tokens — only reject when the body is very short (< 300 chars),
+# meaning the page is likely a login-wall or subscribe-gate, not real content.
+_WEAK_UI_KEYWORDS: tuple[str, ...] = (
     "subscribe",
     "sign in",
     "login",
 )
+# Keep the old name as an alias so any external callers still work.
+REJECT_KEYWORDS = _NEWSLETTER_KEYWORDS + _WEAK_UI_KEYWORDS
 
 _FRAGMENT_TERMS = (
     "last july was",
@@ -161,10 +175,24 @@ def density_score(text: str) -> int:
 
 
 def _hard_reject_reason(content: str) -> str | None:
+    """Return a rejection reason string, or None if content passes.
+
+    Hard UI tokens: always reject (page-not-loaded garbage).
+    Newsletter keywords: always reject (aggregator posts).
+    Weak UI keywords: only reject when body is very short (< 300 chars),
+    i.e., the page is a login-wall / subscribe-gate, not real content.
+    """
     lowered = content.lower()
-    for kw in REJECT_KEYWORDS:
+    for tok in _HARD_UI_TOKENS:
+        if tok in lowered:
+            return f"rejected_keyword:{tok}"
+    for kw in _NEWSLETTER_KEYWORDS:
         if kw in lowered:
             return f"rejected_keyword:{kw}"
+    if len(content) < 300:
+        for kw in _WEAK_UI_KEYWORDS:
+            if kw in lowered:
+                return f"rejected_keyword:{kw}"
     return None
 
 
