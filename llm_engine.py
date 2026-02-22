@@ -239,6 +239,31 @@ def _extract_quote_tokens(section_text: str) -> List[str]:
     return [t.strip() for t in _RE_QUOTES.findall(section_text or "") if t.strip()]
 
 
+def _is_rich_quote(token: str) -> bool:
+    """True when token qualifies as a rich quote (>= 20 chars, meaningful content).
+
+    Criteria:
+      - len >= 20
+      - NOT all symbols / pure number
+      - At least one of: has space (multi-word phrase), OR >= 4 CJK chars,
+        OR mixed Latin + at least one non-symbol char
+    """
+    t = token.strip()
+    if len(t) < 20:
+        return False
+    # Must contain at least one word char or CJK char
+    if not re.search(r"[\w\u4e00-\u9fff]", t):
+        return False
+    # Reject pure numeric (possibly with $, %, ,, .)
+    if re.fullmatch(r"[\d\s,.$%+\-/\\]+", t):
+        return False
+    has_space = " " in t
+    zh_count = len(re.findall(r"[\u4e00-\u9fff]", t))
+    has_en = bool(re.search(r"[A-Za-z]", t))
+    has_non_sym = bool(re.search(r"[\w\u4e00-\u9fff]", t))
+    return has_space or zh_count >= 4 or (has_en and has_non_sym)
+
+
 def _bullet_text(line: str) -> Tuple[bool, str]:
     s = (line or "").strip()
     if s.startswith("-"):
@@ -306,6 +331,18 @@ def _validate_output(
             reasons.append("q2_quote_token_not_in_raw")
             break
 
+    # ── Rich quote validation: at least 1 token across Q1+Q2 must be rich ──
+    # Rich = len >= 20, multi-word / 4+ CJK / mixed alpha, not pure number/symbol.
+    rich_q1 = [t for t in q1_tokens if _is_rich_quote(t)]
+    rich_q2 = [t for t in q2_tokens if _is_rich_quote(t)]
+    if q1_tokens and not rich_q1:
+        reasons.append("q1_quote_not_rich")
+    if q2_tokens and not rich_q2:
+        reasons.append("q2_quote_not_rich")
+    # Hard failure: both Q1 and Q2 have tokens but none is rich
+    if q1_tokens and q2_tokens and not rich_q1 and not rich_q2:
+        reasons.append("no_rich_quote_in_q1q2")
+
     # ── Task A: Q1/Q2 sentence count via lenient coercion ──
     q1_pair = _coerce_to_two_sentences(parsed.q1)
     q2_pair = _coerce_to_two_sentences(parsed.q2)
@@ -372,7 +409,9 @@ def _build_repair_user_content(
     return (
         f"你上一版輸出違規（{reason_str}），必須完全重做。\n"
         f"再次強調：不得省略號；不得輸出任何 {{ }}；Q1/Q2 必須各 2 句且<=80字；"
-        f"Q1/Q2 各至少 1 個「原文逐字token」且 token 必須存在原文；Q3 必須三條且每條>=12字；"
+        f"Q1/Q2 各至少 1 個「原文逐字token」且 token 必須存在原文；"
+        f"token 必須是 rich quote（>=20字、含空格或多詞、非純數字）；"
+        f"Q3 必須三條且每條>=12字；"
         f"Proof 必須完全等於：證據：來源：{source}（{date_yyyy_mm_dd}）。\n\n"
         f"來源：{source}\n日期：{date_yyyy_mm_dd}\n\n"
         f"【原文開始】\n{truncated}\n【原文結束】\n\n"

@@ -339,6 +339,75 @@ if (Test-Path $filterSummaryPath) {
 }
 
 # ---------------------------------------------------------------------------
+# FULLTEXT_HYDRATION — Iteration 7
+#   Reads outputs/fulltext_hydrator.meta.json written by ingestion.py.
+#   Gate: coverage_ratio >= 0.60 OR fulltext_ok_count >= 4 => PASS
+#         otherwise => WARN-OK (non-fatal; prints reason)
+#   Prints SAMPLE_1 with fulltext_len/final_url + q1_quote/q2_quote from
+#   faithful_zh_news.meta.json sample_1.
+# ---------------------------------------------------------------------------
+$ftHydPath = Join-Path $repoRoot "outputs\fulltext_hydrator.meta.json"
+Write-Output ""
+Write-Output "FULLTEXT_HYDRATION:"
+if (Test-Path $ftHydPath) {
+    try {
+        $fth = Get-Content $ftHydPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        $fthApplied = if ($fth.PSObject.Properties['fulltext_applied']) { [int]$fth.fulltext_applied } else { 0 }
+        $fthTotal   = if ($fth.PSObject.Properties['events_total'])     { [int]$fth.events_total }     else { 0 }
+        $fthOk      = if ($fth.PSObject.Properties['fulltext_ok_count']){ [int]$fth.fulltext_ok_count }else { 0 }
+        $fthCov     = if ($fth.PSObject.Properties['coverage_ratio'])   { [double]$fth.coverage_ratio } else { 0.0 }
+        $fthAvgLen  = if ($fth.PSObject.Properties['avg_fulltext_len']) { [int]$fth.avg_fulltext_len }  else { 0 }
+        $fthNotes   = if ($fth.PSObject.Properties['notes'])            { [string]$fth.notes }          else { "" }
+
+        Write-Output ("  FULLTEXT_HYDRATION: applied={0} coverage={1:F3} avg_fulltext_len={2}" `
+            -f $fthApplied, $fthCov, $fthAvgLen)
+        Write-Output ("  events_total={0}  fulltext_ok_count={1}" -f $fthTotal, $fthOk)
+        if ($fthNotes) { Write-Output ("  notes: {0}" -f $fthNotes) }
+
+        # Print SAMPLE_1 (top item by fulltext_len)
+        if ($fth.PSObject.Properties['samples'] -and $fth.samples -and $fth.samples.Count -gt 0) {
+            $s1 = $fth.samples[0]
+            Write-Output ""
+            Write-Output "  SAMPLE_1:"
+            Write-Output ("    title       : {0}" -f $s1.title)
+            Write-Output ("    final_url   : {0}" -f $s1.final_url)
+            Write-Output ("    fulltext_len: {0}" -f $s1.fulltext_len)
+            Write-Output ("    status      : {0}" -f $s1.status)
+        }
+
+        # Print q1_quote / q2_quote from faithful_zh_news.meta.json sample_1
+        $fznSamplePath = Join-Path $repoRoot "outputs\faithful_zh_news.meta.json"
+        if (Test-Path $fznSamplePath) {
+            try {
+                $fzn = Get-Content $fznSamplePath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($fzn.PSObject.Properties['sample_1'] -and $fzn.sample_1) {
+                    $fznS = $fzn.sample_1
+                    $q1Raw  = if ($fznS.PSObject.Properties['q1']) { [string]$fznS.q1 } else { "" }
+                    $q2Raw  = if ($fznS.PSObject.Properties['q2']) { [string]$fznS.q2 } else { "" }
+                    $q1m    = [regex]::Match($q1Raw, "\u300c([^\u300d]{1,240})\u300d")
+                    $q2m    = [regex]::Match($q2Raw, "\u300c([^\u300d]{1,240})\u300d")
+                    $q1Qt   = if ($q1m.Success) { $q1m.Groups[1].Value } else { "(none)" }
+                    $q2Qt   = if ($q2m.Success) { $q2m.Groups[1].Value } else { "(none)" }
+                    Write-Output ("    q1_quote    : {0}" -f $q1Qt)
+                    Write-Output ("    q2_quote    : {0}" -f $q2Qt)
+                }
+            } catch {}
+        }
+
+        # Gate evaluation
+        $fthGate = if ($fthCov -ge 0.60 -or $fthOk -ge 4) { "PASS" } else { "WARN-OK" }
+        Write-Output ""
+        Write-Output ("  => FULLTEXT_HYDRATION: {0} (coverage={1:F3}  ok={2})" `
+            -f $fthGate, $fthCov, $fthOk)
+    } catch {
+        Write-Output ("  FULLTEXT_HYDRATION: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  FULLTEXT_HYDRATION: WARN-OK (meta file not found; hydration may have been skipped)"
+}
+
+# ---------------------------------------------------------------------------
 # EXEC KPI META — reads exec_kpi.meta.json written by pipeline
 # ---------------------------------------------------------------------------
 $execKpiMetaPath = Join-Path $repoRoot "outputs\exec_kpi.meta.json"

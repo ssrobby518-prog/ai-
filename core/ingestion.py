@@ -147,7 +147,22 @@ def fetch_all_feeds() -> list[RawItem]:
     collector.sources_total = len(settings.RSS_FEEDS) + int(plugin_stats.get("sources_total", 0))
     collector.sources_success = rss_success + int(plugin_stats.get("sources_success", 0))
     collector.sources_failed = rss_failed + int(plugin_stats.get("sources_failed", 0))
-    return enrich_items_async(all_items, stats=collector.enrich_stats)
+
+    enriched = enrich_items_async(all_items, stats=collector.enrich_stats)
+
+    # ── Iteration 7: FullText Hydration ──────────────────────────────────────
+    # Enrich each item body with publisher full article text (stdlib, no new deps).
+    # Updates item.body (title + snippet + full_text) when fulltext_len >= 300.
+    # Writes outputs/fulltext_hydrator.meta.json for FULLTEXT_HYDRATION gate.
+    # Non-fatal: any exception falls through to original enriched items.
+    try:
+        from utils.fulltext_hydrator import hydrate_items_batch
+        enriched = hydrate_items_batch(enriched)
+    except Exception as _hydr_exc:
+        log = get_logger()
+        log.warning("Fulltext hydration batch failed (non-fatal): %s", _hydr_exc)
+
+    return enriched
 
 
 # ---------------------------------------------------------------------------

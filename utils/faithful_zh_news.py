@@ -184,7 +184,8 @@ def decide_source_text(card: Any) -> str:
 
     # Fallback: append extra fields if still short
     if len(combined) < _MIN_CHARS_FOR_FAITHFUL:
-        for attr in ("summary", "description", "full_text", "content"):
+        # Iteration 7: also check body (enriched with full_text by hydrator)
+        for attr in ("summary", "description", "full_text", "content", "body"):
             val = _clean(getattr(card, attr, "") or "")
             if val and val not in combined:
                 combined = combined + " " + val
@@ -205,14 +206,100 @@ def is_english_dominant(text: str) -> bool:
 
 
 def should_apply_faithful(card: Any) -> bool:
-    """True when source text is EN-dominant AND >= MIN_CHARS_FOR_FAITHFUL."""
+    """True when source is EN-dominant AND text is long enough.
+
+    Iteration 7 upgrade: also accepts cards where fulltext_len >= 800
+    (hydrated with EN full article text), even if structured card fields are short.
+    """
     src = decide_source_text(card)
-    return len(src) >= _MIN_CHARS_FOR_FAITHFUL and is_english_dominant(src)
+    if not src:
+        return False
+    en_dominant = is_english_dominant(src)
+
+    # Path 1 (existing): source text is EN-dominant and >= MIN_CHARS_FOR_FAITHFUL
+    if en_dominant and len(src) >= _MIN_CHARS_FOR_FAITHFUL:
+        return True
+
+    # Path 2 (Iteration 7): card has been hydrated with full EN article text
+    fulltext_len = getattr(card, "fulltext_len", 0) or 0
+    if fulltext_len >= 800:
+        # Check EN dominance of the raw full_text attribute if available
+        ft = getattr(card, "full_text", "") or ""
+        if ft and is_english_dominant(ft[:800]):
+            return True
+        # Fallback: if the combined source is EN-dominant (body enrichment flowed through)
+        if en_dominant:
+            return True
+
+    return False
+
+
+def _is_rich_quote(token: str) -> bool:
+    """True when token qualifies as a rich quote (>= 20 chars, meaningful content).
+
+    Criteria:
+      - len(token.strip()) >= 20
+      - NOT all symbols / pure number
+      - At least one of: has space (multi-word phrase), OR >= 4 CJK chars,
+        OR mixed Latin letters + at least one non-symbol char
+    """
+    t = token.strip()
+    if len(t) < 20:
+        return False
+    if not re.search(r"[\w\u4e00-\u9fff]", t):
+        return False
+    if re.fullmatch(r"[\d\s,.$%+\-/\\]+", t):
+        return False
+    has_space = " " in t
+    zh_count = len(re.findall(r"[\u4e00-\u9fff]", t))
+    has_en = bool(re.search(r"[A-Za-z]", t))
+    has_non_sym = bool(re.search(r"[\w\u4e00-\u9fff]", t))
+    return has_space or zh_count >= 4 or (has_en and has_non_sym)
 
 
 # ---------------------------------------------------------------------------
 # Token extraction
 # ---------------------------------------------------------------------------
+
+def _extract_rich_fragment(sentence: str, anchors: list[str]) -> str | None:
+    """Extract a rich sentence fragment (>= 20 chars, <= 80 chars) from sentence.
+
+    Strategy:
+      1. Find anchor in sentence, take surrounding phrase context.
+      2. Fallback: first 6-12 words of sentence.
+    Fragment must appear verbatim in sentence.
+    """
+    # Strategy 1: anchor-anchored context window
+    for anchor in anchors:
+        if not anchor or anchor not in sentence:
+            continue
+        idx = sentence.find(anchor)
+        # Take up to 30 chars before anchor and 40 chars after
+        start = max(0, idx - 30)
+        end = min(len(sentence), idx + len(anchor) + 40)
+        fragment = sentence[start:end].strip()
+        # Trim to word boundary on left
+        if start > 0:
+            sp = fragment.find(" ")
+            if 0 < sp < 10:
+                fragment = fragment[sp + 1:].strip()
+        # Trim trailing partial word on right
+        if end < len(sentence):
+            sp = fragment.rfind(" ")
+            if sp > len(fragment) - 10 and sp > 0:
+                fragment = fragment[:sp].strip()
+        if 20 <= len(fragment) <= 80 and fragment in sentence:
+            return fragment
+
+    # Strategy 2: first N words
+    words = sentence.split()
+    for end in range(min(12, len(words)), 3, -1):
+        fragment = " ".join(words[:end])
+        if 20 <= len(fragment) <= 80:
+            return fragment
+
+    return None
+
 
 def extract_quote_tokens(sentence: str, anchors: list[str] | None = None) -> list[str]:
     """Return up to 2 verbatim quote tokens from sentence.
@@ -220,6 +307,9 @@ def extract_quote_tokens(sentence: str, anchors: list[str] | None = None) -> lis
     Priority:
         1. Pre-extracted anchors that appear verbatim in sentence.
         2. Regex matches from _ANCHOR_KW.
+        3. Iteration 7 upgrade: if no rich quote found yet, try a sentence
+           fragment (>= 20 chars) via _extract_rich_fragment so that Q1/Q2
+           contain meaningful phrases rather than bare numbers/model names.
     """
     found: list[str] = []
 
@@ -236,7 +326,18 @@ def extract_quote_tokens(sentence: str, anchors: list[str] | None = None) -> lis
         if len(found) >= 2:
             return found
 
-    return found
+    # Iteration 7: promote to rich quote if all found tokens are short
+    if found and not any(_is_rich_quote(t) for t in found):
+        rich = _extract_rich_fragment(sentence, found + (anchors or []))
+        if rich and rich in sentence:
+            found = [rich] + found  # prepend rich fragment
+    elif not found:
+        # No anchor at all: try a sentence fragment
+        rich = _extract_rich_fragment(sentence, anchors or [])
+        if rich and rich in sentence:
+            found = [rich]
+
+    return found[:2]
 
 
 def _tokens_from_src(src_text: str) -> list[str]:
@@ -542,8 +643,22 @@ def write_faithful_zh_news_meta(
     # Gate metric: quote_present / applied_count (not events_total)
     quote_coverage = round(quote_present / applied_count, 3) if applied_count else 0.0
 
+    # Iteration 7: rich quote tracking
+    rich_quote_count = sum(
+        1 for r in results
+        if any(_is_rich_quote(t) for t in (r.get("quote_tokens_found") or []))
+    )
+    rich_quote_coverage = round(rich_quote_count / applied_count, 3) if applied_count else 0.0
+
     ellipsis_total = sum(r.get("ellipsis_hits", 0) for r in results)
     generic_total = sum(r.get("generic_hits", 0) for r in results)
+
+    # Fail-reason aggregation
+    fail_reasons_counter: dict[str, int] = {}
+    for r in results:
+        fr = r.get("fail_reason", "") or ""
+        if fr:
+            fail_reasons_counter[fr] = fail_reasons_counter.get(fr, 0) + 1
 
     sample_1: dict = {}
     if results:
@@ -554,6 +669,7 @@ def write_faithful_zh_news_meta(
             "q2": s.get("q2", ""),
             "proof": s.get("proof_line", ""),
             "quote_tokens_found": s.get("quote_tokens_found", []),
+            "rich_quote": any(_is_rich_quote(t) for t in (s.get("quote_tokens_found") or [])),
         }
 
     meta = {
@@ -568,8 +684,11 @@ def write_faithful_zh_news_meta(
         "quote_present_count": quote_present,
         "quote_missing_count": quote_missing,
         "quote_coverage_ratio": quote_coverage,
+        "rich_quote_count": rich_quote_count,
+        "rich_quote_coverage_ratio": rich_quote_coverage,
         "ellipsis_hits_total": ellipsis_total,
         "generic_phrase_hits_total": generic_total,
+        "fail_reasons": fail_reasons_counter,
         "sample_1": sample_1,
     }
 
