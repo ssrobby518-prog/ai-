@@ -1090,6 +1090,29 @@ if ($voGenericHitCount -gt $voNaEventsTotal) {
 }
 
 Write-Output ""
+
+# ---------------------------------------------------------------------------
+# DELIVERY SUMMARY (HUMAN READABLE) — Iteration 5.1
+#   Calls scripts/_summarize_verify_output.py (stdlib only) to render a
+#   one-page summary of all gate results.  Failure is non-fatal: a single
+#   WARN line is printed and execution continues to the COMPLETE message.
+#   Gate semantics and exit codes are NOT changed by this block.
+# ---------------------------------------------------------------------------
+$_sumScript = Join-Path $PSScriptRoot "_summarize_verify_output.py"
+if (Test-Path $_sumScript) {
+    try {
+        & $voPy $_sumScript $voGenericHitCount 2>$null
+        if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+            Write-Output ("WARN: SUMMARY_GENERATOR_FAILED (exit {0})" -f $LASTEXITCODE)
+        }
+    } catch {
+        Write-Output ("WARN: SUMMARY_GENERATOR_FAILED ({0})" -f $_)
+    }
+} else {
+    Write-Output "WARN: SUMMARY_GENERATOR_FAILED (script not found: $_sumScript)"
+}
+
+Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
 } else {
