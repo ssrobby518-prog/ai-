@@ -87,7 +87,8 @@ _MONEY_RE = re.compile(
     r"|\b\d+(?:\.\d+)?\s*(?:billion|million)\s*(?:dollars?|USD)?"
     r"|\b\d+億(?:元|美元|港幣|人民幣)"
     r"|\b\d+萬美元"
-    r"|\b\d+(?:\.\d+)?\s*兆",
+    r"|\b\d+(?:\.\d+)?\s*兆"
+    r"|\$\d{3,}(?:,\d{3})*(?:\.\d+)?(?:/(?:day|hr|hour|month|mo|year|wk))?\b",
     re.IGNORECASE,
 )
 
@@ -162,7 +163,8 @@ _COMPANY_RE = re.compile(
     r"Amazon|AWS|Salesforce|Databricks|Snowflake|Palantir|"
     r"Samsung|Baidu|Alibaba|Tencent|ByteDance|Huawei|"
     r"Arm\s*Holdings|Arm(?=\s+\w)|"
-    r"Mozilla|Firefox|Cloudflare|Vercel|Replit|Cursor\s*AI"
+    r"Mozilla|Firefox|Cloudflare|Vercel|Replit|Cursor\s*AI|"
+    r"India"
     r")\b",
     re.IGNORECASE,
 )
