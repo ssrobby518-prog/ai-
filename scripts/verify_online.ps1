@@ -960,10 +960,11 @@ if (Test-Path $voNaPath) {
 }
 
 # ---------------------------------------------------------------------------
-# FAITHFUL_ZH_NEWS GATE (Iteration 5) — non-fatal audit
-#   Reads outputs/faithful_zh_news.meta.json written when Ollama is available.
-#   WARN-OK when meta is absent (Ollama offline) — not a hard fail.
-#   Prints: applied_count / avg_zh_ratio / anchor_coverage / generic_hits / sample
+# FAITHFUL_ZH_NEWS GATE (Iteration 5 — llama.cpp) — HARD gate
+#   Reads outputs/faithful_zh_news.meta.json written by pipeline after LLM run.
+#   FAIL (exit 1) if meta is absent or parse error — this is the primary deliverable.
+#   WARN-OK only when applied_count=0 (all cards ZH-source or EN source too short).
+#   Prints: applied/avg_zh_ratio/anchor_coverage/generic_hits + SAMPLE_1
 # ---------------------------------------------------------------------------
 $voFznPath = Join-Path $repoRoot "outputs\faithful_zh_news.meta.json"
 Write-Output ""
@@ -972,46 +973,63 @@ if (Test-Path $voFznPath) {
     try {
         $voFzn = Get-Content $voFznPath -Raw -Encoding UTF8 | ConvertFrom-Json
 
+        $voFznTotal    = if ($voFzn.PSObject.Properties['events_total'])              { [int]$voFzn.events_total }                else { 0 }
         $voFznApplied  = if ($voFzn.PSObject.Properties['applied_count'])             { [int]$voFzn.applied_count }               else { 0 }
         $voFznAvgZh    = if ($voFzn.PSObject.Properties['avg_zh_ratio'])              { [double]$voFzn.avg_zh_ratio }             else { 0.0 }
+        $voFznAnchorP  = if ($voFzn.PSObject.Properties['anchor_present_count'])      { [int]$voFzn.anchor_present_count }        else { 0 }
+        $voFznAnchorM  = if ($voFzn.PSObject.Properties['anchor_missing_count'])      { [int]$voFzn.anchor_missing_count }        else { 0 }
         $voFznAnchor   = if ($voFzn.PSObject.Properties['anchor_coverage_ratio'])     { [double]$voFzn.anchor_coverage_ratio }    else { 0.0 }
         $voFznGeneric  = if ($voFzn.PSObject.Properties['generic_phrase_hits_total']) { [int]$voFzn.generic_phrase_hits_total }   else { 0 }
 
+        Write-Output ("  events_total           : {0}" -f $voFznTotal)
         Write-Output ("  applied_count          : {0}" -f $voFznApplied)
         Write-Output ("  avg_zh_ratio           : {0:F3}  (target >= 0.35)" -f $voFznAvgZh)
+        Write-Output ("  anchor_present_count   : {0}" -f $voFznAnchorP)
+        Write-Output ("  anchor_missing_count   : {0}" -f $voFznAnchorM)
         Write-Output ("  anchor_coverage_ratio  : {0:F3}  (target >= 0.50)" -f $voFznAnchor)
         Write-Output ("  generic_phrase_hits    : {0}" -f $voFznGeneric)
 
-        # Print sample
-        if ($voFzn.PSObject.Properties['sample_1'] -and $voFzn.sample_1 -and $voFzn.sample_1.q1) {
+        # Print SAMPLE_1
+        if ($voFzn.PSObject.Properties['sample_1'] -and $voFzn.sample_1) {
             $voFznSamp = $voFzn.sample_1
             Write-Output ""
-            Write-Output "FAITHFUL_ZH SAMPLE (event #1):"
+            Write-Output "FAITHFUL_ZH SAMPLE_1:"
             if ($voFznSamp.PSObject.Properties['anchors_top3'] -and $voFznSamp.anchors_top3) {
                 Write-Output ("  anchors_top3: {0}" -f ($voFznSamp.anchors_top3 -join '  |  '))
             }
-            Write-Output ("  Q1  : {0}" -f $voFznSamp.q1)
-            Write-Output ("  Q2  : {0}" -f $voFznSamp.q2)
-            Write-Output ("  Proof: {0}" -f $voFznSamp.proof)
+            if ($voFznSamp.PSObject.Properties['q1']) {
+                Write-Output ("  Q1  : {0}" -f $voFznSamp.q1)
+            }
+            if ($voFznSamp.PSObject.Properties['q2']) {
+                Write-Output ("  Q2  : {0}" -f $voFznSamp.q2)
+            }
+            if ($voFznSamp.PSObject.Properties['proof']) {
+                Write-Output ("  Proof: {0}" -f $voFznSamp.proof)
+            }
         }
 
         Write-Output ""
         if ($voFznApplied -eq 0) {
-            Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (applied_count=0 — all cards are ZH-source or EN source too short)"
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN-OK (applied_count=0 — all {0} cards are ZH-source or EN source < 1200 chars)" -f $voFznTotal)
         } elseif ($voFznAvgZh -ge 0.35 -and $voFznAnchor -ge 0.50) {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: PASS (avg_zh={0:F3} >= 0.35 anchor={1:F3} >= 0.50)" -f $voFznAvgZh, $voFznAnchor)
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: PASS (applied={0} avg_zh={1:F3} >= 0.35 anchor={2:F3} >= 0.50)" -f $voFznApplied, $voFznAvgZh, $voFznAnchor)
         } elseif ($voFznAvgZh -lt 0.35) {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN — avg_zh_ratio={0:F3} < 0.35; check Ollama output quality" -f $voFznAvgZh)
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN (avg_zh_ratio={0:F3} < 0.35; check llama-server output quality)" -f $voFznAvgZh)
         } else {
-            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN — anchor_coverage={0:F3} < 0.50; faithful output lacks concrete anchors" -f $voFznAnchor)
+            Write-Output ("FAITHFUL_ZH_NEWS GATE: WARN (anchor_coverage={0:F3} < 0.50; output lacks concrete anchors)" -f $voFznAnchor)
         }
     } catch {
-        Write-Output ("  faithful_zh_news meta parse error: {0}" -f $_)
-        Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (parse error; non-fatal)"
+        Write-Output ("  FAIL: faithful_zh_news meta parse error: {0}" -f $_)
+        Write-Output "FAITHFUL_ZH_NEWS GATE: FAIL (parse error)"
+        Write-Output "  => Ensure llama-server is running: scripts\llama_server.ps1"
+        exit 1
     }
 } else {
-    Write-Output "  faithful_zh_news.meta.json not found"
-    Write-Output "FAITHFUL_ZH_NEWS GATE: WARN-OK (Ollama unavailable or no EN-source cards >= 1200 chars)"
+    Write-Output "  FAIL: faithful_zh_news.meta.json not found"
+    Write-Output "FAITHFUL_ZH_NEWS GATE: FAIL (meta missing — pipeline did not call llama-server)"
+    Write-Output "  => Start llama-server first: powershell -File scripts\llama_server.ps1"
+    Write-Output "  => Then re-run verify_online.ps1"
+    exit 1
 }
 
 # ---------------------------------------------------------------------------

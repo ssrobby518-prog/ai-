@@ -5526,17 +5526,17 @@ def write_narrative_v2_meta(cards: list, out_dir: "str | None" = None) -> None:
     except Exception:
         pass  # news_anchor meta is non-fatal
 
-    # Also write faithful_zh_news.meta.json (Iteration 5 audit)
+    # Also write faithful_zh_news.meta.json (Iteration 5 audit — llama.cpp)
     try:
-        from utils.faithful_zh_news import write_faithful_zh_news_meta as _write_fzh_meta
+        from utils.faithful_zh_news_llama import write_faithful_zh_news_meta as _write_fzh_meta
         _fzh_results = []
         for _c in cards:
             _fzh_r = getattr(_c, "_faithful_zh_result", None)
             if _fzh_r is not None:
                 _fzh_results.append(_fzh_r)
-        _write_fzh_meta(_fzh_results, out_dir)
+        _write_fzh_meta(_fzh_results, events_total=len(cards), outdir=out_dir)
     except Exception:
-        pass  # faithful_zh_news meta is non-fatal
+        pass  # faithful_zh_news meta write is non-fatal (gate enforced in verify_online)
 
 
 # ---------------------------------------------------------------------------

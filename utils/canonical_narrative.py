@@ -476,12 +476,12 @@ def build_canonical_payload(card) -> dict:
     combined = " ".join([q1_final, q2_final] + q3_final[:3] + risks_final[:2])
     final_zh_ratio = _zh_ratio(combined)
 
-    # ── Step 9 (Iteration 5): faithful_zh_news override (EN source, Ollama) ──
+    # ── Step 9 (Iteration 5): faithful_zh_news override (EN source, llama.cpp) ──
     # Condition: source text is mostly English (zh_ratio < 0.25) AND >= 1200 chars.
     # Non-fatal: any exception falls through to original output.
     _faithful_applied = False
     try:
-        from utils.faithful_zh_news import (
+        from utils.faithful_zh_news_llama import (
             build_source_text as _fzh_src,
             generate_faithful_zh as _fzh_gen,
             _zh_ratio as _fzh_zhr,
