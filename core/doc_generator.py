@@ -68,7 +68,7 @@ def _safe_url_display(url: str) -> str:
     """Return a display-safe URL string (truncated if base64 path is present)."""
     if len(url) <= _URL_DISPLAY_MAX:
         return url
-    return url[:_URL_DISPLAY_MAX] + "…"
+    return url[:_URL_DISPLAY_MAX]  # Iteration 5.2: no trailing ellipsis
 
 
 # ---------------------------------------------------------------------------

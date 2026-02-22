@@ -223,8 +223,8 @@ def _smart_truncate(text: str, limit: int) -> str:
     # Try word boundary (space)
     pos = cut.rfind(" ")
     if pos > limit * 0.5:
-        return cut[:pos].rstrip() + "…"
-    return cut.rstrip() + "…"
+        return cut[:pos].rstrip()  # Iteration 5.2: no trailing ellipsis
+    return cut.rstrip()  # Iteration 5.2: no trailing ellipsis
 
 
 def responsible_party(category: str) -> str:

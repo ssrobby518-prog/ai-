@@ -113,7 +113,7 @@ def safe_text(text: str, limit: int = 200) -> str:
         pos = cut.rfind(sep)
         if pos > limit * 0.6:
             return cut[:pos + len(sep)].rstrip()
-    return cut + "…"
+    return cut  # Iteration 5.2: no trailing ellipsis
 
 
 def _set_slide_bg(slide, color: RGBColor = None) -> None:
@@ -2176,7 +2176,7 @@ def _append_watchlist_slide(
         extra = len(watchlist_cards) - max_show
         _add_textbox(
             slide, Cm(2), top_start + max_show * item_h, Cm(28), Cm(0.8),
-            f'\u2026 \u53e6\u6709 {extra} \u5247 Watchlist \u9805\u76ee\uff08\u8a73\u898b exec_longform.meta.json\uff09',
+            f'+ \u53e6\u6709 {extra} \u5247 Watchlist \u9805\u76ee\uff08\u8a73\u898b exec_longform.meta.json\uff09',
             font_size=11, color=DARK_MUTED,
         )
 

@@ -366,7 +366,7 @@ def _clean_title(title: str) -> str:
     """清理標題。"""
     title = re.sub(r"[\[\]【】「」『』]", "", title)
     if len(title) > 60:
-        title = title[:58] + "…"
+        title = title[:58]  # Iteration 5.2: no trailing ellipsis
     return title
 
 
@@ -374,7 +374,7 @@ def _explain_excerpt(excerpt: str) -> str:
     """為原文片段提供繁中解釋。"""
     text = excerpt.strip()
     if len(text) > 100:
-        text = text[:98] + "…"
+        text = text[:98]  # Iteration 5.2: no trailing ellipsis
     return f"此段原文表明：{text}"
 
 
@@ -382,7 +382,7 @@ def _make_what_happened(key_points: list[str], title: str) -> str:
     if key_points:
         first = key_points[0]
         if len(first) > 100:
-            first = first[:98] + "…"
+            first = first[:98]  # Iteration 5.2: no trailing ellipsis
         return first
     return f"主題摘要：{title[:60]}"
 
@@ -391,7 +391,7 @@ def _make_why_important(dive: ItemDeepDive | None, category: str, title: str) ->
     if dive and dive.derivable_effects:
         first = dive.derivable_effects[0]
         if len(first) > 100:
-            first = first[:98] + "…"
+            first = first[:98]  # Iteration 5.2: no trailing ellipsis
         return f"此事件的潛在影響：{first}"
     return f"這是 {category or '綜合'} 領域的重要動態，可能對相關產業或使用者產生連鎖影響。"
 
@@ -430,7 +430,7 @@ def _build_technical_interpretation(
     if len(result) < 120:
         result += f" 綜合來看，此事件在 {category or '該領域'} 具有指標性意義，後續發展方向取決於各方利害關係人的回應速度與策略調整。"
     if len(result) > 250:
-        result = result[:248] + "…"
+        result = result[:248]  # Iteration 5.2: no trailing ellipsis
     return result
 
 
@@ -576,7 +576,7 @@ def _build_card_from_parsed(parsed: dict[str, Any], idx: int) -> EduNewsCard:
         item_id=item_id,
         is_valid_news=True,
         title_plain=_clean_title(title),
-        what_happened=title if len(title) <= 100 else title[:98] + "…",
+        what_happened=title if len(title) <= 100 else title[:98],  # Iteration 5.2: no trailing ellipsis
         why_important="此事件反映了當前的重要產業趨勢，值得持續觀察後續發展。",
         focus_action="建議追蹤相關後續報導與官方聲明。",
         metaphor=_DEFAULT_METAPHORS[idx % len(_DEFAULT_METAPHORS)],
