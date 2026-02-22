@@ -310,18 +310,25 @@ Write-Output ""
 Write-Output "NO_ZERO_DAY GATE:"
 if (Test-Path $filterSummaryPath) {
     try {
-        $fsm       = Get-Content $filterSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $nzdDedup  = if ($fsm.PSObject.Properties['after_dedupe_total'])    { [int]$fsm.after_dedupe_total }    else { 0 }
-        $nzdKept   = if ($fsm.PSObject.Properties['after_filter_total'])    { [int]$fsm.after_filter_total }    else { 0 }
-        $nzdEvPass = if ($fsm.PSObject.Properties['event_gate_pass_total']) { [int]$fsm.event_gate_pass_total } else { 0 }
-        Write-Output ("  after_dedupe_total   : {0}" -f $nzdDedup)
-        Write-Output ("  after_filter_total   : {0}" -f $nzdKept)
-        Write-Output ("  event_gate_pass_total: {0}" -f $nzdEvPass)
+        $fsm        = Get-Content $filterSummaryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $nzdDedup   = if ($fsm.PSObject.Properties['after_dedupe_total'])       { [int]$fsm.after_dedupe_total }       else { 0 }
+        $nzdRaw     = if ($fsm.PSObject.Properties['after_filter_total_raw'])   { [int]$fsm.after_filter_total_raw }   else { -1 }
+        $nzdEvPass  = if ($fsm.PSObject.Properties['event_gate_pass_total'])    { [int]$fsm.event_gate_pass_total }    else { 0 }
+        # Prefer kept_total (post-G4 effective count); fallback to after_filter_total for compat.
+        $nzdKept    = if ($fsm.PSObject.Properties['kept_total'])               { [int]$fsm.kept_total }               `
+                      elseif ($fsm.PSObject.Properties['after_filter_total'])   { [int]$fsm.after_filter_total }       `
+                      else { 0 }
+        $nzdRawStr  = if ($nzdRaw -ge 0) { "$nzdRaw" } else { "n/a" }
+        Write-Output ("  after_dedupe_total       : {0}" -f $nzdDedup)
+        Write-Output ("  after_filter_total_raw   : {0}" -f $nzdRawStr)
+        Write-Output ("  kept_total (post-G4)     : {0}" -f $nzdKept)
+        Write-Output ("  after_filter_total_eff   : {0}" -f $nzdKept)
+        Write-Output ("  event_gate_pass_total    : {0}" -f $nzdEvPass)
         Write-Output ("  FILTER_SUMMARY kept={0}" -f $nzdKept)
         if ($nzdKept -ge 6) {
             Write-Output "  NO_ZERO_DAY: PASS"
         } else {
-            Write-Output ("  NO_ZERO_DAY: FAIL (after_filter_total={0} < 6)" -f $nzdKept)
+            Write-Output ("  NO_ZERO_DAY: FAIL (kept_total={0} < 6)" -f $nzdKept)
             exit 1
         }
     } catch {

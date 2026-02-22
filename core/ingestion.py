@@ -273,28 +273,43 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
         ),
     )
     result.extend(event_candidates)
+    _after_filter_raw = len(result)  # count before G4 top-up (raw gate output)
 
-    # G4 fallback (Iter 6.5): if event_gate_pass == 0 but signal_pool is non-empty,
-    # promote top-N signal items as soft event candidates so the deck is never empty.
-    if len(result) == 0 and signal_pool:
-        _fallback_n = getattr(settings, "FILTER_FALLBACK_N", 6)
-        _fallback = sorted(
+    # G4 fallback (Iter 6.5): top-up result to FILTER_FALLBACK_N when below threshold.
+    # Fires whenever result < fallback_n (not only when result == 0) so a run with
+    # e.g. 5 event candidates still gets promoted to 6 from signal_pool.
+    # Hard-UI-token items are skipped to keep garbage out of the deck.
+    _fallback_n = getattr(settings, "FILTER_FALLBACK_N", 6)
+    if len(result) < _fallback_n and signal_pool:
+        _existing_ids = {id(x) for x in result}
+        _hard_ui_toks = ("enable javascript", "javascript is required", "javascript required")
+        _pool_sorted = sorted(
             signal_pool,
             key=lambda x: (getattr(x, "z0_frontier_score", 0), getattr(x, "density_score", 0)),
             reverse=True,
-        )[:_fallback_n]
-        for _fi in _fallback:
+        )
+        _needed = _fallback_n - len(result)
+        _added = 0
+        for _fi in _pool_sorted:
+            if _added >= _needed:
+                break
+            if id(_fi) in _existing_ids:
+                continue
+            _fi_body = (getattr(_fi, "body", "") or "").lower()
+            if any(tok in _fi_body for tok in _hard_ui_toks):
+                continue
             try:
                 setattr(_fi, "event_gate_pass", True)
                 setattr(_fi, "backfill_pass", True)
                 setattr(_fi, "gate_level", "g4_signal_fallback")
             except Exception:
                 pass
-        result.extend(_fallback)
+            result.append(_fi)
+            _existing_ids.add(id(_fi))
+            _added += 1
         log.info(
-            "G4_FALLBACK: event_gate_pass=0; signal_pool=%d; promoted top %d as event candidates",
-            len(signal_pool),
-            len(_fallback),
+            "G4_FALLBACK: raw=%d needed=%d added=%d total=%d signal_pool=%d",
+            _after_filter_raw, _needed, _added, len(result), len(signal_pool),
         )
 
     summary.signal_pool = signal_pool
@@ -339,10 +354,13 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     # Write filter_summary.meta.json for NO_ZERO_DAY gate in verify_online.ps1.
     try:
         import json as _json
+        _kept_total = summary.kept_count  # post-G4 final count
         _fs_meta = {
             "after_dedupe_total": summary.input_count,
-            "after_filter_total": summary.kept_count,
-            "kept_count": summary.kept_count,
+            "after_filter_total_raw": _after_filter_raw,   # before G4 top-up
+            "kept_total": _kept_total,                     # effective: after G4
+            "after_filter_total": _kept_total,             # alias → gate reads this
+            "kept_count": _kept_total,
             "event_gate_pass_total": gate_stats.event_gate_pass_total,
             "signal_gate_pass_total": gate_stats.signal_gate_pass_total,
             "dropped_by_reason": summary.dropped_by_reason,
