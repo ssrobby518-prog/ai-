@@ -68,7 +68,10 @@ ALLOW_LANG: list[str] = _ALLOW_LANG_BASE
 KEYWORD_FILTER: list[str] = [k.strip() for k in os.getenv("KEYWORD_FILTER", "").split(",") if k.strip()]
 MIN_BODY_LENGTH: int = _env_int("MIN_BODY_LENGTH", 120)
 # G1: Dual body-length thresholds (Iter 6.5) — main pool vs social/optional
-MIN_BODY_LENGTH_MAIN: int = _env_int("MIN_BODY_LENGTH_MAIN", 220)
+# Main pool: 120 chars (same as original MIN_BODY_LENGTH) — keeps GitHub releases
+# and short Google News summaries alive so signal_pool stays non-empty for G4.
+# Social/optional: 500 chars — stricter bar for low-signal social snippets.
+MIN_BODY_LENGTH_MAIN: int = _env_int("MIN_BODY_LENGTH_MAIN", 120)
 MIN_BODY_LENGTH_SOCIAL: int = _env_int("MIN_BODY_LENGTH_SOCIAL", 500)
 # Platforms treated as social/optional for the dual threshold
 SOCIAL_OPTIONAL_PLATFORMS: list[str] = [
