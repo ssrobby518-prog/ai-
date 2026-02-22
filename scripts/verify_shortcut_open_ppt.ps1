@@ -12,10 +12,10 @@ $openPpt  = Join-Path $repoRoot "scripts\open_ppt.ps1"
 $expectedTarget = "`"$psExe`" -NoProfile -ExecutionPolicy Bypass -File `"$openPpt`""
 $expectedStart  = $repoRoot
 
-# Find .lnk (Desktop / OneDrive Desktop / Public Desktop)
+# Find .lnk (OneDrive Desktop first, then plain Desktop, then Public Desktop)
 $lnkCandidates = @(
-    (Join-Path $env:USERPROFILE "Desktop\Executive PPT (Open).lnk"),
     (Join-Path $env:USERPROFILE "OneDrive\Desktop\Executive PPT (Open).lnk"),
+    (Join-Path $env:USERPROFILE "Desktop\Executive PPT (Open).lnk"),
     "C:\Users\Public\Desktop\Executive PPT (Open).lnk"
 )
 

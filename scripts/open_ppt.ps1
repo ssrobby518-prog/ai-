@@ -1,5 +1,9 @@
-# open_ppt.ps1 - Non-blocking PPT opener with pointer + 8-second scan budget
-# Priority: P0 pointer file -> P1 deliveries scan -> P2 root executive_report.pptx
+# open_ppt.ps1 - Non-blocking PPT opener with pointer + time-budgeted scan
+# Priority order: P0 pointer file -> P2 deliveries scan -> P1 root executive_report.pptx -> P3 NOT_FOUND
+#   P0: latest_delivery.json / latest_delivery.txt (O(1) lookup)
+#   P2: scan outputs\deliveries\ (8-second Stopwatch budget; manual 2-layer traversal, PS5.1 compatible)
+#   P1: outputs\executive_report.pptx (LAST resort; only when P0 and P2 both fail)
+#   P3: NOT_FOUND / exit 2
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\open_ppt.ps1
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -15,7 +19,7 @@ foreach ($candidate in @($R0, $R1)) {
 }
 
 if ($null -eq $outputsRoot) {
-    Write-Output "OPEN_PPT: NOT_FOUND"
+    Write-Output "OPEN_PPT: NOT_FOUND (outputs root not found)"
     exit 2
 }
 
@@ -43,29 +47,46 @@ if ($null -eq $pptxPath -and (Test-Path $txtPointer)) {
     } catch {}
 }
 
-# ---- P1: scan deliveries (8-second budget) ----
+# ---- P2: scan deliveries (8-second budget; PS5.1 manual 2-layer traversal, depth <= 3) ----
 if ($null -eq $pptxPath) {
     $deliveriesPath = Join-Path $outputsRoot "deliveries"
     if (Test-Path $deliveriesPath) {
+        # Layer 2: immediate subdirs of deliveries/ (newest first, max 50)
         $dirs = Get-ChildItem $deliveriesPath -Directory -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 50
+
         foreach ($dir in $dirs) {
             if ($sw.Elapsed.TotalSeconds -gt 8) { break }
+
+            # Check *.pptx directly in this subdir (depth 2)
             $f = Get-ChildItem $dir.FullName -Filter "*.pptx" -File -ErrorAction SilentlyContinue |
                 Sort-Object LastWriteTime -Descending |
                 Select-Object -First 1
             if ($null -ne $f) { $pptxPath = $f.FullName; break }
+
+            # Layer 3: one level deeper (depth 3)
+            $subdirs = Get-ChildItem $dir.FullName -Directory -ErrorAction SilentlyContinue
+            foreach ($sub in $subdirs) {
+                if ($sw.Elapsed.TotalSeconds -gt 8) { break }
+                $f2 = Get-ChildItem $sub.FullName -Filter "*.pptx" -File -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending |
+                    Select-Object -First 1
+                if ($null -ne $f2) { $pptxPath = $f2.FullName; break }
+            }
+
+            if ($null -ne $pptxPath) { break }
         }
     }
 }
 
-# ---- P2: fallback outputs root executive_report.pptx ----
+# ---- P1: LAST resort - root executive_report.pptx (only when P0 and P2 both fail) ----
 if ($null -eq $pptxPath) {
     $fallback = Join-Path $outputsRoot "executive_report.pptx"
     if (Test-Path $fallback) { $pptxPath = $fallback }
 }
 
+# ---- P3: NOT_FOUND ----
 if ($null -eq $pptxPath) {
     if ($sw.Elapsed.TotalSeconds -gt 8) {
         Write-Output "OPEN_PPT: NOT_FOUND (time_budget_exceeded)"
