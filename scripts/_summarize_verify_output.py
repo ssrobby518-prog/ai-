@@ -177,13 +177,13 @@ def main() -> None:
         "",
         (
             f"  NEWSROOM_ZH（新聞室繁中重寫）: {zh_tag}"
-            f"  avg={_f(zh_avg)}（目標≥0.35）"
-            f"  min={_f(zh_min)}（目標≥0.20）"
+            f"  avg={_f(zh_avg)}（目標>=0.35）"
+            f"  min={_f(zh_min)}（目標>=0.20）"
         ),
         "",
         (
             f"  NEWS_ANCHOR（新聞錨點門檻）: {na_tag}"
-            f"  coverage={_f(na_ratio)}（目標≥0.90 or missing≤1）"
+            f"  coverage={_f(na_ratio)}（目標>=0.90 or missing<=1）"
             f"  missing={na_missing}  present={na_present}/{na_total}"
         ),
         "",
