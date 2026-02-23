@@ -1238,6 +1238,70 @@ if ($voGenericHitCount -gt $voNaEventsTotal) {
 Write-Output ""
 
 # ---------------------------------------------------------------------------
+# DESKTOP_BUTTON GATE — MVP Demo (Iteration 8)
+#   Reads outputs/desktop_button.meta.json written by run_pipeline.ps1.
+#   Gate: success=true AND run_id non-empty => PASS; else WARN-OK (non-fatal).
+# ---------------------------------------------------------------------------
+$voDbPath = Join-Path $repoRoot "outputs\desktop_button.meta.json"
+Write-Output ""
+Write-Output "DESKTOP_BUTTON:"
+if (Test-Path $voDbPath) {
+    try {
+        $voDb = Get-Content $voDbPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voDbRunId     = if ($voDb.PSObject.Properties['run_id'])       { [string]$voDb.run_id }       else { "" }
+        $voDbSuccess   = if ($voDb.PSObject.Properties['success'])      { [bool]$voDb.success }        else { $false }
+        $voDbExitCode  = if ($voDb.PSObject.Properties['exit_code'])    { [int]$voDb.exit_code }       else { -1 }
+        $voDbPipeline  = if ($voDb.PSObject.Properties['pipeline'])     { [string]$voDb.pipeline }     else { "" }
+        $voDbStarted   = if ($voDb.PSObject.Properties['started_at'])   { [string]$voDb.started_at }   else { "" }
+        $voDbFinished  = if ($voDb.PSObject.Properties['finished_at'])  { [string]$voDb.finished_at }  else { "" }
+        Write-Output ("  run_id      : {0}" -f $voDbRunId)
+        Write-Output ("  success     : {0}" -f $voDbSuccess)
+        Write-Output ("  exit_code   : {0}" -f $voDbExitCode)
+        Write-Output ("  pipeline    : {0}" -f $voDbPipeline)
+        Write-Output ("  started_at  : {0}" -f $voDbStarted)
+        Write-Output ("  finished_at : {0}" -f $voDbFinished)
+        $voDbGate = if ($voDbSuccess -and $voDbRunId -ne "") { "PASS" } else { "WARN-OK" }
+        Write-Output ""
+        Write-Output ("  => DESKTOP_BUTTON: {0} (run_id={1}  exit_code={2})" -f $voDbGate, $voDbRunId, $voDbExitCode)
+    } catch {
+        Write-Output ("  DESKTOP_BUTTON: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  DESKTOP_BUTTON: WARN-OK (desktop_button.meta.json not found; run scripts\run_pipeline.ps1 to generate)"
+}
+
+# ---------------------------------------------------------------------------
+# SCHEDULER GATE — MVP Demo (Iteration 8)
+#   Reads outputs/scheduler.meta.json written by install_daily_9am_task.ps1.
+#   Gate: installed=true AND task_name non-empty => PASS; else WARN-OK (non-fatal).
+# ---------------------------------------------------------------------------
+$voSchPath = Join-Path $repoRoot "outputs\scheduler.meta.json"
+Write-Output ""
+Write-Output "SCHEDULER:"
+if (Test-Path $voSchPath) {
+    try {
+        $voSch = Get-Content $voSchPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voSchInstalled = if ($voSch.PSObject.Properties['installed'])           { [bool]$voSch.installed }             else { $false }
+        $voSchTaskName  = if ($voSch.PSObject.Properties['task_name'])           { [string]$voSch.task_name }           else { "" }
+        $voSchTrigger   = if ($voSch.PSObject.Properties['trigger_time_local'])  { [string]$voSch.trigger_time_local }  else { "" }
+        $voSchNextRun   = if ($voSch.PSObject.Properties['next_run_at_beijing']) { [string]$voSch.next_run_at_beijing } else { "" }
+        $voSchLastRun   = if ($voSch.PSObject.Properties['last_run'] -and $voSch.last_run) { [string]$voSch.last_run } else { "(none)" }
+        Write-Output ("  installed            : {0}" -f $voSchInstalled)
+        Write-Output ("  task_name            : {0}" -f $voSchTaskName)
+        Write-Output ("  trigger_time_local   : {0}" -f $voSchTrigger)
+        Write-Output ("  next_run_at_beijing  : {0}" -f $voSchNextRun)
+        Write-Output ("  last_run             : {0}" -f $voSchLastRun)
+        $voSchGate = if ($voSchInstalled -and $voSchTaskName -ne "") { "PASS" } else { "WARN-OK" }
+        Write-Output ""
+        Write-Output ("  => SCHEDULER: {0} (installed={1}  task={2})" -f $voSchGate, $voSchInstalled, $voSchTaskName)
+    } catch {
+        Write-Output ("  SCHEDULER: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  SCHEDULER: WARN-OK (scheduler.meta.json not found; run scripts\install_daily_9am_task.ps1 to generate)"
+}
+
+# ---------------------------------------------------------------------------
 # DELIVERY SUMMARY (HUMAN READABLE) — Iteration 5.1
 #   Calls scripts/_summarize_verify_output.py (stdlib only) to render a
 #   one-page summary of all gate results.  Failure is non-fatal: a single

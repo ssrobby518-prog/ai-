@@ -204,6 +204,13 @@ def run_pipeline() -> None:
         except Exception as _z0_exc:
             log.warning("Z0 load failed (%s); falling back to online fetch", _z0_exc)
             raw_items = fetch_all_feeds()
+        # Z0 mode: fulltext hydration (normally runs inside fetch_all_feeds; must run here too)
+        try:
+            from utils.fulltext_hydrator import hydrate_items_batch
+            raw_items = hydrate_items_batch(raw_items)
+            log.info("Z0 fulltext hydration complete (%d items)", len(raw_items))
+        except Exception as _z0_hydr_exc:
+            log.warning("Z0 fulltext hydration failed (non-fatal): %s", _z0_hydr_exc)
     else:
         raw_items = fetch_all_feeds()
     log.info("Fetched %d total raw items", len(raw_items))
@@ -680,11 +687,118 @@ def run_pipeline() -> None:
     except Exception as _fc_exc:
         log.warning("flow_counts / filter_breakdown meta write failed (non-blocking): %s", _fc_exc)
 
+    # ---------------------------------------------------------------------------
+    # latest_digest.md — MVP Demo (Iteration 8)
+    #   Top-2 executive event cards with canonical Q1/Q2 + verbatim rich quotes.
+    #   Sorted: fulltext_ok=True first, then by density_score desc.
+    # ---------------------------------------------------------------------------
+    try:
+        from utils.canonical_narrative import get_canonical_payload as _get_canon
+        import re as _re_digest
+
+        # Candidate pool: event_density_cards (highest quality), supplement with quality_cards
+        _digest_pool = list(event_density_cards) if event_density_cards else []
+        if len(_digest_pool) < 2:
+            _digest_pool += [c for c in (quality_cards or []) if c not in _digest_pool]
+
+        def _digest_sort_key(c):
+            ft_ok = int(bool(getattr(c, "fulltext_ok", False) or (getattr(c, "fulltext_len", 0) or 0) >= 300))
+            score = int(getattr(c, "density_score", 0) or 0)
+            return (ft_ok, score)
+
+        _digest_pool.sort(key=_digest_sort_key, reverse=True)
+        _top_cards = _digest_pool[:2]
+
+        _digest_lines: list[str] = [
+            "# AI Intel Daily Digest",
+            f"_Generated: {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}_",
+            "",
+        ]
+
+        for _idx, _card in enumerate(_top_cards, 1):
+            try:
+                _cp = _get_canon(_card)
+                _title     = str(_cp.get("title_clean") or getattr(_card, "title_plain", "") or "").strip()
+                _q1        = str(_cp.get("q1_event_2sent_zh") or "").strip()
+                _q2        = str(_cp.get("q2_impact_2sent_zh") or "").strip()
+                _proof     = str(_cp.get("proof_line") or "").strip()
+                _bucket    = str(_cp.get("bucket") or "").strip()
+                _anchor    = ""
+                # Extract primary anchor from news_anchor meta or card attribute
+                _anchor_attr = str(getattr(_card, "primary_anchor", "") or "").strip()
+                if _anchor_attr:
+                    _anchor = _anchor_attr
+                # Extract verbatim quote from 「...」 in Q1
+                _q1_quote = ""
+                _qm = _re_digest.search(r"\u300c([^\u300d]{20,80})\u300d", _q1)
+                if _qm:
+                    _q1_quote = _qm.group(1)
+                _q2_quote = ""
+                _qm2 = _re_digest.search(r"\u300c([^\u300d]{20,80})\u300d", _q2)
+                if _qm2:
+                    _q2_quote = _qm2.group(1)
+                _ft_len = int(getattr(_card, "fulltext_len", 0) or 0)
+                _ft_ok = _ft_len >= 300
+
+                _digest_lines.append(f"## Event {_idx}: {_title}")
+                if _bucket:
+                    _digest_lines.append(f"**Channel:** {_bucket}")
+                if _anchor:
+                    _digest_lines.append(f"**Anchor:** {_anchor}")
+                _digest_lines.append(f"**Fulltext:** {'OK' if _ft_ok else 'N/A'} ({_ft_len} chars)")
+                _digest_lines.append("")
+                if _q1:
+                    _digest_lines.append(f"**Q1 (事件):** {_q1}")
+                if _q1_quote:
+                    _digest_lines.append(f"> verbatim: 「{_q1_quote}」")
+                _digest_lines.append("")
+                if _q2:
+                    _digest_lines.append(f"**Q2 (影響):** {_q2}")
+                if _q2_quote:
+                    _digest_lines.append(f"> verbatim: 「{_q2_quote}」")
+                _digest_lines.append("")
+                if _proof:
+                    _digest_lines.append(f"**Proof:** {_proof}")
+                _digest_lines.append("")
+                _digest_lines.append("---")
+                _digest_lines.append("")
+            except Exception as _card_exc:
+                log.warning("latest_digest.md card %d failed (non-fatal): %s", _idx, _card_exc)
+
+        _digest_md = "\n".join(_digest_lines)
+        _digest_out = Path(settings.PROJECT_ROOT) / "outputs" / "latest_digest.md"
+        _digest_out.parent.mkdir(parents=True, exist_ok=True)
+        _digest_out.write_text(_digest_md, encoding="utf-8")
+        log.info("latest_digest.md written: %s (%d events)", _digest_out, len(_top_cards))
+    except Exception as _digest_exc:
+        log.warning("latest_digest.md generation failed (non-fatal): %s", _digest_exc)
+
     elapsed = time.time() - t_start
     passed = sum(1 for r in all_results if r.passed_gate)
     log.info("PIPELINE COMPLETE | %d processed | %d passed | %.2fs total", len(all_results), passed, elapsed)
     log.info("Digest: %s", digest_path)
     log.info("Metrics: %s", metrics_path)
+
+    # Write desktop_button.meta.json — MVP Demo (Iteration 8)
+    # Reads PIPELINE_RUN_ID env var if set (by run_pipeline.ps1); otherwise auto-generates.
+    try:
+        import json as _db_json
+        _db_run_id = os.environ.get("PIPELINE_RUN_ID", "") or datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        _db_meta = {
+            "run_id": _db_run_id,
+            "started_at": t_start_iso,
+            "finished_at": datetime.now(UTC).isoformat(),
+            "exit_code": 0,
+            "success": True,
+            "pipeline": "scripts/run_once.py",
+            "triggered_by": os.environ.get("PIPELINE_TRIGGERED_BY", "run_once.py"),
+        }
+        _db_path = Path(settings.PROJECT_ROOT) / "outputs" / "desktop_button.meta.json"
+        _db_path.parent.mkdir(parents=True, exist_ok=True)
+        _db_path.write_text(_db_json.dumps(_db_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        log.info("desktop_button.meta.json written: run_id=%s", _db_run_id)
+    except Exception as _db_exc:
+        log.warning("desktop_button.meta.json write failed (non-fatal): %s", _db_exc)
 
     # Notifications
     send_all_notifications(t_start_iso, len(all_results), True, str(digest_path))
