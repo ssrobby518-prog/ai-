@@ -373,8 +373,8 @@ def hydrate_fulltext(url: str, timeout_s: int = 8) -> dict:
 def hydrate_items_batch(
     items: list,
     timeout_s: int = 8,
-    max_workers: int = 4,
-    batch_timeout: int = 120,
+    max_workers: int = 8,
+    batch_timeout: int = 180,
 ) -> list:
     """
     Hydrate all items with full article text in parallel.
@@ -416,12 +416,18 @@ def hydrate_items_batch(
         except Exception:
             netloc = ""
         if netloc in ("news.google.com", "google.com"):
-            return 3  # GNews: JS redirects, usually extract_too_short
+            return 5  # GNews: JS redirects, usually extract_too_short
         if "github.com" in netloc:
-            return 2  # GitHub: short release notes
+            return 4  # GitHub: short release notes
         if "arxiv.org" in netloc:
-            return 2  # arXiv: only abstract (~450c)
-        return 0      # Direct article domains: highest priority
+            return 4  # arXiv: only abstract (~450c)
+        # Known high-403 / paywall domains: process after genuine articles
+        # so they don't consume batch_timeout budget before iThome / HuggingFace
+        if "reddit.com" in netloc:
+            return 3  # All http_403 — wastes budget but processes after good sources
+        if "bloomberg.com" in netloc:
+            return 3  # Paywalled — same reasoning
+        return 0      # Direct article domains: highest priority (iThome, HuggingFace, etc.)
 
     unique_urls = sorted(url_to_items.keys(), key=_url_priority)
     done: dict[str, dict] = {}

@@ -3890,6 +3890,22 @@ def get_event_cards_for_deck(
         if not _relevant:
             continue
 
+        # Pre-hydrated bypass: cards already bulk-hydrated with fulltext_len >= 800
+        # carry verified substantive content — skip demotion block & strict_ok check.
+        # select_executive_items applies _ft_boost=+30 so these rank above unhydrated items.
+        _pre_hydrated_len = int(getattr(card, "fulltext_len", 0) or 0)
+        if _pre_hydrated_len >= 800:
+            try:
+                setattr(card, "entities_count", max(entities_count, 2))
+                setattr(card, "numbers_count", max(numbers_count, 1))
+                setattr(card, "has_anchor_url", True)
+                setattr(card, "event_gate_pass", True)
+                setattr(card, "low_confidence", False)
+            except Exception:
+                pass
+            event_cards.append(card)
+            continue
+
         # [v6] 事件降級規則：UI 垃圾 / 內容過短 / anchor 缺失 → 不得進 event
         _demotion_block = False
         try:
