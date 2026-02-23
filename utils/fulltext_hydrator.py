@@ -388,7 +388,7 @@ def hydrate_items_batch(
                         "reason": f"future_exc:{type(exc).__name__}",
                     }
         except TimeoutError:
-            for u, fut in future_map.items():
+            for fut, u in future_map.items():
                 if u not in done:
                     fut.cancel()
                     done[u] = {
