@@ -26,7 +26,13 @@
     {"name": "MIT Tech Review",     "url": "https://www.technologyreview.com/feed/",                                   "platform": "mittr",         "tag": "media"},
     {"name": "InfoQ AI",            "url": "https://www.infoq.com/ai-ml-data-eng/rss/",                               "platform": "infoq",         "tag": "technical"},
     {"name": "36kr",                "url": "https://36kr.com/feed",                                                    "platform": "36kr",          "tag": "zh_media"},
-    {"name": "HackerNews Top",      "url": "https://hnrss.org/newest?points=50",                                       "platform": "hackernews",    "tag": "community"}
+    {"name": "HackerNews Top",      "url": "https://hnrss.org/newest?points=50",                                       "platform": "hackernews",    "tag": "community"},
+    {"name": "iThome",              "url": "https://www.ithome.com.tw/rss",                                            "platform": "ithome",        "tag": "zh_media"},
+    {"name": "TechNews科技新報",     "url": "https://technews.tw/tn-rss/",                                             "platform": "technews",      "tag": "zh_media"},
+    {"name": "聯合數位",             "url": "https://udn.com/rssfeed/news/2/7226?ch=news",                             "platform": "udn",           "tag": "zh_media"},
+    {"name": "中央社科技",           "url": "https://feeds.feedburner.com/rsscna/technology",                          "platform": "cna",           "tag": "zh_media"},
+    {"name": "Inside",              "url": "https://www.inside.com.tw/feed/rss",                                      "platform": "inside",        "tag": "zh_media"},
+    {"name": "BloombergTech",       "url": "https://feeds.bloomberg.com/technology/news.rss",                         "platform": "bloomberg",     "tag": "media"}
   ],
   "community_feeds": [
     {"name": "Reddit r/MachineLearning", "url": "https://www.reddit.com/r/MachineLearning/.rss?sort=hot&limit=25",   "platform": "reddit",        "tag": "community"},

@@ -120,13 +120,33 @@ def fetch_all_feeds() -> list[RawItem]:
     rss_items: list[RawItem] = []
     rss_success = 0
     rss_failed = 0
+    _feed_source_counts: list[dict] = []
     for feed_cfg in settings.RSS_FEEDS:
         items = fetch_feed(feed_cfg)
         rss_items.extend(items)
+        _feed_source_counts.append({
+            "name": feed_cfg.get("name", ""),
+            "url": feed_cfg.get("url", ""),
+            "lang": feed_cfg.get("lang", ""),
+            "returned": len(items),
+        })
         if items:
             rss_success += 1
         else:
             rss_failed += 1
+
+    # Write feed_stats.meta.json so LATEST_POOL_REPORT can show per-source counts
+    try:
+        import json as _json
+        _fsp = settings.PROJECT_ROOT / "outputs" / "feed_stats.meta.json"
+        _fsp.parent.mkdir(parents=True, exist_ok=True)
+        _fsp.write_text(
+            _json.dumps({"mode": "rss", "source_feeds": _feed_source_counts, "total_from_rss": len(rss_items)},
+                        ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
     plugin_items: list[RawItem] = []
     plugin_stats = {

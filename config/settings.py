@@ -44,9 +44,15 @@ LOG_PATH: Path = _resolve(os.getenv("LOG_PATH", ""), r".\logs\app.log")
 # ---------------------------------------------------------------------------
 _DEFAULT_FEEDS = json.dumps(
     [
-        {"name": "36kr", "url": "https://36kr.com/feed", "lang": "zh", "category": "tech"},
-        {"name": "HackerNews", "url": "https://hnrss.org/newest?points=50", "lang": "en", "category": "tech"},
-        {"name": "TechCrunch", "url": "https://techcrunch.com/feed", "lang": "en", "category": "startup"},
+        {"name": "36kr",           "url": "https://36kr.com/feed",                                    "lang": "zh", "category": "tech"},
+        {"name": "HackerNews",     "url": "https://hnrss.org/newest?points=50",                       "lang": "en", "category": "tech"},
+        {"name": "TechCrunch",     "url": "https://techcrunch.com/feed",                              "lang": "en", "category": "startup"},
+        {"name": "iThome",         "url": "https://www.ithome.com.tw/rss",                            "lang": "zh", "category": "tech"},
+        {"name": "TechNews科技新報", "url": "https://technews.tw/tn-rss/",                             "lang": "zh", "category": "tech"},
+        {"name": "聯合數位",        "url": "https://udn.com/rssfeed/news/2/7226?ch=news",              "lang": "zh", "category": "tech"},
+        {"name": "中央社科技",      "url": "https://feeds.feedburner.com/rsscna/technology",           "lang": "zh", "category": "tech"},
+        {"name": "Inside",         "url": "https://www.inside.com.tw/feed/rss",                       "lang": "zh", "category": "tech"},
+        {"name": "BloombergTech",  "url": "https://feeds.bloomberg.com/technology/news.rss",          "lang": "en", "category": "tech"},
     ]
 )
 

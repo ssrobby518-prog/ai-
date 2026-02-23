@@ -3754,7 +3754,7 @@ def register_item_urls(id_url_pairs: "list[tuple[str, str]]") -> None:
             _item_url_registry[iid] = url
 
 
-def _backfill_hydrate(candidates: "list[EduNewsCard]", max_try: int = 20) -> dict:
+def _backfill_hydrate(candidates: "list[EduNewsCard]", max_try: int = 60) -> dict:
     """Targeted fulltext hydration for the top executive candidates.
 
     Visits each candidate (sorted: already-hydrated first, then by score desc).
@@ -3968,10 +3968,11 @@ def get_event_cards_for_deck(
             if len(event_cards) >= min_required:
                 break
 
-    # Backfill-A: targeted fulltext hydration on top 20 executive candidates.
+    # Backfill-A: targeted fulltext hydration on top 60 executive candidates.
+    # Expanded from 20→60 so we have a larger pool to find >=4 articles with fulltext>=800.
     # Runs before selection so select_executive_items sees enriched fulltext_len values.
     _bf_candidates = list(event_cards) + [c for _r, c, _ec, _nc in fallback_candidates]
-    _bf_audit = _backfill_hydrate(_bf_candidates[:20])
+    _bf_audit = _backfill_hydrate(_bf_candidates[:60])
 
     # Quota-based topic selection (C) + audit meta write (E)
     # Pass fallback_candidates as extra_pool so channel backfill can draw from them
@@ -3980,6 +3981,18 @@ def get_event_cards_for_deck(
         selected, sel_meta = select_executive_items(event_cards, extra_pool=_extra_pool or None)
         # Attach backfill audit so write_exec_selection_meta can include it in NOT_READY.md
         sel_meta["backfill_hydrate_audit"] = _bf_audit
+        # Attach selected card details for LATEST_POOL_REPORT.md
+        sel_meta["selected_cards_details"] = [
+            {
+                "title": str(getattr(c, "title_plain", "") or "")[:120],
+                "source": str(getattr(c, "source_name", "") or ""),
+                "date": str(getattr(c, "published_at", "") or ""),
+                "final_url": str(getattr(c, "source_url", "") or ""),
+                "full_text_len": int(getattr(c, "fulltext_len", 0) or 0),
+                "strict_ok": int(getattr(c, "fulltext_len", 0) or 0) >= 800,
+            }
+            for c in selected
+        ]
         write_exec_selection_meta(sel_meta)
         write_exec_kpi_meta(sel_meta)
         write_exec_quality_meta(selected, sel_meta)
@@ -5243,6 +5256,147 @@ def select_executive_items(
     return selected, selection_meta
 
 
+def _write_latest_pool_report(meta: dict, out_dir: "Path") -> None:
+    """Write outputs/LATEST_POOL_REPORT.md — human-readable pool status for 0-tech review.
+
+    Reads feed_stats.meta.json (per-source counts), filter_summary.meta.json (pool sizes),
+    and uses selected_cards_details / backfill_hydrate_audit from the meta dict.
+    Non-fatal: any exception is silently swallowed.
+    """
+    import json
+    import os as _os
+
+    try:
+        run_id = (_os.environ.get("PIPELINE_RUN_ID", "") or "").strip() or "unknown"
+        final_selected = int(meta.get("final_selected_events", 0))
+        strict_ok_count = int(meta.get("strict_fulltext_ok", 0))
+        pool_status = "PASS" if (final_selected >= 6 and strict_ok_count >= 4) else "FAIL"
+        selected_details = meta.get("selected_cards_details") or []
+        bf_audit = meta.get("backfill_hydrate_audit") or {}
+
+        # Read filter_summary for pool counts
+        filter_meta: dict = {}
+        try:
+            fp = out_dir / "filter_summary.meta.json"
+            if fp.exists():
+                filter_meta = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        pool_total = int(filter_meta.get("after_dedupe_total", 0))
+        kept_total = int(filter_meta.get("kept_total", 0))
+
+        # Read feed_stats for per-source counts
+        feed_meta: dict = {}
+        try:
+            fsp = out_dir / "feed_stats.meta.json"
+            if fsp.exists():
+                feed_meta = json.loads(fsp.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        source_feeds = feed_meta.get("source_feeds") or []  # RSS mode
+        source_counts_list = feed_meta.get("source_counts_list") or []  # Z0 mode
+        feed_mode = str(feed_meta.get("mode", "unknown"))
+
+        lines: list[str] = [
+            "# LATEST_POOL_REPORT",
+            "",
+            f"**run_id:** {run_id}",
+            f"**pool_sufficiency_status:** {pool_status}",
+            f"**final_selected_events:** {final_selected}  (need >= 6)",
+            f"**strict_fulltext_ok:** {strict_ok_count}  (need >= 4, fulltext_len >= 800)",
+            "",
+        ]
+
+        # Per-source item counts
+        if source_feeds:
+            lines += ["## Per-Source Item Counts (RSS mode)", ""]
+            lines += ["| Source | URL | Returned |", "|--------|-----|----------|"]
+            for src in source_feeds:
+                name = str(src.get("name", "") or "")
+                url = str(src.get("url", "") or "")[:70]
+                returned = int(src.get("returned", 0) or 0)
+                lines.append(f"| {name} | {url} | {returned} |")
+            lines.append("")
+        elif source_counts_list:
+            lines += [f"## Per-Source Item Counts (Z0 mode, top 40)", ""]
+            lines += ["| Source | Returned |", "|--------|----------|"]
+            for src in source_counts_list[:40]:
+                name = str(src.get("name", "") or "").replace("|", "｜")
+                returned = int(src.get("returned", 0) or 0)
+                lines.append(f"| {name} | {returned} |")
+            lines.append("")
+
+        # Pool statistics
+        lines += [
+            "## Pool Statistics",
+            "",
+            f"- 候選池（去重前）: {pool_total}",
+            f"- 去重後保留: {kept_total}",
+            "",
+        ]
+
+        # Final 6 selected events
+        lines += ["## 最終入選 6 則", ""]
+        if selected_details:
+            lines += [
+                "| # | Title | Source | Date | final_url | full_text_len | strict_ok |",
+                "|---|-------|--------|------|-----------|---------------|-----------|",
+            ]
+            for i, d in enumerate(selected_details[:6], 1):
+                title = str(d.get("title", ""))[:80].replace("|", "｜")
+                source = str(d.get("source", ""))[:40].replace("|", "｜")
+                date = str(d.get("date", ""))[:20]
+                url = str(d.get("final_url", ""))[:70].replace("|", "｜")
+                ftl = int(d.get("full_text_len", 0) or 0)
+                sok = "✓" if d.get("strict_ok") else "✗"
+                lines.append(f"| {i} | {title} | {source} | {date} | {url} | {ftl} | {sok} |")
+        else:
+            lines.append("*(no card details available)*")
+        lines.append("")
+
+        # Strict fulltext gate breakdown
+        lines += ["## Strict Fulltext Gate (fulltext_len >= 800)", ""]
+        lines += [f"- **strict_fulltext_ok: {strict_ok_count}** of {final_selected} selected"]
+        ok_cards = [d for d in selected_details if d.get("strict_ok")]
+        if ok_cards:
+            lines.append(f"- 達標的 {len(ok_cards)} 則:")
+            for d in ok_cards:
+                lines.append(f"  - {str(d.get('title',''))[:80]} ({d.get('full_text_len',0)}c)")
+        lines.append("")
+
+        # Backfill hydration audit
+        lines += ["## Backfill Hydration Audit", ""]
+        lines += [
+            f"- candidates tried: {bf_audit.get('candidates_count', 0)}",
+            f"- hydrated ok (>=800): {bf_audit.get('hydrated_ok_count', 0)}",
+        ]
+        records = bf_audit.get("records") or []
+        if records:
+            lines += [
+                "",
+                "| # | Title | Source | final_url | fulltext_len | fail_reason |",
+                "|---|-------|--------|-----------|--------------|-------------|",
+            ]
+            for i, r in enumerate(records[:10], 1):
+                title = str(r.get("title", ""))[:60].replace("|", "｜")
+                source = str(r.get("source", ""))[:30].replace("|", "｜")
+                url = str(r.get("final_url", ""))[:60].replace("|", "｜")
+                ftl = int(r.get("fulltext_len", 0) or 0)
+                reason = str(r.get("fail_reason", ""))[:30]
+                lines.append(f"| {i} | {title} | {source} | {url} | {ftl} | {reason} |")
+        lines.append("")
+
+        # Gate result summary
+        lines += ["## Gate Result", ""]
+        lines += [f"**POOL_SUFFICIENCY: {pool_status}**"]
+        if pool_status == "FAIL":
+            lines += ["", "> NOT_READY.md has been generated. PPTX/DOCX will not be produced."]
+
+        (out_dir / "LATEST_POOL_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
+    except Exception:
+        pass  # report write must never break the pipeline
+
+
 def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) -> None:
     """Write exec_selection.meta.json to outputs/ — non-breaking side effect.
 
@@ -5324,6 +5478,9 @@ def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) ->
         else:
             if not_ready_path.exists():
                 not_ready_path.unlink()
+
+        # Always write LATEST_POOL_REPORT.md (both PASS and FAIL states)
+        _write_latest_pool_report(meta, out_dir)
     except Exception:
         pass  # audit write must never break the pipeline
 

@@ -230,6 +230,35 @@ def run_pipeline() -> None:
         raw_items = fetch_all_feeds()
     log.info("Fetched %d total raw items", len(raw_items))
     collector.fetched_total = len(raw_items)
+
+    # Write per-source counts to feed_stats.meta.json (covers both Z0 and RSS paths).
+    # ingestion.py already writes this for RSS path; for Z0 path we overwrite with live counts.
+    try:
+        import json as _json_fs
+        _src_counts: dict[str, int] = {}
+        for _it in raw_items:
+            _sn = str(getattr(_it, "source_name", "") or "unknown")
+            _src_counts[_sn] = _src_counts.get(_sn, 0) + 1
+        _src_list = sorted(
+            [{"name": k, "returned": v} for k, v in _src_counts.items()],
+            key=lambda x: -x["returned"],
+        )
+        _fsp = Path(settings.PROJECT_ROOT) / "outputs" / "feed_stats.meta.json"
+        _fsp.parent.mkdir(parents=True, exist_ok=True)
+        _fsp.write_text(
+            _json_fs.dumps({
+                "mode": "z0" if _z0_enabled else "rss",
+                "source_counts": _src_counts,
+                "source_counts_list": _src_list,
+                "total": len(raw_items),
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log.info("feed_stats.meta.json: %d sources, top=%s", len(_src_counts),
+                 _src_list[0]["name"] if _src_list else "none")
+    except Exception as _fse:
+        log.warning("feed_stats.meta.json write failed (non-fatal): %s", _fse)
+
     # fetch_all_feeds() already returns normalized + enrichment-applied items.
     collector.normalized_total = len(raw_items)
     collector.enriched_total = len(raw_items)
