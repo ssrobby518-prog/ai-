@@ -192,15 +192,18 @@ foreach ($bw in $bannedWords) {
     }
 }
 
-# Check banned words in DOCX (extract text via python)
+# Check banned words in DOCX (extract text via python; strip URLs to avoid false positives from base64 URL fragments)
 $docxText = & $py -c "
+import re
 from docx import Document
 doc = Document('outputs/executive_report.docx')
-print(' '.join(p.text for p in doc.paragraphs))
+raw = ' '.join(p.text for p in doc.paragraphs)
 for t in doc.tables:
     for row in t.rows:
         for cell in row.cells:
-            print(cell.text, end=' ')
+            raw += ' ' + cell.text
+raw = re.sub(r'https?://\S+', ' URL_STRIPPED ', raw)
+print(raw)
 " 2>$null
 if ($docxText) {
     foreach ($bw in $bannedWords) {
@@ -212,19 +215,23 @@ if ($docxText) {
     }
 }
 
-# Check banned words in PPTX (extract text via python)
+# Check banned words in PPTX (extract text via python; strip URLs to avoid false positives)
 $pptxText = & $py -c "
+import re
 from pptx import Presentation
 prs = Presentation('outputs/executive_report.pptx')
+raw = ''
 for slide in prs.slides:
     for shape in slide.shapes:
         if shape.has_text_frame:
             for p in shape.text_frame.paragraphs:
-                print(p.text, end=' ')
+                raw += p.text + ' '
         if shape.has_table:
             for row in shape.table.rows:
                 for cell in row.cells:
-                    print(cell.text, end=' ')
+                    raw += cell.text + ' '
+raw = re.sub(r'https?://\S+', ' URL_STRIPPED ', raw)
+print(raw)
 " 2>$null
 if ($pptxText) {
     foreach ($bw in $bannedWords) {
