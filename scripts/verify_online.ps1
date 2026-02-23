@@ -408,21 +408,20 @@ if (Test-Path $ftHydPath) {
 }
 
 # ---------------------------------------------------------------------------
-# POOL_SUFFICIENCY GATE (Fix-4 + Fix-5)
+# POOL_SUFFICIENCY_HARD GATE
 #   Reads outputs/pool_sufficiency.meta.json written by content_strategy.py.
 #
-#   PASS: final_selected_events=6 AND strict_fulltext_ok>=4
-#   OK  : final_selected_events=6 AND strict_fulltext_ok<4 AND fallback_used=true
-#   FAIL: final_selected_events<6  OR  NOT_READY.md exists
+#   PASS: final_selected_events>=6 AND strict_fulltext_ok>=4
+#   FAIL: anything else (no OK fallback — this is a hard DoD requirement)
 #
-# When FAIL: do NOT generate PPTX/DOCX and exit non-zero (Fix-5 consistency).
+# When FAIL: exit non-zero.  PPTX/DOCX are already blocked by the pipeline.
 # ---------------------------------------------------------------------------
 $notReadyPathOnline = Join-Path $repoRoot "outputs\NOT_READY.md"
 $poolSuffPath       = Join-Path $repoRoot "outputs\pool_sufficiency.meta.json"
 Write-Output ""
-Write-Output "POOL_SUFFICIENCY GATE:"
+Write-Output "POOL_SUFFICIENCY_HARD GATE:"
 if (Test-Path $notReadyPathOnline) {
-    Write-Output "  POOL_SUFFICIENCY: FAIL (NOT_READY.md exists)"
+    Write-Output "  POOL_SUFFICIENCY_HARD: FAIL (NOT_READY.md exists)"
     Write-Output ("  Contents: {0}" -f (Get-Content $notReadyPathOnline -Raw -Encoding UTF8).Trim())
     exit 1
 }
@@ -433,26 +432,31 @@ if (Test-Path $poolSuffPath) {
         $psStrict   = if ($psm.PSObject.Properties['strict_fulltext_ok'])    { [int]$psm.strict_fulltext_ok }    else { 0 }
         $psFallback = if ($psm.PSObject.Properties['fallback_used'])         { [bool]$psm.fallback_used }        else { $false }
         $psPipeStatus = if ($psm.PSObject.Properties['pool_sufficiency_status']) { $psm.pool_sufficiency_status } else { "UNKNOWN" }
+        $psBfCands  = if ($psm.PSObject.Properties['backfill_candidates_count']) { [int]$psm.backfill_candidates_count } else { 0 }
+        $psBfOk     = if ($psm.PSObject.Properties['backfill_hydrated_ok'])      { [int]$psm.backfill_hydrated_ok }      else { 0 }
 
-        Write-Output ("  final_selected_events : {0}" -f $psFinal)
-        Write-Output ("  strict_fulltext_ok    : {0}" -f $psStrict)
-        Write-Output ("  fallback_used         : {0}" -f $psFallback)
-        Write-Output ("  pipeline_status       : {0}" -f $psPipeStatus)
+        Write-Output ("  final_selected_events      : {0}" -f $psFinal)
+        Write-Output ("  strict_fulltext_ok         : {0}" -f $psStrict)
+        Write-Output ("  fallback_used              : {0}" -f $psFallback)
+        Write-Output ("  backfill_candidates_tried  : {0}" -f $psBfCands)
+        Write-Output ("  backfill_hydrated_ok(>=800): {0}" -f $psBfOk)
+        Write-Output ("  pipeline_status            : {0}" -f $psPipeStatus)
 
         if ($psFinal -ge 6 -and $psStrict -ge 4) {
-            Write-Output "  => POOL_SUFFICIENCY: PASS"
-        } elseif ($psFinal -ge 6 -and $psStrict -lt 4 -and $psFallback) {
-            Write-Output "  => POOL_SUFFICIENCY: OK (fallback used; strict_fulltext_ok<4 is acceptable)"
+            Write-Output "  => POOL_SUFFICIENCY_HARD: PASS"
         } else {
-            Write-Output ("  => POOL_SUFFICIENCY: FAIL (final_selected_events={0} strict_fulltext_ok={1} fallback_used={2})" `
-                -f $psFinal, $psStrict, $psFallback)
+            Write-Output ("  => POOL_SUFFICIENCY_HARD: FAIL " +
+                "(need final_selected>=6 AND strict_fulltext_ok>=4; " +
+                "got final={0} strict={1})" -f $psFinal, $psStrict)
             exit 1
         }
     } catch {
-        Write-Output ("  POOL_SUFFICIENCY: WARN-OK (parse error: {0})" -f $_)
+        Write-Output ("  POOL_SUFFICIENCY_HARD: FAIL (parse error: {0})" -f $_)
+        exit 1
     }
 } else {
-    Write-Output "  POOL_SUFFICIENCY: WARN-OK (pool_sufficiency.meta.json not found; run pipeline first)"
+    Write-Output "  POOL_SUFFICIENCY_HARD: FAIL (pool_sufficiency.meta.json not found — pipeline did not complete)"
+    exit 1
 }
 
 # ---------------------------------------------------------------------------

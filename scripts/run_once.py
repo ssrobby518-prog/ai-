@@ -56,10 +56,12 @@ def _apply_entity_cleaning(all_results: list) -> None:
 def _build_quality_cards(
     all_results: list,
     source_url_map: dict[str, str] | None = None,
+    fulltext_len_map: "dict[str, int] | None" = None,
 ) -> list[EduNewsCard]:
     """Build lightweight EduNewsCard objects for v5.2 metrics aggregation."""
     cards: list[EduNewsCard] = []
     source_url_map = source_url_map or {}
+    fulltext_len_map = fulltext_len_map or {}
     for r in all_results:
         a = r.schema_a
         b = r.schema_b
@@ -69,20 +71,25 @@ def _build_quality_cards(
             fallback_url = str(source_url_map.get(str(r.item_id), "") or "").strip()
             if fallback_url.startswith(("http://", "https://")):
                 source_url = fallback_url
-        cards.append(
-            EduNewsCard(
-                item_id=str(r.item_id),
-                is_valid_news=bool(getattr(r, "passed_gate", False)),
-                invalid_reason="" if bool(getattr(r, "passed_gate", False)) else "failed_gate",
-                title_plain=str(a.title_zh or ""),
-                what_happened=str(a.summary_zh or ""),
-                why_important=str(a.summary_zh or ""),
-                source_name=str(a.source_id or ""),
-                source_url=source_url if source_url.startswith(("http://", "https://")) else "",
-                category=str(a.category or ""),
-                final_score=float(getattr(b, "final_score", 0.0) or 0.0),
-            )
+        card = EduNewsCard(
+            item_id=str(r.item_id),
+            is_valid_news=bool(getattr(r, "passed_gate", False)),
+            invalid_reason="" if bool(getattr(r, "passed_gate", False)) else "failed_gate",
+            title_plain=str(a.title_zh or ""),
+            what_happened=str(a.summary_zh or ""),
+            why_important=str(a.summary_zh or ""),
+            source_name=str(a.source_id or ""),
+            source_url=source_url if source_url.startswith(("http://", "https://")) else "",
+            category=str(a.category or ""),
+            final_score=float(getattr(b, "final_score", 0.0) or 0.0),
         )
+        # Propagate fulltext_len from the underlying RawItem (set by hydrate_items_batch)
+        _ft_len = int(fulltext_len_map.get(str(r.item_id), 0) or 0)
+        try:
+            setattr(card, "fulltext_len", _ft_len)
+        except Exception:
+            pass
+        cards.append(card)
     return cards
 
 
@@ -113,6 +120,13 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
             setattr(card, "signal_gate_pass", bool(getattr(item, "signal_gate_pass", True)))
             setattr(card, "density_score", int(density))
             setattr(card, "density_tier", "A" if bool(getattr(item, "event_gate_pass", False)) else "B")
+            # Propagate fulltext_len from RawItem so POOL_SUFFICIENCY gate sees hydrated lengths
+            _ft_len = int(getattr(item, "fulltext_len", 0) or 0)
+            setattr(card, "fulltext_len", _ft_len)
+            if _ft_len >= 300:
+                _ft_text = str(getattr(item, "full_text", "") or "")
+                if _ft_text:
+                    setattr(card, "full_text", _ft_text)
         except Exception:
             pass
         cards.append(card)
@@ -352,7 +366,13 @@ def run_pipeline() -> None:
         str(getattr(item, "item_id", "") or ""): str(getattr(item, "url", "") or "")
         for item in processing_items
     }
-    quality_cards = _build_quality_cards(all_results, source_url_map=source_url_map)
+    # Build fulltext_len map so _build_quality_cards can propagate hydrated lengths to EduCards
+    fulltext_len_map = {
+        str(getattr(item, "item_id", "") or ""): int(getattr(item, "fulltext_len", 0) or 0)
+        for item in processing_items
+    }
+    quality_cards = _build_quality_cards(all_results, source_url_map=source_url_map,
+                                         fulltext_len_map=fulltext_len_map)
     if not quality_cards and signal_pool:
         quality_cards = _build_soft_quality_cards_from_filtered(signal_pool)
     if not quality_cards and filtered:
@@ -633,6 +653,17 @@ def run_pipeline() -> None:
                 log.error("Z5: 連錯誤報告都寫不出來")
     else:
         log.info("Z5: Education report disabled")
+
+    # Hard-D guard: if NOT_READY.md was written by content_strategy, exit 1 so both
+    # verify scripts consistently report FAIL (PPTX/DOCX were already blocked by the
+    # RuntimeError raised inside get_event_cards_for_deck).
+    _nr_check_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+    if _nr_check_path.exists():
+        log.error(
+            "POOL_SUFFICIENCY FAIL — NOT_READY.md exists; "
+            "PPTX/DOCX not generated. Pipeline exits 1."
+        )
+        sys.exit(1)
 
     # (A) Write flow_counts.meta.json + filter_breakdown.meta.json — pipeline funnel audit
     try:

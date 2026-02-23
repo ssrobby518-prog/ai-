@@ -63,15 +63,17 @@ if ($exitCode -ne 0) {
 }
 Write-Host "  Pipeline succeeded" -ForegroundColor Green
 
-# Fix-5: NOT_READY gate — if pipeline wrote NOT_READY.md it could not select 6 events.
-# Both verify_run and verify_online must FAIL when this file exists.
+# NOT_READY gate — pipeline writes NOT_READY.md when POOL_SUFFICIENCY hard gate fails:
+#   final_selected_events < 6  OR  strict_fulltext_ok < 4
+# Both verify_run and verify_online must FAIL (exit non-zero) when this file exists.
 $notReadyPath = "outputs\NOT_READY.md"
 if (Test-Path $notReadyPath) {
     Write-Host "" -ForegroundColor Red
     Write-Host "NOT_READY GATE: FAIL" -ForegroundColor Red
-    Write-Host "  NOT_READY.md exists — pipeline selected < 6 events." -ForegroundColor Red
+    Write-Host "  NOT_READY.md exists — POOL_SUFFICIENCY hard gate failed." -ForegroundColor Red
+    Write-Host "  (Trigger: final_selected_events<6 OR strict_fulltext_ok<4)" -ForegroundColor Red
     Write-Host "  Contents: $((Get-Content $notReadyPath -Raw -Encoding UTF8).Trim())" -ForegroundColor Red
-    Write-Host "  Fix: re-run after improving Z0 collection quality." -ForegroundColor Yellow
+    Write-Host "  Fix: re-run after improving Z0 source quality or full-text fetch coverage." -ForegroundColor Yellow
     exit 1
 }
 

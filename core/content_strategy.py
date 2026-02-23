@@ -3736,6 +3736,102 @@ def _v525_extract_signal_snippet(card: EduNewsCard) -> str:
     return _smart_truncate(cleaned, 120)
 
 
+# ---------------------------------------------------------------------------
+# Backfill fulltext hydration — targeted re-fetch for executive candidate pool
+# ---------------------------------------------------------------------------
+_ft_hydrate_cache: dict[str, int] = {}  # url → fulltext_len; cleared only at process exit
+
+
+def _backfill_hydrate(candidates: "list[EduNewsCard]", max_try: int = 20) -> dict:
+    """Targeted fulltext hydration for the top executive candidates.
+
+    Visits each candidate (sorted: already-hydrated first, then by score desc).
+    For candidates without fulltext_len >= 800:  calls hydrate_fulltext(source_url).
+    Updates card.fulltext_len in-place.  Uses module-level cache so second call
+    (from doc_generator) is instant.
+
+    Returns audit dict: candidates_count, tried_count, hydrated_ok_count, records[:10].
+    """
+    from utils.fulltext_hydrator import hydrate_fulltext as _hf
+
+    records: list[dict] = []
+    tried = 0
+    sorted_cands = sorted(
+        candidates,
+        key=lambda c: (
+            -int(getattr(c, "fulltext_len", 0) or 0),
+            -float(getattr(c, "final_score", 0.0) or 0.0),
+        ),
+    )
+
+    for card in sorted_cands[:max_try]:
+        url = str(getattr(card, "source_url", "") or "").strip()
+        current_ft_len = int(getattr(card, "fulltext_len", 0) or 0)
+        title = str(getattr(card, "title_plain", "") or "")[:80]
+        source_name = str(getattr(card, "source_name", "") or "")
+
+        if current_ft_len >= 800:
+            records.append({"title": title, "source": source_name,
+                            "final_url": url, "fulltext_len": current_ft_len,
+                            "fail_reason": "already_ok"})
+            continue
+
+        tried += 1
+        if not url or not url.startswith("http"):
+            records.append({"title": title, "source": source_name,
+                            "final_url": url or "", "fulltext_len": current_ft_len,
+                            "fail_reason": "no_url"})
+            continue
+
+        if url in _ft_hydrate_cache:
+            cached_len = _ft_hydrate_cache[url]
+            if cached_len > current_ft_len:
+                try:
+                    setattr(card, "fulltext_len", cached_len)
+                except Exception:
+                    pass
+            records.append({"title": title, "source": source_name,
+                            "final_url": url, "fulltext_len": _ft_hydrate_cache[url],
+                            "fail_reason": "cached_ok" if _ft_hydrate_cache[url] >= 800 else "cached_short"})
+            continue
+
+        try:
+            result = _hf(url, timeout_s=12)
+            new_len = int(result.get("fulltext_len", 0) or 0)
+            _ft_hydrate_cache[url] = new_len
+            if new_len > current_ft_len:
+                try:
+                    setattr(card, "fulltext_len", new_len)
+                    if new_len >= 300:
+                        ft_text = result.get("full_text", "") or ""
+                        if ft_text:
+                            try:
+                                setattr(card, "full_text", ft_text)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            records.append({"title": title, "source": source_name,
+                            "final_url": result.get("final_url", url),
+                            "fulltext_len": new_len,
+                            "fail_reason": result.get("reason", "")})
+        except Exception as exc:
+            _ft_hydrate_cache[url] = 0
+            records.append({"title": title, "source": source_name,
+                            "final_url": url, "fulltext_len": 0,
+                            "fail_reason": f"exception:{type(exc).__name__}"})
+
+    hydrated_ok_count = sum(
+        1 for c in candidates if int(getattr(c, "fulltext_len", 0) or 0) >= 800
+    )
+    return {
+        "candidates_count": len(candidates),
+        "tried_count": tried,
+        "hydrated_ok_count": hydrated_ok_count,
+        "records": records[:10],
+    }
+
+
 def get_event_cards_for_deck(
     cards: list[EduNewsCard],
     metrics: dict | None = None,
@@ -3853,17 +3949,32 @@ def get_event_cards_for_deck(
             if len(event_cards) >= min_required:
                 break
 
+    # Backfill-A: targeted fulltext hydration on top 20 executive candidates.
+    # Runs before selection so select_executive_items sees enriched fulltext_len values.
+    _bf_candidates = list(event_cards) + [c for _r, c, _ec, _nc in fallback_candidates]
+    _bf_audit = _backfill_hydrate(_bf_candidates[:20])
+
     # Quota-based topic selection (C) + audit meta write (E)
     # Pass fallback_candidates as extra_pool so channel backfill can draw from them
     _extra_pool = [card for _rank, card, _ec, _nc in fallback_candidates]
     try:
         selected, sel_meta = select_executive_items(event_cards, extra_pool=_extra_pool or None)
+        # Attach backfill audit so write_exec_selection_meta can include it in NOT_READY.md
+        sel_meta["backfill_hydrate_audit"] = _bf_audit
         write_exec_selection_meta(sel_meta)
         write_exec_kpi_meta(sel_meta)
         write_exec_quality_meta(selected, sel_meta)
+        # Hard-D: PPTX/DOCX must not be generated when POOL_SUFFICIENCY fails.
+        _final_sel = int(sel_meta.get("final_selected_events", 0))
+        _strict_ok = int(sel_meta.get("strict_fulltext_ok", 0))
+        if _final_sel < 6 or _strict_ok < 4:
+            raise RuntimeError(
+                f"POOL_SUFFICIENCY_FAIL: final_selected={_final_sel} strict_fulltext_ok={_strict_ok} "
+                f"(need >=6 events AND >=4 with fulltext_len>=800)"
+            )
         return selected
     except RuntimeError:
-        raise  # propagate G2/G3 fail-fast gates
+        raise  # propagate — includes our POOL_SUFFICIENCY_FAIL and G2/G3 gates
     except Exception:
         # If quota selection fails for any reason, return unfiltered pool
         return event_cards
@@ -4854,7 +4965,9 @@ def select_executive_items(
             ch["business_score"], ch["dev_score"],
         )
         final_s = float(getattr(card, "final_score", 0.0) or 0.0)
-        rank = ch_score * 0.7 + final_s * 3.0
+        # Boost cards with full article text — ensures hydrated items are preferentially selected
+        _ft_boost = 30.0 if int(getattr(card, "fulltext_len", 0) or 0) >= 800 else 0.0
+        rank = ch_score * 0.7 + final_s * 3.0 + _ft_boost
 
         if best in buckets:
             buckets[best].append((rank, card))
@@ -5130,36 +5243,65 @@ def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) ->
             encoding="utf-8",
         )
 
-        # Fix-4: Write pool_sufficiency.meta.json
+        # Write pool_sufficiency.meta.json — hard PASS/FAIL only (no OK fallback)
         final_selected = int(meta.get("final_selected_events", meta.get("events_total", 0)))
         strict_ok      = int(meta.get("strict_fulltext_ok", 0))
         fallback_used  = bool(meta.get("fallback_used", False))
-        if final_selected >= 6 and strict_ok >= 4:
-            pool_status = "PASS"
-        elif final_selected >= 6 and strict_ok < 4 and fallback_used:
-            pool_status = "OK"
-        else:
-            pool_status = "FAIL"
+        pool_status = "PASS" if (final_selected >= 6 and strict_ok >= 4) else "FAIL"
+        bf_audit = meta.get("backfill_hydrate_audit") or {}
         pool_meta = {
-            "final_selected_events": final_selected,
-            "strict_fulltext_ok":    strict_ok,
-            "fallback_used":         fallback_used,
+            "final_selected_events":  final_selected,
+            "strict_fulltext_ok":     strict_ok,
+            "fallback_used":          fallback_used,
             "pool_sufficiency_status": pool_status,
+            "backfill_candidates_count": int(bf_audit.get("candidates_count", 0)),
+            "backfill_hydrated_ok":      int(bf_audit.get("hydrated_ok_count", 0)),
         }
         (out_dir / "pool_sufficiency.meta.json").write_text(
             json.dumps(pool_meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
-        # Fix-5: Write NOT_READY.md when events < 6; remove it when events >= 6.
+        # Write / remove NOT_READY.md
+        # Triggered when events < 6 OR strict_fulltext_ok < 4 (hard DoD).
         not_ready_path = out_dir / "NOT_READY.md"
-        if final_selected < 6:
-            not_ready_path.write_text(
-                f"# NOT_READY\n\nPipeline could not select 6 events.\n"
-                f"final_selected_events={final_selected}\n"
-                f"strict_fulltext_ok={strict_ok}\n",
-                encoding="utf-8",
+        import os as _os
+        _run_id = (_os.environ.get("PIPELINE_RUN_ID", "") or "").strip() or "unknown"
+        if pool_status != "PASS":
+            # Build human-readable candidate list for NOT_READY.md
+            _records = bf_audit.get("records") or []
+            _cand_lines = []
+            for _i, _r in enumerate(_records[:10], 1):
+                _cand_lines.append(
+                    f"  {_i:2d}. [{_r.get('fulltext_len',0):>6}c] "
+                    f"{_r.get('title','')[:60]}  "
+                    f"src={_r.get('source','')}  "
+                    f"reason={_r.get('fail_reason','')}"
+                )
+            _cand_block = "\n".join(_cand_lines) if _cand_lines else "  (no records)"
+            not_ready_content = (
+                f"# NOT_READY\n\n"
+                f"run_id: {_run_id}\n"
+                f"final_selected_events: {final_selected}  (need >= 6)\n"
+                f"strict_fulltext_ok: {strict_ok}  (need >= 4 with fulltext_len >= 800)\n"
+                f"backfill_candidates_tried: {bf_audit.get('candidates_count', 0)}\n"
+                f"backfill_hydrated_ok (>=800): {bf_audit.get('hydrated_ok_count', 0)}\n\n"
+                f"## Why did this fail?\n"
             )
+            if final_selected < 6:
+                not_ready_content += "- Pipeline could not select 6 events (insufficient pool).\n"
+            if strict_ok < 4:
+                not_ready_content += (
+                    "- Fewer than 4 selected events have fulltext_len >= 800 chars.\n"
+                    "  This means article bodies are too short or full-text fetch failed.\n"
+                )
+            not_ready_content += (
+                f"\n## Top {len(_records)} candidate URLs tried (title | src | fulltext_len | fail_reason):\n"
+                f"{_cand_block}\n\n"
+                f"## Fix\n"
+                f"Re-run after sources improve OR check Z0 source quality / anti-bot blocks.\n"
+            )
+            not_ready_path.write_text(not_ready_content, encoding="utf-8")
         else:
             if not_ready_path.exists():
                 not_ready_path.unlink()
