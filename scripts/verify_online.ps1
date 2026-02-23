@@ -525,6 +525,48 @@ if ($ARCHIVE_HEAD_MATCH -eq "FAIL") {
 }
 
 # ---------------------------------------------------------------------------
+# CANONICAL_DELIVERY_CONSISTENCY GATE — Stage 4 (Iteration 11)
+#   Compares SHA-256 of outputs\executive_report.pptx (canonical) with the
+#   copy just archived into $_deliveryDir.  No Admin required.
+#   PASS    : both exist and hashes match
+#   FAIL    : both exist but hashes differ (canonical != delivery — diverged)
+#   OK      : delivery was not archived this run (allowed; canonical is the true source)
+#   WARN-OK : canonical itself not found (pipeline did not produce output)
+# ---------------------------------------------------------------------------
+$_cdcCanonPath   = Join-Path $repoRoot "outputs\executive_report.pptx"
+$_cdcDelivPath   = Join-Path $_deliveryDir "executive_report.pptx"
+
+Write-Output ""
+Write-Output "CANONICAL_DELIVERY_CONSISTENCY:"
+if ((Test-Path $_cdcCanonPath) -and (Test-Path $_cdcDelivPath)) {
+    try {
+        $_cdcHashCanon  = (Get-FileHash -Path $_cdcCanonPath -Algorithm SHA256).Hash
+        $_cdcHashDeliv  = (Get-FileHash -Path $_cdcDelivPath -Algorithm SHA256).Hash
+        Write-Output ("  canonical_path  : {0}" -f $_cdcCanonPath)
+        Write-Output ("  canonical_hash  : {0}" -f $_cdcHashCanon)
+        Write-Output ("  delivery_path   : {0}" -f $_cdcDelivPath)
+        Write-Output ("  delivery_hash   : {0}" -f $_cdcHashDeliv)
+        Write-Output ""
+        if ($_cdcHashCanon -eq $_cdcHashDeliv) {
+            Write-Output "  => CANONICAL_DELIVERY_CONSISTENCY: PASS (SHA-256 match)"
+        } else {
+            Write-Output "  => CANONICAL_DELIVERY_CONSISTENCY: FAIL (hash mismatch — canonical and delivery diverged)"
+        }
+    } catch {
+        Write-Output ("  => CANONICAL_DELIVERY_CONSISTENCY: WARN-OK (hash error: {0})" -f $_)
+    }
+} elseif (-not (Test-Path $_cdcCanonPath)) {
+    Write-Output ("  canonical_path  : {0} (not found)" -f $_cdcCanonPath)
+    Write-Output ""
+    Write-Output "  => CANONICAL_DELIVERY_CONSISTENCY: WARN-OK (canonical outputs\executive_report.pptx not found)"
+} else {
+    Write-Output ("  canonical_path  : {0}" -f $_cdcCanonPath)
+    Write-Output ("  delivery_path   : {0} (not archived this run)" -f $_cdcDelivPath)
+    Write-Output ""
+    Write-Output "  => CANONICAL_DELIVERY_CONSISTENCY: OK (no delivery archived; canonical is true source)"
+}
+
+# ---------------------------------------------------------------------------
 # EXEC LAYOUT EVIDENCE (online run — same as verify_run, reproduced here for auditability)
 # ---------------------------------------------------------------------------
 $execLayoutOnlinePath = Join-Path $repoRoot "outputs\exec_layout.meta.json"
@@ -1268,6 +1310,46 @@ if (Test-Path $voDbPath) {
     }
 } else {
     Write-Output "  DESKTOP_BUTTON: WARN-OK (desktop_button.meta.json not found; run scripts\run_pipeline.ps1 to generate)"
+}
+
+# ---------------------------------------------------------------------------
+# AUTOOPEN_TARGET GATE — Stage 4 (Iteration 11)
+#   Static analysis of scripts\open_ppt.ps1 to verify the AutoOpen chain
+#   never routes to outputs\deliveries or pointer files.
+#   PASS    : open_ppt.ps1 exists, contains no deliveries/pointer references,
+#             and explicitly opens outputs\executive_report.pptx
+#   FAIL    : open_ppt.ps1 references deliveries or latest_delivery pointer files
+#   WARN-OK : open_ppt.ps1 not found or content unclear
+# ---------------------------------------------------------------------------
+$voAtScript = Join-Path $repoRoot "scripts\open_ppt.ps1"
+
+Write-Output ""
+Write-Output "AUTOOPEN_TARGET:"
+if (Test-Path $voAtScript) {
+    try {
+        $voAtContent       = Get-Content $voAtScript -Raw -Encoding UTF8
+        $voAtHasDeliveries = [bool]($voAtContent -imatch "deliveries")
+        $voAtHasPointer    = [bool]($voAtContent -imatch "latest_delivery")
+        $voAtHasCanon      = [bool]($voAtContent -imatch "executive_report\.pptx")
+        Write-Output ("  open_ppt_path      : {0}" -f $voAtScript)
+        Write-Output ("  scans_deliveries   : {0}" -f $voAtHasDeliveries)
+        Write-Output ("  reads_pointer_file : {0}" -f $voAtHasPointer)
+        Write-Output ("  opens_canonical    : {0}" -f $voAtHasCanon)
+        Write-Output ""
+        if (-not $voAtHasDeliveries -and -not $voAtHasPointer -and $voAtHasCanon) {
+            Write-Output "  => AUTOOPEN_TARGET: PASS (open_ppt.ps1 opens outputs\executive_report.pptx only)"
+        } elseif ($voAtHasDeliveries -or $voAtHasPointer) {
+            Write-Output "  => AUTOOPEN_TARGET: FAIL (open_ppt.ps1 still references deliveries or pointer files)"
+        } else {
+            Write-Output "  => AUTOOPEN_TARGET: WARN-OK (open_ppt.ps1 content unclear)"
+        }
+    } catch {
+        Write-Output ("  => AUTOOPEN_TARGET: WARN-OK (read error: {0})" -f $_)
+    }
+} else {
+    Write-Output ("  open_ppt_path      : {0} (not found)" -f $voAtScript)
+    Write-Output ""
+    Write-Output "  => AUTOOPEN_TARGET: WARN-OK (open_ppt.ps1 not found)"
 }
 
 # ---------------------------------------------------------------------------

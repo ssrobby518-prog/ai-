@@ -47,6 +47,26 @@ $MetaObj = [ordered]@{
 $MetaObj | ConvertTo-Json -Depth 3 | Out-File -FilePath $MetaPath -Encoding UTF8 -NoNewline
 Write-Host ("desktop_button.meta.json written: exit_code={0}" -f $ExitCode)
 
+# Write delivery_path.meta.json — canonical path/hash + autoopen_target (always canonical)
+$CanonicalPptx       = Join-Path $RepoRoot "outputs\executive_report.pptx"
+$CanonicalPptxHash   = $null
+if (Test-Path $CanonicalPptx) {
+    try { $CanonicalPptxHash = (Get-FileHash -Path $CanonicalPptx -Algorithm SHA256).Hash } catch {}
+}
+$DeliveryMetaPath = Join-Path $MetaDir "delivery_path.meta.json"
+$DeliveryMetaObj  = [ordered]@{
+    run_id               = $RunId
+    canonical_pptx_path  = $CanonicalPptx
+    canonical_pptx_hash  = $CanonicalPptxHash
+    delivery_pptx_path   = $null
+    delivery_pptx_hash   = $null
+    autoopen_target_path = $CanonicalPptx
+    started_at           = $StartAt
+    finished_at          = $FinishedAt
+}
+$DeliveryMetaObj | ConvertTo-Json -Depth 3 | Out-File -FilePath $DeliveryMetaPath -Encoding UTF8 -NoNewline
+Write-Host ("delivery_path.meta.json written: autoopen_target=outputs\executive_report.pptx")
+
 if ($ExitCode -eq 0 -and $AutoOpen -ne "false") {
     # Open latest output (try open_latest.ps1, fallback to open_ppt.ps1)
     # Suppressed when -AutoOpen false (e.g. scheduled/headless runs)
