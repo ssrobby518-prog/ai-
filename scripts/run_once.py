@@ -640,9 +640,13 @@ def run_pipeline() -> None:
                     setattr(_phc, "signal_gate_pass", True)
                     # Extend what_happened with more article text so anchor extraction
                     # (news_anchor.meta.json) finds numbers/company names in abstract.
+                    # Prepend source_name so _COMPANY_RE fallback always fires for Google/
+                    # Microsoft/HuggingFace posts even if the body opens without a company name.
                     _ph_ft = str(getattr(_ph_it, "full_text", "") or "").strip()
+                    _ph_src = str(getattr(_ph_it, "source_name", "") or "").strip()
                     if len(_ph_ft) > 500:
-                        setattr(_phc, "what_happened", _ph_ft[:2000])
+                        _ph_wh = (_ph_src + ". " + _ph_ft[:2000]).strip() if _ph_src else _ph_ft[:2000]
+                        setattr(_phc, "what_happened", _ph_wh)
                 except Exception:
                     pass
             z0_exec_extra_cards = list(z0_exec_extra_cards) + _ph_supp_cards
