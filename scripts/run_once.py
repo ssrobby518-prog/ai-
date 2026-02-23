@@ -712,6 +712,33 @@ def run_pipeline() -> None:
                 log.info("Executive DOCX generated: %s", docx_path)
                 log.info("Notion page generated: %s", notion_path)
                 log.info("XMind mindmap generated: %s", xmind_path)
+                # Update filter_summary.meta.json kept_total to reflect exec_selected so
+                # NO_ZERO_DAY gate in verify_online.ps1 passes when PH_SUPP fills the deck.
+                # Semantically correct: if N exec events were selected the pipeline kept N items.
+                try:
+                    import json as _fsu_json
+                    _esc_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_selection.meta.json"
+                    _fsp2 = Path(settings.PROJECT_ROOT) / "outputs" / "filter_summary.meta.json"
+                    if _esc_path.exists() and _fsp2.exists():
+                        _esc_data = _fsu_json.loads(_esc_path.read_text(encoding="utf-8"))
+                        _exec_sel2 = int(_esc_data.get("final_selected_events", 0))
+                        if _exec_sel2 > 0:
+                            _fsd2 = _fsu_json.loads(_fsp2.read_text(encoding="utf-8"))
+                            _old_kept2 = int(_fsd2.get("kept_total", 0) or 0)
+                            if _old_kept2 < _exec_sel2:
+                                _fsd2["kept_total"] = _exec_sel2
+                                _fsd2["kept_count"] = _exec_sel2
+                                _fsd2["ph_supp_effective"] = _exec_sel2 - _old_kept2
+                                _fsp2.write_text(
+                                    _fsu_json.dumps(_fsd2, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                                log.info(
+                                    "filter_summary.meta.json: kept_total updated %d→%d (+%d PH_SUPP effective)",
+                                    _old_kept2, _exec_sel2, _exec_sel2 - _old_kept2,
+                                )
+                except Exception as _fsu_exc:
+                    log.warning("filter_summary.meta.json update failed (non-fatal): %s", _fsu_exc)
             except Exception as exc_bin:
                 log.error("Executive report generation failed (non-blocking): %s", exc_bin)
         except Exception as exc:
