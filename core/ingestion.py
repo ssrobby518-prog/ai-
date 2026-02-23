@@ -9,6 +9,7 @@ import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime as _rss_parsedate  # Fix-2: stdlib RFC-2822 fallback
 
 import feedparser
 import requests
@@ -236,24 +237,50 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
     cutoff = datetime.now(UTC) - timedelta(hours=settings.NEWER_THAN_HOURS)
     result: list[RawItem] = []
     gate_candidates: list[RawItem] = []
+    _lang_extended: list[RawItem] = []  # Fix-1: demoted non-zh/en items (extended pool)
     summary = FilterSummary(input_count=len(items))
 
     for item in items:
-        # Time filter
-        if item.published_at:
+        # Fix-2: Time filter — try ISO first, then RFC-2822 via email.utils, then
+        # fall back to collected_at; always normalise to UTC.
+        _pub_dt: datetime | None = None
+        _pub_str = item.published_at or ""
+        if _pub_str:
             try:
-                pub_dt = datetime.fromisoformat(item.published_at)
-                if pub_dt < cutoff:
-                    summary.dropped_by_reason["too_old"] = summary.dropped_by_reason.get("too_old", 0) + 1
-                    continue
+                _pub_dt = datetime.fromisoformat(_pub_str)
             except ValueError:
-                pass  # keep items with unparseable dates
+                try:
+                    _pub_dt = _rss_parsedate(_pub_str)
+                except Exception:
+                    _pub_dt = None
+            if _pub_dt is not None:
+                if _pub_dt.tzinfo is None:
+                    _pub_dt = _pub_dt.replace(tzinfo=UTC)
+                else:
+                    _pub_dt = _pub_dt.astimezone(UTC)
+        # collected_at fallback when published_at is absent or unparseable (Fix-2)
+        if _pub_dt is None:
+            _collected_str = str(getattr(item, "z0_collected_at", "") or "")
+            if _collected_str:
+                try:
+                    _pub_dt = datetime.fromisoformat(_collected_str)
+                    if _pub_dt.tzinfo is None:
+                        _pub_dt = _pub_dt.replace(tzinfo=UTC)
+                    else:
+                        _pub_dt = _pub_dt.astimezone(UTC)
+                except Exception:
+                    _pub_dt = None
+        if _pub_dt is not None and _pub_dt < cutoff:
+            summary.dropped_by_reason["too_old"] = summary.dropped_by_reason.get("too_old", 0) + 1
+            continue
 
-        # Language filter
+        # Fix-1: Language filter — demote non-zh/en to extended pool instead of dropping.
+        # English must always be kept; lang gate is preserved (not removed).
         if settings.ALLOW_LANG:
             detected = _detect_lang(item.title + " " + item.body[:200])
             if detected and detected not in settings.ALLOW_LANG:
                 summary.dropped_by_reason["lang_not_allowed"] = summary.dropped_by_reason.get("lang_not_allowed", 0) + 1
+                _lang_extended.append(item)  # demote; may be promoted later if pool < 6
                 continue
 
         # Keyword filter (if configured, at least one keyword must appear)
@@ -263,17 +290,30 @@ def filter_items(items: list[RawItem]) -> tuple[list[RawItem], FilterSummary]:
                 summary.dropped_by_reason["keyword_mismatch"] = summary.dropped_by_reason.get("keyword_mismatch", 0) + 1
                 continue
 
-        # Min body length — G1 dual threshold (Iter 6.5):
-        # social/optional platforms require a longer body to avoid low-quality snippets;
-        # main-pool sources accept shorter release notes / abstracts (>= 220 chars).
-        _z0_platform = getattr(item, "z0_platform", "") or ""
-        _is_social = _z0_platform in settings.SOCIAL_OPTIONAL_PLATFORMS
-        _min_body = settings.MIN_BODY_LENGTH_SOCIAL if _is_social else settings.MIN_BODY_LENGTH_MAIN
-        if len(item.body) < _min_body:
+        # Fix-3: body_too_short — use fulltext_len (post-hydration) >= 300 as pool threshold.
+        # fulltext_len >= 800 is reserved for KPI (strict_fulltext_ok); NOT used here to kill items.
+        _ft_len = int(getattr(item, "fulltext_len", 0) or 0)
+        _eff_len = max(_ft_len, len(item.body))
+        if _eff_len < 300:
             summary.dropped_by_reason["body_too_short"] = summary.dropped_by_reason.get("body_too_short", 0) + 1
             continue
 
         gate_candidates.append(item)
+
+    # Fix-1: Supplement from _lang_extended when strict pool < 6.
+    # Rank by frontier score (Z0) then body length; only add what is needed.
+    _STRICT_POOL_MIN = 6
+    if len(gate_candidates) < _STRICT_POOL_MIN and _lang_extended:
+        _lang_ext_sorted = sorted(
+            _lang_extended,
+            key=lambda x: (
+                int(getattr(x, "z0_frontier_score", 0) or 0),
+                max(int(getattr(x, "fulltext_len", 0) or 0), len(getattr(x, "body", "") or "")),
+            ),
+            reverse=True,
+        )
+        _needed_ext = _STRICT_POOL_MIN - len(gate_candidates)
+        gate_candidates.extend(_lang_ext_sorted[:_needed_ext])
 
     # Split content gates (event vs signal) after hard quality filters.
     event_candidates, signal_pool, _rejected_map, gate_stats = apply_split_content_gate(

@@ -36,7 +36,9 @@ $filesToRemove = @(
     "outputs\executive_report.docx",
     "outputs\executive_report.pptx",
     "outputs\notion_page.md",
-    "outputs\mindmap.xmind"
+    "outputs\mindmap.xmind",
+    "outputs\NOT_READY.md",
+    "outputs\pool_sufficiency.meta.json"
 )
 foreach ($f in $filesToRemove) {
     if (Test-Path $f) {
@@ -60,6 +62,18 @@ if ($exitCode -ne 0) {
     exit 1
 }
 Write-Host "  Pipeline succeeded" -ForegroundColor Green
+
+# Fix-5: NOT_READY gate — if pipeline wrote NOT_READY.md it could not select 6 events.
+# Both verify_run and verify_online must FAIL when this file exists.
+$notReadyPath = "outputs\NOT_READY.md"
+if (Test-Path $notReadyPath) {
+    Write-Host "" -ForegroundColor Red
+    Write-Host "NOT_READY GATE: FAIL" -ForegroundColor Red
+    Write-Host "  NOT_READY.md exists — pipeline selected < 6 events." -ForegroundColor Red
+    Write-Host "  Contents: $((Get-Content $notReadyPath -Raw -Encoding UTF8).Trim())" -ForegroundColor Red
+    Write-Host "  Fix: re-run after improving Z0 collection quality." -ForegroundColor Yellow
+    exit 1
+}
 
 # 3) Verify FILTER_SUMMARY exists in log
 Write-Host "`n[3/9] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow

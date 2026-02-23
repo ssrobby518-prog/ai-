@@ -5080,8 +5080,23 @@ def select_executive_items(
         "candidates_total": 0, "selected_total": 0, "selected_ids": [],
         "triggered": False, "note": "quota_met_by_primary_pool", "extra_pool_selected": 0,
     }
+
+    # Fix-4: Compute KPI from the FINAL selected list — not from any intermediate slice.
+    # strict_fulltext_ok counts cards where fulltext_len >= 800 chars.
+    strict_fulltext_ok = sum(
+        1 for c in selected
+        if int(getattr(c, "fulltext_len", 0) or 0) >= 800
+    )
+    fallback_used = _any_backfill_fired or sparse_day or any(
+        bool(getattr(c, "backfill_pass", False)) or bool(getattr(c, "signal_soft_pass", False))
+        for c in selected
+    )
+
     selection_meta: dict = {
         "events_total": len(selected),
+        "final_selected_events": len(selected),   # Fix-4: explicit KPI field
+        "strict_fulltext_ok": strict_fulltext_ok,  # Fix-4: counted from final selected
+        "fallback_used": fallback_used,            # Fix-4: for POOL_SUFFICIENCY OK path
         "events_by_bucket": dict(by_bucket),
         "pre_backfill_by_bucket": _pre_backfill_by_bucket,
         "rejected_irrelevant_count": len(rejected_irrelevant),
@@ -5097,7 +5112,12 @@ def select_executive_items(
 
 
 def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) -> None:
-    """Write exec_selection.meta.json to outputs/ — non-breaking side effect."""
+    """Write exec_selection.meta.json to outputs/ — non-breaking side effect.
+
+    Also writes pool_sufficiency.meta.json for the POOL_SUFFICIENCY gate and
+    creates/removes NOT_READY.md depending on whether 6 events were selected.
+    Fix-4 + Fix-5.
+    """
     import json
     from pathlib import Path
 
@@ -5109,6 +5129,40 @@ def write_exec_selection_meta(meta: dict, project_root: "Path | None" = None) ->
             json.dumps(meta, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+        # Fix-4: Write pool_sufficiency.meta.json
+        final_selected = int(meta.get("final_selected_events", meta.get("events_total", 0)))
+        strict_ok      = int(meta.get("strict_fulltext_ok", 0))
+        fallback_used  = bool(meta.get("fallback_used", False))
+        if final_selected >= 6 and strict_ok >= 4:
+            pool_status = "PASS"
+        elif final_selected >= 6 and strict_ok < 4 and fallback_used:
+            pool_status = "OK"
+        else:
+            pool_status = "FAIL"
+        pool_meta = {
+            "final_selected_events": final_selected,
+            "strict_fulltext_ok":    strict_ok,
+            "fallback_used":         fallback_used,
+            "pool_sufficiency_status": pool_status,
+        }
+        (out_dir / "pool_sufficiency.meta.json").write_text(
+            json.dumps(pool_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # Fix-5: Write NOT_READY.md when events < 6; remove it when events >= 6.
+        not_ready_path = out_dir / "NOT_READY.md"
+        if final_selected < 6:
+            not_ready_path.write_text(
+                f"# NOT_READY\n\nPipeline could not select 6 events.\n"
+                f"final_selected_events={final_selected}\n"
+                f"strict_fulltext_ok={strict_ok}\n",
+                encoding="utf-8",
+            )
+        else:
+            if not_ready_path.exists():
+                not_ready_path.unlink()
     except Exception:
         pass  # audit write must never break the pipeline
 
