@@ -3740,6 +3740,18 @@ def _v525_extract_signal_snippet(card: EduNewsCard) -> str:
 # Backfill fulltext hydration — targeted re-fetch for executive candidate pool
 # ---------------------------------------------------------------------------
 _ft_hydrate_cache: dict[str, int] = {}  # url → fulltext_len; cleared only at process exit
+_item_url_registry: dict[str, str] = {}  # item_id → original article URL
+
+
+def register_item_urls(id_url_pairs: "list[tuple[str, str]]") -> None:
+    """Register item_id → URL mappings so _backfill_hydrate can find URLs even when
+    the EduNewsCard.source_url is set to a source name instead of an article URL
+    (which happens when _build_card_from_structured sets source_url=a.source_id).
+    Call this from run_once.py before generate_executive_reports().
+    """
+    for iid, url in id_url_pairs:
+        if iid and url and url.startswith("http"):
+            _item_url_registry[iid] = url
 
 
 def _backfill_hydrate(candidates: "list[EduNewsCard]", max_try: int = 20) -> dict:
@@ -3777,6 +3789,13 @@ def _backfill_hydrate(candidates: "list[EduNewsCard]", max_try: int = 20) -> dic
             continue
 
         tried += 1
+        if not url or not url.startswith("http"):
+            # Fallback: look up original article URL by item_id from registry.
+            # Needed because _build_card_from_structured sets source_url = source name
+            # (e.g. "TechCrunch AI"), not the actual article URL.
+            _iid = str(getattr(card, "item_id", "") or "").strip()
+            if _iid:
+                url = _item_url_registry.get(_iid, "")
         if not url or not url.startswith("http"):
             records.append({"title": title, "source": source_name,
                             "final_url": url or "", "fulltext_len": current_ft_len,

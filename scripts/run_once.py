@@ -14,6 +14,7 @@ from core.content_strategy import (
     build_corp_watch_summary,
     build_signal_summary,
     is_non_event_or_index,
+    register_item_urls,
 )
 from core.deep_analyzer import analyze_batch
 from core.deep_delivery import write_deep_analysis
@@ -624,6 +625,14 @@ def run_pipeline() -> None:
             )
             edu_paths = write_education_reports(notion_md, ppt_md, xmind_md)
             log.info("Z5: 教育版報告已生成 → %s", [str(p) for p in edu_paths])
+
+            # Register item_id → URL so _backfill_hydrate can resolve cards whose
+            # source_url was set to a source name (e.g. "TechCrunch AI") by
+            # _build_card_from_structured in education_renderer.py.
+            register_item_urls(
+                [(str(getattr(it, "item_id", "") or ""), str(getattr(it, "url", "") or ""))
+                 for it in list(processing_items) + list(signal_pool)]
+            )
 
             # Generate executive output files (PPTX + DOCX + Notion + XMind)
             try:
