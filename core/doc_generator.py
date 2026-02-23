@@ -46,6 +46,18 @@ from utils.hybrid_glossing import (
     normalize_exec_text as _doc_norm_gloss,
     load_glossary as _doc_load_glossary,
 )
+try:
+    from utils.text_final_sanitizer import final_sanitize as _doc_final_san
+except Exception:
+    _doc_final_san = None  # type: ignore
+
+
+def _san(text: str) -> str:
+    """content_strategy sanitize + text_final_sanitizer final_sanitize (BAN_SCAN gate)."""
+    result = sanitize(text)
+    if _doc_final_san:
+        result = _doc_final_san(result)
+    return result
 
 # Glossary loaded once at module level (cached inside hybrid_glossing)
 _DOC_GLOSSARY: dict = _doc_load_glossary()
@@ -296,27 +308,27 @@ def _build_news_card_section(doc: Document, card: EduNewsCard, idx: int) -> None
     # 2. Known facts
     facts = article.get("known_facts", [])
     if facts:
-        _add_callout(doc, "已知事實", [f"• {sanitize(f)}" for f in facts[:3]])
+        _add_callout(doc, "已知事實", [f"• {_san(f)}" for f in facts[:3]])
 
     # 3. Why it matters
     why_parts = article.get("why_it_matters", [])
     if why_parts:
-        _add_callout(doc, "為什麼重要", [f"• {sanitize(w)}" for w in why_parts[:3]])
+        _add_callout(doc, "為什麼重要", [f"• {_san(w)}" for w in why_parts[:3]])
 
     # 4. Possible impact
     impacts = article.get("possible_impact", [])
     if impacts:
-        _add_callout(doc, "可能影響", [f"• {sanitize(imp)}" for imp in impacts[:3]])
+        _add_callout(doc, "可能影響", [f"• {_san(imp)}" for imp in impacts[:3]])
 
     # 5. Risks
     risks = article.get("risks", [])
     if risks:
-        _add_callout(doc, "主要風險", [f"• {sanitize(r)}" for r in risks[:2]])
+        _add_callout(doc, "主要風險", [f"• {_san(r)}" for r in risks[:2]])
 
     # 6. What to do
     actions = article.get("what_to_do", [])
     if actions:
-        _add_callout(doc, "建議下一步", [f"• {sanitize(a)}" for a in actions[:2]])
+        _add_callout(doc, "建議下一步", [f"• {_san(a)}" for a in actions[:2]])
 
     # 7. Quote
     if article.get("quote"):

@@ -602,7 +602,7 @@ def _fallback_derivable_effects(r: MergedResult) -> list[str]:
     # Second key_point as additional effect source
     if len(kps) > 1:
         second_fact = kps[1][:80]
-        effects.append(f"「{second_fact}」將驅動相關方重新評估現有策略與資源配置")
+        effects.append(f"「{second_fact}」將驅動相關方重新評估當前策略與資源分配")
 
     if b.heat >= 7:
         effects.append(f"高關注度（熱度 {b.heat:.0f}）將促使同業加速跟進或發表回應")
