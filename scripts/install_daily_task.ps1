@@ -130,6 +130,17 @@ Write-Host "=== Task installed successfully ===" -ForegroundColor Green
 Write-Host ("  '{0}' fires at {1} local (= 09:00 Beijing)" -f $taskName, $triggerTime)
 Write-Host ("  Next run (Beijing): {0}" -f $nextRunBj)
 Write-Host ""
-Write-Host "  To verify  : schtasks /Query /TN $taskName"
 Write-Host "  To run now : schtasks /Run /TN $taskName"
 Write-Host "  To uninstall: powershell -ExecutionPolicy Bypass -File scripts\uninstall_daily_task.ps1"
+Write-Host ""
+
+# ---------------------------------------------------------------------------
+# Self-check: verify task was created and show full detail
+# ---------------------------------------------------------------------------
+Write-Host "=== Self-check: schtasks /Query ===" -ForegroundColor Cyan
+schtasks /Query /TN $taskName /V /FO LIST
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ("WARN: schtasks /Query returned exit {0} — task may not be visible yet." -f $LASTEXITCODE) -ForegroundColor Yellow
+} else {
+    Write-Host "Self-check: task found in Task Scheduler." -ForegroundColor Green
+}

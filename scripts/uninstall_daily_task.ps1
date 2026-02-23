@@ -36,6 +36,18 @@ if (Test-Path $metaPath) {
     } catch {}
 }
 
+# Compute next 09:00 Beijing for the meta (so gate can read valid next_run after uninstall)
+$uninstNextRunBj = ""
+try {
+    $uninstCz     = [System.TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")
+    $uninstNowCst = [System.TimeZoneInfo]::ConvertTimeFromUtc([System.DateTime]::UtcNow, $uninstCz)
+    $uninstT09    = [System.DateTime]::new($uninstNowCst.Year, $uninstNowCst.Month, $uninstNowCst.Day, 9, 0, 0)
+    if ($uninstNowCst -ge $uninstT09) { $uninstT09 = $uninstT09.AddDays(1) }
+    $uninstNextRunBj = $uninstT09.ToString("yyyy-MM-ddTHH:mm:ss") + "+08:00"
+} catch {
+    $uninstNextRunBj = "(unknown)"
+}
+
 $meta = [ordered]@{
     generated_at         = (Get-Date -Format "o")
     timezone             = "Asia/Shanghai"
@@ -45,7 +57,7 @@ $meta = [ordered]@{
     trigger_time_local   = if ($existing_meta -and $existing_meta.PSObject.Properties['trigger_time_local']) { $existing_meta.trigger_time_local } else { $null }
     trigger_tz_source    = if ($existing_meta -and $existing_meta.PSObject.Properties['trigger_tz_source'])  { $existing_meta.trigger_tz_source }  else { $null }
     last_run             = if ($existing_meta -and $existing_meta.PSObject.Properties['last_run'])           { $existing_meta.last_run }           else { $null }
-    next_run_at_beijing  = $null
+    next_run_at_beijing  = $uninstNextRunBj
     script_path          = if ($existing_meta -and $existing_meta.PSObject.Properties['script_path'])        { $existing_meta.script_path }        else { $null }
     uninstalled_at       = (Get-Date -Format "o")
 }
