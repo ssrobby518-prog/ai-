@@ -634,10 +634,15 @@ def run_pipeline() -> None:
         )[:50]
         if _ph_supp_items:
             _ph_supp_cards = _build_soft_quality_cards_from_filtered(_ph_supp_items)
-            for _phc in _ph_supp_cards:
+            for _phc, _ph_it in zip(_ph_supp_cards, _ph_supp_items):
                 try:
                     setattr(_phc, "event_gate_pass", True)
                     setattr(_phc, "signal_gate_pass", True)
+                    # Extend what_happened with more article text so anchor extraction
+                    # (news_anchor.meta.json) finds numbers/company names in abstract.
+                    _ph_ft = str(getattr(_ph_it, "full_text", "") or "").strip()
+                    if len(_ph_ft) > 500:
+                        setattr(_phc, "what_happened", _ph_ft[:2000])
                 except Exception:
                     pass
             z0_exec_extra_cards = list(z0_exec_extra_cards) + _ph_supp_cards
