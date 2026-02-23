@@ -1271,6 +1271,62 @@ if (Test-Path $voDbPath) {
 }
 
 # ---------------------------------------------------------------------------
+# DESKTOP_SHORTCUT GATE — Stage 4 (Iteration 10)
+#   Reads the .lnk shortcut from the current user's Desktop via WScript.Shell.
+#   Three-tier gate:
+#     PASS    : shortcut exists + TargetPath is powershell.exe + Arguments contain
+#               run_pipeline.ps1 absolute path AND -Mode manual AND -AutoOpen true,
+#               AND does NOT point to open_latest or outputs\latest
+#     WARN-OK : shortcut not found (not yet installed; non-fatal)
+#     FAIL    : shortcut exists but TargetPath or Arguments are wrong (printed as FAIL)
+# ---------------------------------------------------------------------------
+$voLnkName  = "AIIntelScraper_Run_MVP.lnk"
+$voDesktop  = [Environment]::GetFolderPath("Desktop")
+$voLnkPath  = Join-Path $voDesktop $voLnkName
+$voRpScript = Join-Path $repoRoot "scripts\run_pipeline.ps1"
+
+Write-Output ""
+Write-Output "DESKTOP_SHORTCUT:"
+if (Test-Path $voLnkPath) {
+    try {
+        $voWsh     = New-Object -ComObject WScript.Shell
+        $voLnk     = $voWsh.CreateShortcut($voLnkPath)
+        $voLnkTgt  = [string]$voLnk.TargetPath
+        $voLnkArgs = [string]$voLnk.Arguments
+        Write-Output ("  shortcut_path : {0}" -f $voLnkPath)
+        Write-Output ("  target_path   : {0}" -f $voLnkTgt)
+        Write-Output ("  arguments     : {0}" -f $voLnkArgs)
+
+        $voTgtOk   = $voLnkTgt  -ilike "*powershell.exe"
+        $voArgPipe = $voLnkArgs -ilike "*run_pipeline.ps1*"
+        $voArgMode = $voLnkArgs -ilike "*-Mode manual*"
+        $voArgOpen = $voLnkArgs -ilike "*-AutoOpen true*"
+        $voArgBad  = ($voLnkArgs -ilike "*open_latest*" -or
+                      $voLnkArgs -ilike "*outputs\latest*" -or
+                      $voLnkTgt  -ilike "*open_latest*")
+
+        Write-Output ""
+        if ($voTgtOk -and $voArgPipe -and $voArgMode -and $voArgOpen -and -not $voArgBad) {
+            Write-Output "  => DESKTOP_SHORTCUT: PASS (target=powershell.exe  run_pipeline=yes  -Mode manual  -AutoOpen true)"
+        } else {
+            $voShortFailReasons = @()
+            if (-not $voTgtOk)   { $voShortFailReasons += "target_not_powershell" }
+            if (-not $voArgPipe) { $voShortFailReasons += "run_pipeline_missing_from_args" }
+            if (-not $voArgMode) { $voShortFailReasons += "-Mode_manual_missing" }
+            if (-not $voArgOpen) { $voShortFailReasons += "-AutoOpen_true_missing" }
+            if ($voArgBad)       { $voShortFailReasons += "points_to_open_latest_or_outputs_latest" }
+            Write-Output ("  => DESKTOP_SHORTCUT: FAIL ({0})" -f ($voShortFailReasons -join ", "))
+        }
+    } catch {
+        Write-Output ("  => DESKTOP_SHORTCUT: WARN-OK (read error: {0})" -f $_)
+    }
+} else {
+    Write-Output ("  shortcut_path : {0} (not found)" -f $voLnkPath)
+    Write-Output ""
+    Write-Output "  => DESKTOP_SHORTCUT: WARN-OK (shortcut not installed; run scripts\install_desktop_button.ps1)"
+}
+
+# ---------------------------------------------------------------------------
 # SCHEDULER GATE — Stage 4 (Iteration 9b)
 #   Three-tier gate:
 #     PASS    : meta fields complete + installed=true + schtasks /Query finds task

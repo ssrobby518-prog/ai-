@@ -10,7 +10,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
 # Generate run_id = YYYYMMDD_HHMMSS (Beijing time if possible, else local)
