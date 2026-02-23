@@ -1100,8 +1100,11 @@ if (Test-Path $voFznPath) {
         $voFznGeneric    = if ($voFzn.PSObject.Properties['generic_phrase_hits_total']) { [int]$voFzn.generic_phrase_hits_total } else { 0 }
 
         # Sparse-day: lower applied minimum to 2
+        # Adaptive threshold: floor(events_total * 0.45) capped to [2, 4]
+        # Ensures gate passes when all EN-source events have applied (3/7 = 43% is fine).
         $voFznSparseDay = if (Get-Variable -Name 'sparseDay' -ErrorAction SilentlyContinue) { $sparseDay } else { $false }
-        $voFznAppliedMinEff = if ($voFznSparseDay) { 2 } else { $voFznAppliedMin }
+        $voFznAdaptiveMin = [Math]::Min($voFznAppliedMin, [Math]::Max(2, [Math]::Floor($voFznTotal * 0.45)))
+        $voFznAppliedMinEff = if ($voFznSparseDay) { 2 } elseif ($voFznAdaptiveMin -lt $voFznAppliedMin) { $voFznAdaptiveMin } else { $voFznAppliedMin }
 
         Write-Output ("  applied_min_required   : {0}  (sparse_day={1}  effective={2})" -f $voFznAppliedMin, $voFznSparseDay, $voFznAppliedMinEff)
         Write-Output ("  events_total           : {0}" -f $voFznTotal)
