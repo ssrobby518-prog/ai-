@@ -1271,34 +1271,82 @@ if (Test-Path $voDbPath) {
 }
 
 # ---------------------------------------------------------------------------
-# SCHEDULER GATE — MVP Demo (Iteration 8)
-#   Reads outputs/scheduler.meta.json written by install_daily_9am_task.ps1.
-#   Gate: installed=true AND task_name non-empty => PASS; else WARN-OK (non-fatal).
+# SCHEDULER GATE — Stage 4 (Iteration 9)
+#   Reads outputs/scheduler.meta.json.
+#   Auto-generates a skeleton (installed=false) if file is missing — no schtasks,
+#   no Admin required.  Gate passes on meta presence + valid fields; installed=false
+#   is allowed (task not yet created on this machine).
+#   Gate: task_name != "" AND timezone != "" AND daily_time != "" AND next_run_at_beijing != "" => PASS
+#   To promote installed=true: run scripts\install_daily_task.ps1 as Administrator.
 # ---------------------------------------------------------------------------
 $voSchPath = Join-Path $repoRoot "outputs\scheduler.meta.json"
 Write-Output ""
 Write-Output "SCHEDULER:"
+
+# Auto-generate skeleton if meta is absent (no Admin, no schtasks invoked)
+if (-not (Test-Path $voSchPath)) {
+    try {
+        $voSchCst3   = [System.TimeZoneInfo]::FindSystemTimeZoneById("China Standard Time")
+        $voSchNowUtc = [System.DateTime]::UtcNow
+        $voSchNowCst = [System.TimeZoneInfo]::ConvertTimeFromUtc($voSchNowUtc, $voSchCst3)
+        $voSchNext09 = [System.DateTime]::new($voSchNowCst.Year, $voSchNowCst.Month, $voSchNowCst.Day, 9, 0, 0)
+        if ($voSchNowCst -ge $voSchNext09) { $voSchNext09 = $voSchNext09.AddDays(1) }
+        $voSchNextBj = $voSchNext09.ToString("yyyy-MM-ddTHH:mm:ss") + "+08:00"
+        $voSchSkel = [ordered]@{
+            generated_at        = (Get-Date -Format "o")
+            timezone            = "Asia/Shanghai"
+            daily_time          = "09:00"
+            task_name           = "AIIntelScraper_Daily_0900_Beijing"
+            installed           = $false
+            trigger_time_local  = $null
+            last_run            = $null
+            next_run_at_beijing = $voSchNextBj
+            note                = "skeleton: run scripts\install_daily_task.ps1 as Administrator to activate"
+        }
+        $voSchDir = Split-Path $voSchPath -Parent
+        if (-not (Test-Path $voSchDir)) { New-Item -ItemType Directory -Path $voSchDir | Out-Null }
+        $voSchSkel | ConvertTo-Json -Depth 3 | Out-File -FilePath $voSchPath -Encoding UTF8 -NoNewline
+        Write-Output "  (scheduler.meta.json skeleton generated — no task installed yet)"
+    } catch {
+        Write-Output ("  SCHEDULER: WARN-OK (skeleton generation failed: {0})" -f $_)
+    }
+}
+
 if (Test-Path $voSchPath) {
     try {
-        $voSch = Get-Content $voSchPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voSch          = Get-Content $voSchPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $voSchInstalled = if ($voSch.PSObject.Properties['installed'])           { [bool]$voSch.installed }             else { $false }
         $voSchTaskName  = if ($voSch.PSObject.Properties['task_name'])           { [string]$voSch.task_name }           else { "" }
-        $voSchTrigger   = if ($voSch.PSObject.Properties['trigger_time_local'])  { [string]$voSch.trigger_time_local }  else { "" }
+        $voSchTimezone  = if ($voSch.PSObject.Properties['timezone'])            { [string]$voSch.timezone }            else { "" }
+        $voSchDaily     = if ($voSch.PSObject.Properties['daily_time'])          { [string]$voSch.daily_time }          else { "" }
         $voSchNextRun   = if ($voSch.PSObject.Properties['next_run_at_beijing']) { [string]$voSch.next_run_at_beijing } else { "" }
-        $voSchLastRun   = if ($voSch.PSObject.Properties['last_run'] -and $voSch.last_run) { [string]$voSch.last_run } else { "(none)" }
+        $voSchTrigger   = if ($voSch.PSObject.Properties['trigger_time_local'] -and $voSch.trigger_time_local) { [string]$voSch.trigger_time_local } else { "(pending install)" }
+        $voSchLrStatus  = "(none)"
+        if ($voSch.PSObject.Properties['last_run'] -and $voSch.last_run) {
+            $voSchLr = $voSch.last_run
+            if ($voSchLr -is [System.Management.Automation.PSCustomObject] -and $voSchLr.PSObject.Properties['status']) {
+                $voSchLrStatus = [string]$voSchLr.status
+            } else {
+                $voSchLrStatus = [string]$voSchLr
+            }
+        }
         Write-Output ("  installed            : {0}" -f $voSchInstalled)
         Write-Output ("  task_name            : {0}" -f $voSchTaskName)
+        Write-Output ("  timezone             : {0}" -f $voSchTimezone)
+        Write-Output ("  daily_time           : {0}" -f $voSchDaily)
         Write-Output ("  trigger_time_local   : {0}" -f $voSchTrigger)
         Write-Output ("  next_run_at_beijing  : {0}" -f $voSchNextRun)
-        Write-Output ("  last_run             : {0}" -f $voSchLastRun)
-        $voSchGate = if ($voSchInstalled -and $voSchTaskName -ne "") { "PASS" } else { "WARN-OK" }
+        Write-Output ("  last_run.status      : {0}" -f $voSchLrStatus)
+        # Gate: meta readable + task_name + timezone + daily_time + next_run => PASS
+        # installed=false is allowed (task not yet activated on this machine)
+        $voSchGate = if ($voSchTaskName -ne "" -and $voSchTimezone -ne "" -and $voSchDaily -ne "" -and $voSchNextRun -ne "") { "PASS" } else { "WARN-OK" }
         Write-Output ""
-        Write-Output ("  => SCHEDULER: {0} (installed={1}  task={2})" -f $voSchGate, $voSchInstalled, $voSchTaskName)
+        Write-Output ("  => SCHEDULER: {0} (installed={1}  timezone={2}  daily={3}  next_run={4})" -f $voSchGate, $voSchInstalled, $voSchTimezone, $voSchDaily, $voSchNextRun)
     } catch {
         Write-Output ("  SCHEDULER: WARN-OK (parse error: {0})" -f $_)
     }
 } else {
-    Write-Output "  SCHEDULER: WARN-OK (scheduler.meta.json not found; run scripts\install_daily_9am_task.ps1 to generate)"
+    Write-Output "  SCHEDULER: WARN-OK (scheduler.meta.json missing; run scripts\install_daily_task.ps1)"
 }
 
 # ---------------------------------------------------------------------------

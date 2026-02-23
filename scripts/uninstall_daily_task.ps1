@@ -37,12 +37,15 @@ if (Test-Path $metaPath) {
 }
 
 $meta = [ordered]@{
+    generated_at         = (Get-Date -Format "o")
+    timezone             = "Asia/Shanghai"
+    daily_time           = "09:00"
     task_name            = $taskName
     installed            = $false
     trigger_time_local   = if ($existing_meta -and $existing_meta.PSObject.Properties['trigger_time_local']) { $existing_meta.trigger_time_local } else { $null }
     trigger_tz_source    = if ($existing_meta -and $existing_meta.PSObject.Properties['trigger_tz_source'])  { $existing_meta.trigger_tz_source }  else { $null }
-    next_run_at_beijing  = $null
     last_run             = if ($existing_meta -and $existing_meta.PSObject.Properties['last_run'])           { $existing_meta.last_run }           else { $null }
+    next_run_at_beijing  = $null
     script_path          = if ($existing_meta -and $existing_meta.PSObject.Properties['script_path'])        { $existing_meta.script_path }        else { $null }
     uninstalled_at       = (Get-Date -Format "o")
 }

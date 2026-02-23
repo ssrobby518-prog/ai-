@@ -1,6 +1,13 @@
 # FILE: scripts\run_pipeline.ps1
 # Desktop-button entry point: runs the real pipeline (run_once.py),
 # writes outputs/desktop_button.meta.json, opens latest output on success.
+# Params:
+#   -Mode     manual|daily   (default: manual; Task Scheduler passes "daily")
+#   -AutoOpen true|false     (default: true;   Task Scheduler passes "false" to suppress UI)
+param(
+    [string]$Mode     = "manual",
+    [string]$AutoOpen = "true"
+)
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -40,8 +47,9 @@ $MetaObj = [ordered]@{
 $MetaObj | ConvertTo-Json -Depth 3 | Out-File -FilePath $MetaPath -Encoding UTF8 -NoNewline
 Write-Host ("desktop_button.meta.json written: exit_code={0}" -f $ExitCode)
 
-if ($ExitCode -eq 0) {
+if ($ExitCode -eq 0 -and $AutoOpen -ne "false") {
     # Open latest output (try open_latest.ps1, fallback to open_ppt.ps1)
+    # Suppressed when -AutoOpen false (e.g. scheduled/headless runs)
     $OpenLatest = Join-Path $RepoRoot "scripts\open_latest.ps1"
     $OpenPpt    = Join-Path $RepoRoot "scripts\open_ppt.ps1"
     if (Test-Path $OpenLatest) {
