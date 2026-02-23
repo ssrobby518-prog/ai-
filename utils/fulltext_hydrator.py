@@ -11,6 +11,7 @@ stdlib only: urllib.request, html.parser, re, concurrent.futures, json, pathlib
 """
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -197,6 +198,40 @@ def _extract_text(html: str) -> str:
     return text[:MAX_BODY_CHARS]
 
 
+def _decode_gnews_rss_url(url: str) -> str:
+    """Decode actual publisher URL from a GNews RSS base64-encoded article URL.
+
+    GNews RSS links (news.google.com/rss/articles/CBMi...) embed the publisher URL
+    in a base64url-encoded protobuf payload.  Python urllib cannot follow the JS
+    redirect on the GNews landing page, but we can extract the URL directly from
+    the binary payload without any HTTP request.
+
+    Returns the decoded publisher URL, or "" if decoding fails.
+    """
+    try:
+        m = re.search(r'/rss/articles/([^?&#\s]+)', url)
+        if not m:
+            return ""
+        encoded = m.group(1)
+        # Normalize base64url → base64, add padding
+        encoded = encoded.replace('-', '+').replace('_', '/')
+        padding = 4 - len(encoded) % 4
+        if padding != 4:
+            encoded += '=' * padding
+        decoded = base64.b64decode(encoded)
+        # The publisher URL is embedded as a UTF-8 string in the binary protobuf.
+        # Scan for "https://" or "http://" sequence in the decoded bytes.
+        found = re.search(rb'https?://[^\x00-\x1f\x80-\xff]{15,}', decoded)
+        if found:
+            candidate = found.group(0).decode('ascii', errors='replace').rstrip('\\')
+            # Basic sanity: must be a real URL, not a google domain
+            if candidate.startswith('http') and 'google.com' not in candidate[:30]:
+                return candidate
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_google_news_url(html: str) -> str | None:
     """Extract publisher URL from Google News HTML."""
     parser = _ArticleParser()
@@ -273,9 +308,11 @@ def hydrate_fulltext(url: str, timeout_s: int = 8) -> dict:
         result["final_url"] = final_url
         elapsed = time.monotonic() - t0
 
-        # Phase 2: if still on Google domain, resolve to publisher
+        # Phase 2: if still on Google domain, resolve to publisher.
+        # First try direct base64 decode (avoids JS-redirect issue on GNews pages);
+        # fall back to HTML-based extraction if that fails.
         if _is_google_domain(final_url):
-            publisher_url = _resolve_google_news_url(html)
+            publisher_url = _decode_gnews_rss_url(url) or _resolve_google_news_url(html)
             remaining = max(1.0, timeout_s - elapsed - 0.5)
             if publisher_url and remaining > 1:
                 try:
@@ -337,7 +374,7 @@ def hydrate_items_batch(
     items: list,
     timeout_s: int = 8,
     max_workers: int = 4,
-    batch_timeout: int = 60,
+    batch_timeout: int = 120,
 ) -> list:
     """
     Hydrate all items with full article text in parallel.
@@ -370,7 +407,23 @@ def hydrate_items_batch(
             setattr(item, "final_url", "")
             setattr(item, "fulltext_reason", "no_url")
 
-    unique_urls = list(url_to_items.keys())
+    # Sort URLs: process direct article sources first (iThome, Bloomberg, HuggingFace etc.)
+    # before GNews/GitHub/arXiv which historically return short or unextractable content.
+    # This ensures high-value direct-article URLs complete within batch_timeout budget.
+    def _url_priority(u: str) -> int:
+        try:
+            netloc = urlparse(u).netloc.lower().lstrip("www.")
+        except Exception:
+            netloc = ""
+        if netloc in ("news.google.com", "google.com"):
+            return 3  # GNews: JS redirects, usually extract_too_short
+        if "github.com" in netloc:
+            return 2  # GitHub: short release notes
+        if "arxiv.org" in netloc:
+            return 2  # arXiv: only abstract (~450c)
+        return 0      # Direct article domains: highest priority
+
+    unique_urls = sorted(url_to_items.keys(), key=_url_priority)
     done: dict[str, dict] = {}
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

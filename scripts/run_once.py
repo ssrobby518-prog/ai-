@@ -100,7 +100,11 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
     for item in filtered_items:
         title = str(getattr(item, "title", "") or "").strip() or "來源訊號"
         body = str(getattr(item, "body", "") or "").strip()
-        summary = body[:260] if body else "來源內容有限，請以原始連結核對。"
+        # Prefer hydrated full_text for summary so canonical clean_len >= 300 passes
+        # the demotion block in get_event_cards_for_deck; fall back to body.
+        _full_text_attr = str(getattr(item, "full_text", "") or "").strip()
+        _summary_source = _full_text_attr if _full_text_attr else body
+        summary = _summary_source[:500] if _summary_source else "來源內容有限，請以原始連結核對。"
         source_name = str(getattr(item, "source_name", "") or "").strip() or "來源平台"
         source_url = str(getattr(item, "url", "") or "").strip()
         density = float(getattr(item, "density_score", 0) or 0)
