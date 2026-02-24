@@ -1808,11 +1808,11 @@ def _slide_brief_page1(
         _cp_T1 = {}
 
     # Card 1: Q1 — What Happened (canonical q1_event_2sent_zh)
-    _q1_body = safe_text(str((final_payload or {}).get("q1", "") or _cp_T1.get('q1_event_2sent_zh', '') or ''), 200)
+    _q1_body = safe_text(str((final_payload or {}).get("q1", "") or _cp_T1.get('q1_event_2sent_zh', '') or ''), 320)
     if not _q1_body:
-        _q1_body = safe_text(_v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen), 200)
+        _q1_body = safe_text(_v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen), 320)
     else:
-        _q1_body = safe_text(_v1_norm_gloss(_q1_body, _V1_GLOSSARY, _gloss_seen), 200)
+        _q1_body = safe_text(_v1_norm_gloss(_q1_body, _V1_GLOSSARY, _gloss_seen), 320)
     card1_top, card1_h = 2.8, 4.6
     _v1_add_card(
         slide, card_left, card1_top, card_w, card1_h,
@@ -1823,6 +1823,7 @@ def _slide_brief_page1(
         body_color=_V1_TEXT_GRAY,
         header_font_size=_V1_CARD_TITLE_FS,
         body_font_size=_V1_CARD_BODY_FS,
+        body_text_limit=260,
         shape_type=_V1_ROUNDED_RECT,
     )
     _v1_vertical_connector(slide, card_left + card_w / 2, card1_top + card1_h, card1_top + card1_h + 0.5)
@@ -1830,10 +1831,10 @@ def _slide_brief_page1(
     # Card 2: Q2 — Why It Matters (canonical q2_impact_2sent_zh)
     card2_top = card1_top + card1_h + 0.6
     card2_h = 3.5
-    _q2_body = safe_text(str((final_payload or {}).get("q2", "") or _cp_T1.get('q2_impact_2sent_zh', '') or ''), 200)
+    _q2_body = safe_text(str((final_payload or {}).get("q2", "") or _cp_T1.get('q2_impact_2sent_zh', '') or ''), 320)
     if not _q2_body:
         _q2_body = safe_text(card.why_important or brief.get('q1_meaning', ''), 150)
-    _q2_body = safe_text(_v1_norm_gloss(_q2_body, _V1_GLOSSARY, _gloss_seen), 200)
+    _q2_body = safe_text(_v1_norm_gloss(_q2_body, _V1_GLOSSARY, _gloss_seen), 320)
     _v1_add_card(
         slide, card_left, card2_top, card_w, card2_h,
         header_text='Q2 — Why It Matters',
@@ -1843,6 +1844,7 @@ def _slide_brief_page1(
         body_color=_V1_TEXT_GRAY,
         header_font_size=_V1_CARD_TITLE_FS,
         body_font_size=_V1_CARD_BODY_FS,
+        body_text_limit=260,
         shape_type=_V1_ROUNDED_RECT,
     )
     _v1_vertical_connector(slide, card_left + card_w / 2, card2_top + card2_h, card2_top + card2_h + 0.5)

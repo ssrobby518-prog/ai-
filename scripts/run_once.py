@@ -274,6 +274,20 @@ _ACTOR_BRAND_HINTS = (
     "Chain-of-table",
 )
 
+_STYLE_SANITY_PATTERNS = [
+    r"值得持續關注",
+    r"建議密切觀察",
+    r"後續發展仍待觀察",
+    r"現有策略與資源配置",
+    r"本事件顯示整體趨勢",
+    # Required hard-fail patterns
+    r"引發.*(?:討論|關注|熱議)",
+    r"具有.*(?:實質|重大).*(?:影響|意義)",
+    r"(?:各方|業界).*(?:著手|正).*(?:評估|追蹤).*(?:後續|影響|動向)",
+    r"料將影響.*(?:格局|走向|市場)",
+]
+_STYLE_SANITY_RE = re.compile("|".join(_STYLE_SANITY_PATTERNS), re.IGNORECASE)
+
 
 def _normalize_ws(text: str) -> str:
     return " ".join(str(text or "").replace("\r", " ").replace("\n", " ").split())
@@ -284,18 +298,111 @@ def _clip_text(text: str, limit: int = 110) -> str:
     return txt if len(txt) <= limit else txt[:limit].rstrip()
 
 
+def _style_sanity_ok(*parts: str) -> bool:
+    joined = _normalize_ws(" ".join(parts))
+    if not joined:
+        return False
+    return not bool(_STYLE_SANITY_RE.search(joined))
+
+
+def _extract_quoted_segments(text: str) -> list[str]:
+    src = str(text or "")
+    segs: list[str] = []
+    patterns = (
+        r"「([^」]+)」",
+        r"“([^”]+)”",
+        r"\"([^\"]+)\"",
+    )
+    for pat in patterns:
+        for s in re.findall(pat, src):
+            ss = _normalize_ws(s)
+            if ss:
+                segs.append(ss)
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for s in segs:
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        dedup.append(s)
+    return dedup
+
+
+def _quoted_segments_min_len_ok(text: str, min_len: int = 20) -> bool:
+    segs = _extract_quoted_segments(text)
+    if not segs:
+        return True
+    return all(len(s) >= min_len for s in segs)
+
+
+def _quote_len_ok(text: str, min_len: int = 20) -> bool:
+    return len(_normalize_ws(text)) >= min_len
+
+
+def _build_q1_quote_driven(title: str, quote_1: str) -> str:
+    return _normalize_ws(f"原文關鍵句：「{quote_1}」。對應事件：{title}。")
+
+
+def _build_q2_quote_driven(title: str, quote_2: str) -> str:
+    return _normalize_ws(f"同一來源也提到：「{quote_2}」。此訊息可直接作為後續產品與商業追蹤依據。")
+
+
+def _pick_quote_variants(
+    primary: str,
+    pool: list[str],
+    fallback_blob: str,
+) -> list[str]:
+    ordered: list[str] = []
+    if _quote_len_ok(primary):
+        ordered.append(_normalize_ws(primary))
+    for q in pool:
+        qn = _normalize_ws(q)
+        if _quote_len_ok(qn):
+            ordered.append(qn)
+    fb = _normalize_ws(fallback_blob)
+    if _quote_len_ok(fb):
+        ordered.append(_clip_text(fb, 160))
+    dedup: list[str] = []
+    seen: set[str] = set()
+    for q in ordered:
+        k = q.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        dedup.append(q)
+    return dedup
+
+
 def _contains_quote_window(target_text: str, quote_text: str, min_window: int = 10) -> bool:
     target = _normalize_ws(target_text)
     quote = _normalize_ws(quote_text)
     if not target or not quote:
         return False
-    if quote in target:
+    target_l = target.lower()
+    quote_l = quote.lower()
+    if quote_l in target_l:
         return True
-    if len(quote) < min_window:
-        return quote in target
+    if len(quote_l) < min_window:
+        return quote_l in target_l
     step = max(1, min_window // 2)
-    for i in range(0, max(1, len(quote) - min_window + 1), step):
-        if quote[i:i + min_window] in target:
+    for i in range(0, max(1, len(quote_l) - min_window + 1), step):
+        if quote_l[i:i + min_window] in target_l:
+            return True
+
+    # Fallback: punctuation-insensitive window match for OCR/encoding drift.
+    target_c = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", target_l)
+    quote_c = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", quote_l)
+    if not target_c or not quote_c:
+        return False
+    if quote_c in target_c:
+        return True
+    alt_window = max(8, min_window - 2)
+    if len(quote_c) < alt_window:
+        return quote_c in target_c
+    alt_step = max(1, alt_window // 2)
+    for i in range(0, max(1, len(quote_c) - alt_window + 1), alt_step):
+        if quote_c[i:i + alt_window] in target_c:
             return True
     return False
 
@@ -442,6 +549,120 @@ def _extract_pptx_text(pptx_path: Path) -> str:
         return ""
 
 
+def _extract_docx_event_sections(docx_path: Path) -> list[dict]:
+    if not docx_path.exists():
+        return []
+    try:
+        from docx import Document
+        doc = Document(str(docx_path))
+    except Exception:
+        return []
+
+    paras = [
+        _normalize_ws(p.text)
+        for p in doc.paragraphs
+        if _normalize_ws(p.text)
+    ]
+    sections: list[dict] = []
+    header_re = re.compile(r"^#\d+\s+")
+
+    i = 0
+    while i < len(paras):
+        line = paras[i]
+        if not header_re.match(line):
+            i += 1
+            continue
+        sec = {
+            "title": line,
+            "q1": "",
+            "q2": "",
+            "final_url": "",
+            "quote_1": "",
+            "quote_2": "",
+        }
+        j = i + 1
+        while j < len(paras) and not header_re.match(paras[j]):
+            cur = paras[j]
+            if cur.startswith("Q1") and j + 1 < len(paras):
+                nxt = paras[j + 1]
+                if not header_re.match(nxt):
+                    sec["q1"] = sec["q1"] or nxt
+            elif cur.startswith("Q2") and j + 1 < len(paras):
+                nxt = paras[j + 1]
+                if not header_re.match(nxt):
+                    sec["q2"] = sec["q2"] or nxt
+            elif cur.startswith("final_url:"):
+                sec["final_url"] = _normalize_ws(cur.split(":", 1)[1] if ":" in cur else "")
+            elif cur.startswith("quote_1:"):
+                sec["quote_1"] = _normalize_ws(cur.split(":", 1)[1] if ":" in cur else "")
+            elif cur.startswith("quote_2:"):
+                sec["quote_2"] = _normalize_ws(cur.split(":", 1)[1] if ":" in cur else "")
+            j += 1
+        sections.append(sec)
+        i = j
+    return sections
+
+
+def _extract_pptx_event_sections(pptx_path: Path) -> list[dict]:
+    if not pptx_path.exists():
+        return []
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(pptx_path))
+    except Exception:
+        return []
+
+    sections: list[dict] = []
+    for slide in prs.slides:
+        lines: list[str] = []
+        for shp in slide.shapes:
+            if getattr(shp, "has_text_frame", False):
+                for para in shp.text_frame.paragraphs:
+                    tx = _normalize_ws(para.text)
+                    if tx:
+                        lines.append(tx)
+        if not lines:
+            continue
+        if ("WHAT HAPPENED" not in " ".join(lines)) or (not any(l.startswith("final_url:") for l in lines)):
+            continue
+
+        sec = {
+            "title": "",
+            "q1": "",
+            "q2": "",
+            "final_url": "",
+            "quote_1": "",
+            "quote_2": "",
+        }
+        marker_lines = {"WHAT HAPPENED", "Q1 — What Happened", "Q2 — Why It Matters", "Proof — Hard Evidence"}
+        for l in lines:
+            if l in marker_lines:
+                continue
+            if l.startswith(("Q1", "Q2", "final_url:", "quote_1:", "quote_2:", "#")):
+                continue
+            if len(l) >= 8:
+                sec["title"] = l
+                break
+
+        for idx, l in enumerate(lines):
+            if l.startswith("Q1") and idx + 1 < len(lines):
+                nxt = lines[idx + 1]
+                if not nxt.startswith(("Q2", "Proof", "final_url:", "quote_1:", "quote_2:")):
+                    sec["q1"] = sec["q1"] or nxt
+            elif l.startswith("Q2") and idx + 1 < len(lines):
+                nxt = lines[idx + 1]
+                if not nxt.startswith(("Proof", "final_url:", "quote_1:", "quote_2:")):
+                    sec["q2"] = sec["q2"] or nxt
+            elif l.startswith("final_url:"):
+                sec["final_url"] = _normalize_ws(l.split(":", 1)[1] if ":" in l else "")
+            elif l.startswith("quote_1:"):
+                sec["quote_1"] = _normalize_ws(l.split(":", 1)[1] if ":" in l else "")
+            elif l.startswith("quote_2:"):
+                sec["quote_2"] = _normalize_ws(l.split(":", 1)[1] if ":" in l else "")
+        sections.append(sec)
+    return sections
+
+
 def _contains_sync_token(target_text: str, token: str) -> bool:
     token_n = _normalize_ws(token)
     if not token_n:
@@ -491,29 +712,72 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         )
         quote_pool = _extract_ph_supp_quotes(source_blob, n=6)
 
-        if not quote_1 and quote_pool:
-            quote_1 = quote_pool[0]
-        if not quote_2 and len(quote_pool) > 1:
-            quote_2 = quote_pool[1]
-        if not quote_1:
-            quote_1 = q1
-        if not quote_2:
-            quote_2 = q2
-        if quote_2 == quote_1 and len(quote_pool) > 2:
-            quote_2 = quote_pool[2]
+        quote_1_cands = _pick_quote_variants(
+            primary=quote_1,
+            pool=quote_pool,
+            fallback_blob=q1 or source_blob,
+        )
+        quote_2_cands = _pick_quote_variants(
+            primary=quote_2,
+            pool=quote_pool,
+            fallback_blob=q2 or source_blob,
+        )
+        if not quote_1_cands and quote_pool:
+            quote_1_cands = [_clip_text(_normalize_ws(quote_pool[0]), 160)]
+        if not quote_2_cands:
+            quote_2_cands = list(quote_1_cands)
 
-        quote_1 = _clip_text(quote_1, 110)
-        quote_2 = _clip_text(quote_2, 110)
+        # Q1/Q2 hard requirement: quote-driven rewrite with up to 3 attempts.
+        _q1_final = ""
+        _q2_final = ""
+        _q1_pick = ""
+        _q2_pick = ""
+        for _attempt in range(3):
+            _q1_idx = min(_attempt, max(0, len(quote_1_cands) - 1))
+            _q1_try = quote_1_cands[_q1_idx] if quote_1_cands else ""
+            _q2_idx = min(_attempt, max(0, len(quote_2_cands) - 1))
+            _q2_try = quote_2_cands[_q2_idx] if quote_2_cands else ""
+            if _q2_try.lower() == _q1_try.lower():
+                for _alt in quote_2_cands:
+                    if _alt.lower() != _q1_try.lower():
+                        _q2_try = _alt
+                        break
 
-        if not q1:
-            q1 = f"{title} 發生更新。"
-        if not q2:
-            q2 = "此變化影響短期產品節奏與市場競爭。"
+            _q1_candidate = _build_q1_quote_driven(title, _q1_try) if _q1_try else ""
+            _q2_candidate = _build_q2_quote_driven(title, _q2_try) if _q2_try else ""
 
-        if quote_1 and not _contains_quote_window(q1, quote_1):
-            q1 = _normalize_ws(f"{q1} 引用：「{quote_1}」")
-        if quote_2 and not _contains_quote_window(q2, quote_2):
-            q2 = _normalize_ws(f"{q2} 引用：「{quote_2}」")
+            _attempt_ok = all(
+                [
+                    bool(_q1_candidate and _q2_candidate),
+                    _style_sanity_ok(_q1_candidate, _q2_candidate),
+                    _contains_quote_window(_q1_candidate, _q1_try, min_window=12),
+                    _contains_quote_window(_q2_candidate, _q2_try, min_window=12),
+                    _quote_len_ok(_q1_try, min_len=20),
+                    _quote_len_ok(_q2_try, min_len=20),
+                    _quoted_segments_min_len_ok(_q1_candidate, min_len=20),
+                    _quoted_segments_min_len_ok(_q2_candidate, min_len=20),
+                ]
+            )
+            if _attempt_ok:
+                _q1_final = _q1_candidate
+                _q2_final = _q2_candidate
+                _q1_pick = _q1_try
+                _q2_pick = _q2_try
+                break
+
+        if not _q1_final or not _q2_final:
+            # Last fallback in strict quote-driven format.
+            _q1_pick = quote_1_cands[0] if quote_1_cands else _clip_text(source_blob, 120)
+            _q2_pick = quote_2_cands[0] if quote_2_cands else _clip_text(source_blob, 120)
+            if _q2_pick.lower() == _q1_pick.lower() and len(quote_2_cands) > 1:
+                _q2_pick = quote_2_cands[1]
+            _q1_final = _build_q1_quote_driven(title, _q1_pick)
+            _q2_final = _build_q2_quote_driven(title, _q2_pick)
+
+        quote_1 = _clip_text(_q1_pick, 110)
+        quote_2 = _clip_text(_q2_pick, 110)
+        q1 = _q1_final
+        q2 = _q2_final
 
         moves = list(cp.get("q3_moves_3bullets_zh", []) or [])
         risks = list(cp.get("risks_2bullets_zh", []) or [])
@@ -583,14 +847,13 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
     """Hard gate over final cards + generated DOCX/PPTX."""
     docx_text = _extract_docx_text(docx_path)
     pptx_text = _extract_pptx_text(pptx_path)
+    docx_sections = _extract_docx_event_sections(docx_path)
+    pptx_sections = _extract_pptx_event_sections(pptx_path)
 
-    style_bad_re = re.compile(
-        r"(值得持續關注|建議密切觀察|後續發展仍待觀察|現有策略與資源配置|本事件顯示整體趨勢)",
-        re.IGNORECASE,
-    )
     naming_bad_re = _CLAUDE_TRANSLIT_RE
     ai_kw_re = re.compile(
-        r"\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini|模型|推理|多模態|代理|晶片|雲端",
+        r"\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini|模型|推理|多模態|代理|晶片|雲端|"
+        r"\bmodel(s)?\b|machine learning|benchmark|neural",
         re.IGNORECASE,
     )
 
@@ -598,7 +861,7 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
     pass_count = 0
     fail_count = 0
 
-    for fc in final_cards:
+    for idx, fc in enumerate(final_cards):
         title = _normalize_ws(fc.get("title", ""))
         actor = _normalize_ws(fc.get("actor", ""))
         q1 = _normalize_ws(fc.get("q1", ""))
@@ -608,6 +871,18 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         final_url = _normalize_ws(fc.get("final_url", ""))
         moves = [_normalize_ws(x) for x in (fc.get("moves", []) or []) if _normalize_ws(x)]
         risks = [_normalize_ws(x) for x in (fc.get("risks", []) or []) if _normalize_ws(x)]
+        doc_sec = docx_sections[idx] if idx < len(docx_sections) else {}
+        ppt_sec = pptx_sections[idx] if idx < len(pptx_sections) else {}
+        doc_q1 = _normalize_ws((doc_sec or {}).get("q1", ""))
+        doc_q2 = _normalize_ws((doc_sec or {}).get("q2", ""))
+        ppt_q1 = _normalize_ws((ppt_sec or {}).get("q1", ""))
+        ppt_q2 = _normalize_ws((ppt_sec or {}).get("q2", ""))
+        doc_url = _normalize_ws((doc_sec or {}).get("final_url", ""))
+        doc_quote_1 = _normalize_ws((doc_sec or {}).get("quote_1", ""))
+        doc_quote_2 = _normalize_ws((doc_sec or {}).get("quote_2", ""))
+        ppt_url = _normalize_ws((ppt_sec or {}).get("final_url", ""))
+        ppt_quote_1 = _normalize_ws((ppt_sec or {}).get("quote_1", ""))
+        ppt_quote_2 = _normalize_ws((ppt_sec or {}).get("quote_2", ""))
 
         actor_source = f"{title} {quote_1} {quote_2}"
         actor_present = (
@@ -616,10 +891,42 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         )
         actor_ok = bool(actor) and not _is_actor_numeric(actor) and actor_present
 
-        style_ok = not bool(style_bad_re.search(f"{q1} {q2}"))
-        quote_lock_q1 = _contains_quote_window(q1, quote_1, min_window=10)
-        quote_lock_q2 = _contains_quote_window(q2, quote_2, min_window=10)
-        quote_lock_ok = quote_lock_q1 and quote_lock_q2
+        style_ok = all(
+            [
+                _style_sanity_ok(q1, q2),
+                _style_sanity_ok(doc_q1, doc_q2),
+                _style_sanity_ok(ppt_q1, ppt_q2),
+            ]
+        )
+        quote_lock_q1 = all(
+            [
+                _contains_quote_window(q1, quote_1, min_window=12),
+                bool(doc_q1) and bool(ppt_q1),
+                _contains_sync_token(docx_text, quote_1),
+                _contains_sync_token(pptx_text, quote_1),
+            ]
+        )
+        quote_lock_q2 = all(
+            [
+                _contains_quote_window(q2, quote_2, min_window=12),
+                bool(doc_q2) and bool(ppt_q2),
+                _contains_sync_token(docx_text, quote_2),
+                _contains_sync_token(pptx_text, quote_2),
+            ]
+        )
+        quote_min_len_ok = all(
+            [
+                _quote_len_ok(quote_1, min_len=20),
+                _quote_len_ok(quote_2, min_len=20),
+                _quoted_segments_min_len_ok(q1, min_len=20),
+                _quoted_segments_min_len_ok(q2, min_len=20),
+                _quoted_segments_min_len_ok(doc_q1, min_len=20),
+                _quoted_segments_min_len_ok(doc_q2, min_len=20),
+                _quoted_segments_min_len_ok(ppt_q1, min_len=20),
+                _quoted_segments_min_len_ok(ppt_q2, min_len=20),
+            ]
+        )
+        quote_lock_ok = quote_lock_q1 and quote_lock_q2 and quote_min_len_ok
 
         naming_text = " ".join([title, actor, q1, q2] + moves + risks)
         has_bad_trans = bool(naming_bad_re.search(naming_text))
@@ -627,13 +934,25 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         naming_ok = (not has_bad_trans) and (not has_plain_claude)
 
         sync_tokens = [final_url, quote_1, quote_2]
-        sync_ok = all(
+        global_sync_ok = all(
             _contains_sync_token(docx_text, tok) and _contains_sync_token(pptx_text, tok)
             for tok in sync_tokens
             if tok
         ) and all(bool(tok) for tok in sync_tokens)
+        event_sync_ok = all(
+            [
+                _contains_sync_token(doc_url, final_url),
+                _contains_sync_token(doc_quote_1, quote_1),
+                _contains_sync_token(doc_quote_2, quote_2),
+                _contains_sync_token(ppt_url, final_url),
+                _contains_sync_token(ppt_quote_1, quote_1),
+                _contains_sync_token(ppt_quote_2, quote_2),
+            ]
+        )
+        section_present_ok = bool(doc_sec) and bool(ppt_sec) and bool(doc_q1) and bool(doc_q2) and bool(ppt_q1) and bool(ppt_q2)
+        sync_ok = global_sync_ok and event_sync_ok and section_present_ok
 
-        ai_relevance = bool(ai_kw_re.search(f"{title} {q1} {q2}"))
+        ai_relevance = bool(ai_kw_re.search(f"{title} {q1} {q2} {doc_q1} {doc_q2} {ppt_q1} {ppt_q2}"))
 
         checks = {
             "ACTOR_NOT_NUMERIC": actor_ok,
@@ -641,8 +960,10 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
             "QUOTE_LOCK_Q1": quote_lock_q1,
             "QUOTE_LOCK_Q2": quote_lock_q2,
             "QUOTE_LOCK": quote_lock_ok,
+            "QUOTE_MIN_LEN": quote_min_len_ok,
             "NAMING": naming_ok,
             "DOCX_PPTX_SYNC": sync_ok,
+            "DOCX_PPTX_EVENT_SECTIONS": section_present_ok,
             "AI_RELEVANCE": ai_relevance,
         }
         all_pass = all(checks.values())
@@ -659,8 +980,8 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
                 "actor": actor,
                 "quote_1": quote_1,
                 "quote_2": quote_2,
-                "q1_snippet": q1[:300],
-                "q2_snippet": q2[:300],
+                "q1_snippet": (doc_q1 or q1)[:300],
+                "q2_snippet": (doc_q2 or q2)[:300],
                 "dod": checks,
                 "all_pass": all_pass,
             }
