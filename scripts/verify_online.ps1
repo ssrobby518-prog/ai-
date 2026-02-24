@@ -6,6 +6,11 @@
 #   3) Run verify_run.ps1  (all 9 gates, reads local JSONL, no outbound traffic)
 #
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_online.ps1
+# Usage (-SkipPipeline): skip steps 1-2; pass -SkipPipeline to verify_run (used by FAIL demo)
+
+param(
+    [switch]$SkipPipeline   # if set: skip z0_collect + Z0_ENABLED; verify_run called with -SkipPipeline
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -19,13 +24,18 @@ Write-Output "=== verify_online.ps1 START ==="
 Write-Output ""
 
 # ---- Step 1: Z0 online collection ----
-Write-Output "[1/3] Running Z0 collector (online)..."
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "z0_collect.ps1")
-if ($LASTEXITCODE -ne 0) {
-    Write-Output "[verify_online] Z0 collect FAILED (exit $LASTEXITCODE). Aborting."
-    exit 1
+if (-not $SkipPipeline) {
+    Write-Output "[1/3] Running Z0 collector (online)..."
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "z0_collect.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Output "[verify_online] Z0 collect FAILED (exit $LASTEXITCODE). Aborting."
+        exit 1
+    }
+    Write-Output ""
+} else {
+    Write-Output "[1/3] Z0 collection SKIPPED (-SkipPipeline mode; using existing data/raw/z0 files)"
+    Write-Output ""
 }
-Write-Output ""
 
 # Initialise degraded flag (updated inside the Z0 pool health gate block)
 $pool85Degraded = $false
@@ -226,8 +236,12 @@ if (Test-Path $metaPath) {
 }
 
 # ---- Step 2: Set Z0_ENABLED so pipeline reads local JSONL ----
-Write-Output "[2/3] Setting Z0_ENABLED=1 (pipeline will read local JSONL)..."
-$env:Z0_ENABLED = "1"
+if (-not $SkipPipeline) {
+    Write-Output "[2/3] Setting Z0_ENABLED=1 (pipeline will read local JSONL)..."
+    $env:Z0_ENABLED = "1"
+} else {
+    Write-Output "[2/3] Z0_ENABLED setup SKIPPED (-SkipPipeline mode)"
+}
 
 # (C) Set EXEC KPI gates — enabled by default; override with env vars before calling this script
 if (-not $env:EXEC_MIN_EVENTS)   { $env:EXEC_MIN_EVENTS   = "6" }
@@ -239,7 +253,11 @@ Write-Output "[verify_online] EXEC KPI gates: MIN_EVENTS=$($env:EXEC_MIN_EVENTS)
 # ---- Step 3: Run verify_run.ps1 ----
 Write-Output "[3/3] Running verify_run.ps1 (offline, reads Z0 JSONL)..."
 Write-Output ""
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1")
+if ($SkipPipeline) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1") -SkipPipeline
+} else {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1")
+}
 $exitCode = $LASTEXITCODE
 
 $env:Z0_ENABLED        = $null

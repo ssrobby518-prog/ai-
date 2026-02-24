@@ -155,9 +155,9 @@ Write-Output "  exec_news_quality.meta.json injected with gate_result=FAIL."
 # 5) Run verify_online.ps1 — expect exit non-0 (POOL_SUFFICIENCY_HARD: FAIL)
 # ---------------------------------------------------------------------------
 Write-Output ""
-Write-Output "[DEMO] Running verify_online.ps1 (expect exit non-0 — injected state)..."
+Write-Output "[DEMO] Running verify_online.ps1 -SkipPipeline (expect exit non-0 — injected state)..."
 Write-Output "------------------------------------------------------------------------"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyOnline
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyOnline -SkipPipeline
 $verifyOnlineExit = $LASTEXITCODE
 Write-Output "------------------------------------------------------------------------"
 Write-Output ("[DEMO] verify_online.ps1 exit code: {0}" -f $verifyOnlineExit)
