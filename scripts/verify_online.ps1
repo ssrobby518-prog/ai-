@@ -343,11 +343,12 @@ if (Test-Path $filterSummaryPath) {
         Write-Output ("  after_filter_total_eff   : {0}" -f $nzdKept)
         Write-Output ("  event_gate_pass_total    : {0}" -f $nzdEvPass)
         Write-Output ("  FILTER_SUMMARY kept={0}" -f $nzdKept)
-        $nzdSparseDay = if (Get-Variable -Name 'sparseDay' -ErrorAction SilentlyContinue) { [bool]$sparseDay } else { $false }
+        # WARN-OK when no main events but exec deck is present (PH_SUPP >= 6)
+        $nzdExecOk = if (Get-Variable -Name 'actEv' -ErrorAction SilentlyContinue) { [int]$actEv -ge 6 } else { $false }
         if ($nzdKept -ge 6) {
             Write-Output "  NO_ZERO_DAY: PASS"
-        } elseif ($nzdSparseDay) {
-            Write-Output ("  NO_ZERO_DAY: WARN-OK (kept_total={0} < 6; sparse_day=True - PH_SUPP exec deck present)" -f $nzdKept)
+        } elseif ($nzdExecOk) {
+            Write-Output ("  NO_ZERO_DAY: WARN-OK (kept_total={0} < 6; exec_events={1} via PH_SUPP - deck present)" -f $nzdKept, $actEv)
         } else {
             Write-Output ("  NO_ZERO_DAY: FAIL (kept_total={0} < 6)" -f $nzdKept)
             exit 1
