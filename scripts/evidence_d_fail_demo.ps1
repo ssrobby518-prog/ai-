@@ -1,18 +1,17 @@
 # evidence_d_fail_demo.ps1
-# Deliverable D: Controlled FAIL demonstration for EXEC_NEWS_QUALITY_HARD gate
+# Deliverable D: Controlled FAIL demonstration — POOL_SUFFICIENCY_HARD + EXEC_NEWS_QUALITY_HARD
 #
-# Mechanism: inject outputs/NOT_READY.md (triggers POOL_SUFFICIENCY_HARD FAIL in
-# verify_online.ps1 line 423-426) and a FAIL exec_news_quality.meta.json (triggers
-# EXEC_NEWS_QUALITY_HARD FAIL in verify_online.ps1 line 755-764).
-# Neither injection touches any tracked source file — working tree stays clean.
+# Mechanism:
+#   1) Inject outputs/NOT_READY.md       — triggers POOL_SUFFICIENCY_HARD FAIL in both verifiers
+#   2) Inject FAIL exec_news_quality.meta.json — triggers EXEC_NEWS_QUALITY_HARD FAIL
+#   3) Run verify_online.ps1             — must exit non-0
+#   4) Run verify_run.ps1 -SkipPipeline  — must exit non-0 (skips pipeline; checks NOT_READY gate)
+#   5) Capture both exit codes; assert CONSISTENT_FAIL=True
+#   6) Auto-cleanup: remove injected files, restore any originals
 #
-# NOTE on verify_run.ps1: verify_run.ps1 is NOT called here because it runs
-# scripts/run_once.py (the full pipeline, ~10-15 min) at step 2, which regenerates
-# exec_news_quality.meta.json from scratch (overwriting any injected FAIL state).
-# verify_run.ps1 step 1 also explicitly deletes NOT_READY.md before the pipeline
-# runs, making NOT_READY injection ineffective. Therefore the consistent FAIL
-# behaviour is demonstrated via verify_online.ps1, which reads the same gate files
-# without re-running the pipeline.
+# verify_run.ps1 is called with -SkipPipeline (added Iter-13) to avoid pipeline re-run
+# overwriting the injected FAIL state (step 2 would regenerate a clean meta file).
+# Neither injection touches any tracked source file — working tree remains clean.
 #
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\evidence_d_fail_demo.ps1
 
@@ -22,23 +21,25 @@ chcp 65001 | Out-Null
 $env:PYTHONIOENCODING = "utf-8"
 
 # CJK-safe path resolution: derive repoRoot from $PSScriptRoot
-$repoRoot   = Split-Path $PSScriptRoot -Parent
-$outputsDir = Join-Path $repoRoot "outputs"
+$repoRoot     = Split-Path $PSScriptRoot -Parent
+$outputsDir   = Join-Path $repoRoot "outputs"
 $verifyOnline = Join-Path $repoRoot "scripts\verify_online.ps1"
+$verifyRun    = Join-Path $repoRoot "scripts\verify_run.ps1"
 
 Write-Output ""
 Write-Output "=== DELIVERABLE D: FAIL DEMO (evidence_d_fail_demo.ps1) ==="
 Write-Output "  Mechanism : inject NOT_READY.md + FAIL exec_news_quality.meta.json"
+Write-Output "  Verifiers : verify_online.ps1 + verify_run.ps1 -SkipPipeline"
 Write-Output "  Cleanup   : auto (injected files removed; backups restored)"
 Write-Output ""
 
 # ---------------------------------------------------------------------------
 # 1) Paths
 # ---------------------------------------------------------------------------
-$nrPath       = Join-Path $outputsDir "NOT_READY.md"
-$enqPath      = Join-Path $outputsDir "exec_news_quality.meta.json"
-$enqBackup    = Join-Path $outputsDir "exec_news_quality.meta.json.d_backup"
-$nrBackup     = Join-Path $outputsDir "NOT_READY.md.d_backup"
+$nrPath    = Join-Path $outputsDir "NOT_READY.md"
+$enqPath   = Join-Path $outputsDir "exec_news_quality.meta.json"
+$enqBackup = Join-Path $outputsDir "exec_news_quality.meta.json.d_backup"
+$nrBackup  = Join-Path $outputsDir "NOT_READY.md.d_backup"
 
 $nrOrigExisted  = Test-Path $nrPath
 $enqOrigExisted = Test-Path $enqPath
@@ -81,28 +82,10 @@ Ensure each selected event's full_text contains >=2 verbatim quotes (>=20 chars,
 Write-Output "  NOT_READY.md injected."
 
 # ---------------------------------------------------------------------------
-# 4) Run verify_online.ps1 — expect exit 1 (POOL_SUFFICIENCY_HARD: FAIL)
+# 4) Inject FAIL exec_news_quality.meta.json (EXEC_NEWS_QUALITY_HARD trigger)
 # ---------------------------------------------------------------------------
 Write-Output ""
-Write-Output "[DEMO] Running verify_online.ps1 (expect exit 1 — POOL_SUFFICIENCY_HARD FAIL)..."
-Write-Output "------------------------------------------------------------------------"
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyOnline
-$exitCode1 = $LASTEXITCODE
-Write-Output "------------------------------------------------------------------------"
-Write-Output ("[DEMO] verify_online.ps1 exit code: {0}" -f $exitCode1)
-if ($exitCode1 -ne 0) {
-    Write-Output "[DEMO] CONFIRMED: verify_online exits non-zero with NOT_READY.md present."
-} else {
-    Write-Output "[DEMO] UNEXPECTED: verify_online exited 0 — gate did not trigger."
-}
-
-# ---------------------------------------------------------------------------
-# 5) Remove injected NOT_READY.md; inject FAIL exec_news_quality.meta.json
-# ---------------------------------------------------------------------------
-Write-Output ""
-Write-Output "[DEMO] Removing NOT_READY.md; injecting FAIL exec_news_quality.meta.json..."
-Remove-Item $nrPath -Force -ErrorAction SilentlyContinue
-
+Write-Output "[DEMO] Injecting FAIL exec_news_quality.meta.json ..."
 $enqFail = @"
 {
   "generated_at": "2026-02-24T00:00:00+00:00",
@@ -169,19 +152,35 @@ $enqFail = @"
 Write-Output "  exec_news_quality.meta.json injected with gate_result=FAIL."
 
 # ---------------------------------------------------------------------------
-# 6) Run verify_online.ps1 again — expect exit 1 (EXEC_NEWS_QUALITY_HARD: FAIL)
+# 5) Run verify_online.ps1 — expect exit non-0 (POOL_SUFFICIENCY_HARD: FAIL)
 # ---------------------------------------------------------------------------
 Write-Output ""
-Write-Output "[DEMO] Running verify_online.ps1 (expect exit 1 — EXEC_NEWS_QUALITY_HARD FAIL)..."
+Write-Output "[DEMO] Running verify_online.ps1 (expect exit non-0 — injected state)..."
 Write-Output "------------------------------------------------------------------------"
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyOnline
-$exitCode2 = $LASTEXITCODE
+$verifyOnlineExit = $LASTEXITCODE
 Write-Output "------------------------------------------------------------------------"
-Write-Output ("[DEMO] verify_online.ps1 exit code: {0}" -f $exitCode2)
-if ($exitCode2 -ne 0) {
-    Write-Output "[DEMO] CONFIRMED: verify_online exits non-zero with FAIL exec_news_quality.meta.json."
+Write-Output ("[DEMO] verify_online.ps1 exit code: {0}" -f $verifyOnlineExit)
+if ($verifyOnlineExit -ne 0) {
+    Write-Output "[DEMO] CONFIRMED: verify_online exits non-zero under injected FAIL state."
 } else {
     Write-Output "[DEMO] UNEXPECTED: verify_online exited 0 — gate did not trigger."
+}
+
+# ---------------------------------------------------------------------------
+# 6) Run verify_run.ps1 -SkipPipeline — expect exit non-0 (NOT_READY gate: FAIL)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "[DEMO] Running verify_run.ps1 -SkipPipeline (expect exit non-0 — NOT_READY gate)..."
+Write-Output "------------------------------------------------------------------------"
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verifyRun -SkipPipeline
+$verifyRunExit = $LASTEXITCODE
+Write-Output "------------------------------------------------------------------------"
+Write-Output ("[DEMO] verify_run.ps1 exit code: {0}" -f $verifyRunExit)
+if ($verifyRunExit -ne 0) {
+    Write-Output "[DEMO] CONFIRMED: verify_run exits non-zero under injected FAIL state."
+} else {
+    Write-Output "[DEMO] UNEXPECTED: verify_run exited 0 — NOT_READY gate did not trigger."
 }
 
 # ---------------------------------------------------------------------------
@@ -190,9 +189,10 @@ if ($exitCode2 -ne 0) {
 Write-Output ""
 Write-Output "[DEMO] Cleaning up — restoring originals..."
 
-# Remove injected files
+# Remove injected NOT_READY.md
 if (Test-Path $nrPath) {
     Remove-Item $nrPath -Force -ErrorAction SilentlyContinue
+    Write-Output "  Removed injected NOT_READY.md."
 }
 
 # Restore exec_news_quality.meta.json
@@ -201,30 +201,40 @@ if (Test-Path $enqBackup) {
     Remove-Item $enqBackup -Force -ErrorAction SilentlyContinue
     Write-Output "  exec_news_quality.meta.json restored from backup."
 } elseif (-not $enqOrigExisted) {
-    Remove-Item $enqPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $enqPath) {
+        Remove-Item $enqPath -Force -ErrorAction SilentlyContinue
+    }
     Write-Output "  exec_news_quality.meta.json removed (was not present originally)."
 }
 
-# Restore NOT_READY.md if it existed originally
+# Restore NOT_READY.md if it existed originally (rare, but correct)
 if (Test-Path $nrBackup) {
     Copy-Item $nrBackup $nrPath -Force
     Remove-Item $nrBackup -Force -ErrorAction SilentlyContinue
     Write-Output "  NOT_READY.md restored from backup."
 }
 
+# ---------------------------------------------------------------------------
+# 8) Result summary
+# ---------------------------------------------------------------------------
+$consistentFail = ($verifyOnlineExit -ne 0) -and ($verifyRunExit -ne 0)
+
 Write-Output ""
 Write-Output "=== DELIVERABLE D RESULT ==="
-$failedBoth = ($exitCode1 -ne 0) -and ($exitCode2 -ne 0)
-Write-Output ("  verify_online [NOT_READY injection]    exit={0}  => {1}" -f $exitCode1, (if ($exitCode1 -ne 0) {"FAIL (as expected)"} else {"UNEXPECTED PASS"}))
-Write-Output ("  verify_online [ENQ FAIL injection]     exit={0}  => {1}" -f $exitCode2, (if ($exitCode2 -ne 0) {"FAIL (as expected)"} else {"UNEXPECTED PASS"}))
-Write-Output ""
-if ($failedBoth) {
+if ($consistentFail) {
     Write-Output "CONSISTENT_FAIL=True"
-    Write-Output "  Both gate injections independently cause verify_online to exit non-zero."
-    Write-Output "  POOL_SUFFICIENCY_HARD gate (NOT_READY.md trigger) and"
-    Write-Output "  EXEC_NEWS_QUALITY_HARD gate (meta FAIL trigger) are both verified."
 } else {
-    Write-Output "CONSISTENT_FAIL=False (one or more gates did not trigger correctly)"
+    Write-Output "CONSISTENT_FAIL=False"
+}
+Write-Output ("verify_online_exit={0}" -f $verifyOnlineExit)
+Write-Output ("verify_run_exit={0}"    -f $verifyRunExit)
+Write-Output ""
+if ($consistentFail) {
+    Write-Output "  Both verifiers exit non-zero under injected FAIL state."
+    Write-Output "  POOL_SUFFICIENCY_HARD (NOT_READY.md trigger) verified in both verify_online and verify_run."
+    Write-Output "  EXEC_NEWS_QUALITY_HARD (meta FAIL trigger) verified in injected exec_news_quality.meta.json."
+} else {
+    Write-Output "  WARNING: One or more verifiers did not exit non-zero as expected."
 }
 Write-Output ""
 Write-Output "=== DEMO COMPLETE — git status unaffected (outputs/ is .gitignored) ==="

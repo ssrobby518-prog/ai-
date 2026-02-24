@@ -1,6 +1,11 @@
 # verify_run.ps1 ??Executive report end-to-end verification
 # Purpose: run pipeline with calibration profile, verify FILTER_SUMMARY + executive output
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\verify_run.ps1
+# Usage (-SkipPipeline): verify gate checks only — do NOT re-run pipeline (used by FAIL demo)
+
+param(
+    [switch]$SkipPipeline   # if set: skip steps 0-2 (integrity/cleanup/pipeline); still checks NOT_READY + all gates
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -11,59 +16,65 @@ $env:PYTHONIOENCODING = "utf-8"
 
 Write-Host "=== Verification Start ===" -ForegroundColor Cyan
 
-# 0) Text integrity pre-check (CRLF / BOM / autocrlf)
-Write-Host "`n[0/9] Running text integrity check..." -ForegroundColor Yellow
-$integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
-if (Test-Path $integrityScript) {
-    & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  Text integrity check failed ??fix issues before continuing." -ForegroundColor Red
-        exit 1
-    }
-} else {
-    Write-Host "  check_text_integrity.ps1 not found, skipping." -ForegroundColor Yellow
-}
-
-# 1) Remove previous outputs
-Write-Host "`n[1/9] Removing previous outputs..." -ForegroundColor Yellow
-$filesToRemove = @(
-    "docs\reports\deep_analysis_education_version.md",
-    "docs\reports\deep_analysis_education_version_ppt.md",
-    "docs\reports\deep_analysis_education_version_xmind.md",
-    "outputs\deep_analysis_education.md",
-    "outputs\education_report.docx",
-    "outputs\education_report.pptx",
-    "outputs\executive_report.docx",
-    "outputs\executive_report.pptx",
-    "outputs\notion_page.md",
-    "outputs\mindmap.xmind",
-    "outputs\NOT_READY.md",
-    "outputs\pool_sufficiency.meta.json"
-)
-foreach ($f in $filesToRemove) {
-    if (Test-Path $f) {
-        Remove-Item $f -Force -ErrorAction SilentlyContinue
-        Write-Host "  Removed: $f"
-    }
-}
-
-# 2) Run pipeline with calibration profile
-Write-Host "`n[2/9] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
-$env:RUN_PROFILE = "calibration"
-# Prefer venv python if available, otherwise fall back to system python
+# Python binary resolution (always needed for steps 3-9 in both pipeline and SkipPipeline modes)
 $venvPython = Join-Path $PSScriptRoot "..\venv\Scripts\python.exe"
 if (Test-Path $venvPython) { $py = $venvPython } else { $py = "python" }
-& $py scripts/run_once.py
-$exitCode = $LASTEXITCODE
-$env:RUN_PROFILE = $null
 
-if ($exitCode -ne 0) {
-    Write-Host "  Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
-    exit 1
+if (-not $SkipPipeline) {
+    # 0) Text integrity pre-check (CRLF / BOM / autocrlf)
+    Write-Host "`n[0/9] Running text integrity check..." -ForegroundColor Yellow
+    $integrityScript = Join-Path $PSScriptRoot "check_text_integrity.ps1"
+    if (Test-Path $integrityScript) {
+        & powershell.exe -ExecutionPolicy Bypass -File $integrityScript
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  Text integrity check failed ??fix issues before continuing." -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host "  check_text_integrity.ps1 not found, skipping." -ForegroundColor Yellow
+    }
+
+    # 1) Remove previous outputs
+    Write-Host "`n[1/9] Removing previous outputs..." -ForegroundColor Yellow
+    $filesToRemove = @(
+        "docs\reports\deep_analysis_education_version.md",
+        "docs\reports\deep_analysis_education_version_ppt.md",
+        "docs\reports\deep_analysis_education_version_xmind.md",
+        "outputs\deep_analysis_education.md",
+        "outputs\education_report.docx",
+        "outputs\education_report.pptx",
+        "outputs\executive_report.docx",
+        "outputs\executive_report.pptx",
+        "outputs\notion_page.md",
+        "outputs\mindmap.xmind",
+        "outputs\NOT_READY.md",
+        "outputs\pool_sufficiency.meta.json"
+    )
+    foreach ($f in $filesToRemove) {
+        if (Test-Path $f) {
+            Remove-Item $f -Force -ErrorAction SilentlyContinue
+            Write-Host "  Removed: $f"
+        }
+    }
+
+    # 2) Run pipeline with calibration profile
+    Write-Host "`n[2/9] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
+    $env:RUN_PROFILE = "calibration"
+    & $py scripts/run_once.py
+    $exitCode = $LASTEXITCODE
+    $env:RUN_PROFILE = $null
+
+    if ($exitCode -ne 0) {
+        Write-Host "  Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  Pipeline succeeded" -ForegroundColor Green
+} else {
+    Write-Host "`n[2/9] Pipeline step SKIPPED (-SkipPipeline mode; gate checks use existing outputs)" -ForegroundColor Yellow
 }
-Write-Host "  Pipeline succeeded" -ForegroundColor Green
 
-# NOT_READY gate — pipeline writes NOT_READY.md when POOL_SUFFICIENCY hard gate fails:
+# NOT_READY gate — always checked regardless of SkipPipeline.
+# Pipeline writes NOT_READY.md when POOL_SUFFICIENCY hard gate fails:
 #   final_selected_events < 6  OR  strict_fulltext_ok < 4
 # Both verify_run and verify_online must FAIL (exit non-zero) when this file exists.
 $notReadyPath = "outputs\NOT_READY.md"
