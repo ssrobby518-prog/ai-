@@ -98,6 +98,7 @@ $enqFail = @"
       "item_id": "demo_a",
       "title": "[DEMO] Event A — injected failure",
       "final_url": "https://example.com/demo_a",
+      "actor": "",
       "quote_1": "",
       "quote_2": "",
       "q1_snippet": "[DEMO placeholder]",
@@ -107,7 +108,11 @@ $enqFail = @"
         "QUOTE_SOURCE": false,
         "QUOTE_NOT_TRIVIAL": false,
         "Q1_BINDING": false,
-        "Q2_BINDING": false
+        "Q2_BINDING": false,
+        "ACTOR_BINDING": false,
+        "STYLE_SANITY": false,
+        "NAMING": false,
+        "AI_RELEVANCE": false
       },
       "all_pass": false
     },
@@ -115,6 +120,7 @@ $enqFail = @"
       "item_id": "demo_b",
       "title": "[DEMO] Event B — injected failure",
       "final_url": "https://example.com/demo_b",
+      "actor": "",
       "quote_1": "",
       "quote_2": "",
       "q1_snippet": "[DEMO placeholder]",
@@ -124,7 +130,11 @@ $enqFail = @"
         "QUOTE_SOURCE": false,
         "QUOTE_NOT_TRIVIAL": false,
         "Q1_BINDING": false,
-        "Q2_BINDING": false
+        "Q2_BINDING": false,
+        "ACTOR_BINDING": false,
+        "STYLE_SANITY": false,
+        "NAMING": false,
+        "AI_RELEVANCE": false
       },
       "all_pass": false
     },
@@ -132,6 +142,7 @@ $enqFail = @"
       "item_id": "demo_c",
       "title": "[DEMO] Event C — injected failure",
       "final_url": "https://example.com/demo_c",
+      "actor": "",
       "quote_1": "",
       "quote_2": "",
       "q1_snippet": "[DEMO placeholder]",
@@ -141,7 +152,11 @@ $enqFail = @"
         "QUOTE_SOURCE": false,
         "QUOTE_NOT_TRIVIAL": false,
         "Q1_BINDING": false,
-        "Q2_BINDING": false
+        "Q2_BINDING": false,
+        "ACTOR_BINDING": false,
+        "STYLE_SANITY": false,
+        "NAMING": false,
+        "AI_RELEVANCE": false
       },
       "all_pass": false
     }

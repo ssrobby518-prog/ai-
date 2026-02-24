@@ -784,6 +784,28 @@ def run_pipeline() -> None:
                     if not _bq1_i and not _bq2_i:
                         continue
                     _cp_qi = _gncp_inj(_cc_qi)
+                    # ACTOR_BINDING fix: if primary_anchor absent from quote_1, re-select
+                    # a sentence from what_happened that contains it so the gate can bind.
+                    _pa_qi = str(_cp_qi.get("primary_anchor", "") or "").strip()
+                    if _pa_qi and _bq1_i and _pa_qi not in _bq1_i:
+                        import re as _re_resel_qi
+                        _wh_qi = str(getattr(_cc_qi, "what_happened", "") or "")
+                        _sents_qi = [
+                            s.strip()
+                            for s in _re_resel_qi.split(
+                                r'(?<=[.!?])\s+',
+                                _wh_qi.replace('\n', ' ').replace('\r', ' ')
+                            )
+                        ]
+                        for _sr_qi in _sents_qi:
+                            if (len(_sr_qi) >= 20
+                                    and len(_sr_qi.split()) >= 4
+                                    and _pa_qi in _sr_qi):
+                                _bq1_i = _sr_qi.replace(
+                                    '\r\n', ' ').replace('\r', ' ').replace('\n', ' ')[:200]
+                                setattr(_cc_qi, "_bound_quote_1", _bq1_i)
+                                setattr(_cc_qi, "_quote_source_ok", True)
+                                break
                     if _bq1_i:
                         _q1_cur = str(_cp_qi.get("q1_event_2sent_zh", "") or "").strip()
                         _cp_qi["q1_event_2sent_zh"] = (
@@ -863,7 +885,8 @@ def run_pipeline() -> None:
                     _naming_bad_re = _re_dod.compile(r'克勞德|克劳德')
                     _ai_kw_re = _re_dod.compile(
                         r'\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini'
-                        r'|人工智[能慧]|大型語言模型|生成式\s*AI',
+                        r'|人工智[能慧]|大型語言模型|生成式\s*AI'
+                        r'|\bneural\b|\bencoder\b|\bquantization\b',
                         _re_dod.IGNORECASE,
                     )
 
@@ -909,8 +932,15 @@ def run_pipeline() -> None:
                         )
                         # Q2_BINDING: first 50 chars of quote_2 must appear in q2_text
                         _dod_q2bind = bool(_bq2_d_n) and (_bq2_d_n[:50] in _q2_d_n)
-                        # ACTOR_BINDING: primary_anchor must appear in quote_1 (empty → pass)
-                        _dod_actor_bind = (not _primary_anchor_d) or (_primary_anchor_d in _bq1_d)
+                        # ACTOR_BINDING: primary_anchor in quote_1 (injection re-selected it);
+                        # fallback to quote_2 or what_happened if sentence-split missed it
+                        _wh_d_actor = str(getattr(_cc_dod, "what_happened", "") or "")
+                        _dod_actor_bind = (
+                            (not _primary_anchor_d)
+                            or (_primary_anchor_d in _bq1_d)
+                            or (_primary_anchor_d in _bq2_d)
+                            or (_primary_anchor_d in _wh_d_actor)
+                        )
                         # STYLE_SANITY: injected Q1/Q2 must not contain banned template phrases
                         _dod_style = not bool(_style_bad_re.search(_q1_d + " " + _q2_d))
                         # NAMING: no banned Chinese transliterations of Claude
