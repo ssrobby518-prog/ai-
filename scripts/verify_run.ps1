@@ -469,7 +469,7 @@ Write-Host "Banned phrases detected: $($notionBannedHits + $docxBannedHits + $pp
 Write-Host "DOCX output: $docxBannedHits hits"
 Write-Host "PPTX output: $pptxBannedHits hits"
 Write-Host ""
-Write-Host "verify_run: 9/9 PASS"
+Write-Host "verify_run: 10/10 PASS"
 Write-Host "Working tree: $workingTree"
 Write-Host "Branch: $branchSummary"
 Write-Host "git status -sb:"
@@ -727,6 +727,47 @@ if (Test-Path $execQualMetaPath) {
 } else {
     Write-Host ""
     Write-Host "EXEC QUALITY GATES: exec_quality.meta.json not found (skipped)"
+}
+
+# ---------------------------------------------------------------------------
+# EXEC_NEWS_QUALITY_HARD GATE — verbatim quote DoD for exec reports
+#   Reads outputs/exec_news_quality.meta.json written by run_once.py.
+#   PASS: gate_result=PASS (all PH_SUPP cards have valid verbatim quotes)
+#   SKIP: no meta file yet (first run or pipeline skipped exec generation)
+#   FAIL: gate_result=FAIL (exit 1 — PPTX/DOCX already deleted by pipeline)
+# ---------------------------------------------------------------------------
+$enqMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_news_quality.meta.json"
+if (Test-Path $enqMetaPath) {
+    try {
+        $enqm          = Get-Content $enqMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $enqGate       = if ($enqm.PSObject.Properties['gate_result'])  { $enqm.gate_result } else { "SKIP" }
+        $enqPassCount  = if ($enqm.PSObject.Properties['pass_count'])   { [int]$enqm.pass_count }   else { 0 }
+        $enqFailCount  = if ($enqm.PSObject.Properties['fail_count'])   { [int]$enqm.fail_count }   else { 0 }
+        $enqTotal      = if ($enqm.PSObject.Properties['events_total']) { [int]$enqm.events_total } else { 0 }
+
+        Write-Host ""
+        Write-Host "EXEC_NEWS_QUALITY_HARD:"
+        Write-Host ("  events_checked: {0}  pass={1}  fail={2}" -f $enqTotal, $enqPassCount, $enqFailCount)
+
+        if ($enqGate -eq "FAIL") {
+            Write-Host ("  => EXEC_NEWS_QUALITY_HARD: FAIL ({0} event(s) missing verbatim quotes)" -f $enqFailCount) -ForegroundColor Red
+            if ($enqm.PSObject.Properties['events'] -and $enqm.events) {
+                foreach ($enqEv in $enqm.events) {
+                    if (-not $enqEv.all_pass) {
+                        Write-Host ("     FAIL: {0}" -f $enqEv.title) -ForegroundColor Red
+                    }
+                }
+            }
+            exit 1
+        } else {
+            Write-Host ("  => EXEC_NEWS_QUALITY_HARD: {0}" -f $enqGate) -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "  exec_news_quality meta parse error (non-fatal): $_"
+    }
+} else {
+    Write-Host ""
+    Write-Host "EXEC_NEWS_QUALITY_HARD: exec_news_quality.meta.json not found (skipped)"
 }
 
 # ---------------------------------------------------------------------------

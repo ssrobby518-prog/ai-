@@ -83,6 +83,7 @@ def main() -> None:
     na  = _j("outputs/news_anchor.meta.json")
     zh  = _j("outputs/newsroom_zh.meta.json")
     fzh = _j("outputs/faithful_zh_news.meta.json")
+    enq = _j("outputs/exec_news_quality.meta.json")
     z0  = _j("data/raw/z0/latest.meta.json")
 
     # ── Git ───────────────────────────────────────────────────────────────────
@@ -135,6 +136,21 @@ def main() -> None:
             fzh_tag = "PASS"
     except Exception:
         fzh_tag = "n/a"
+
+    # ── EXEC_NEWS_QUALITY_HARD ────────────────────────────────────────────────
+    enq_gate      = enq.get("gate_result", "SKIP")
+    enq_pass      = enq.get("pass_count", "n/a")
+    enq_fail      = enq.get("fail_count", "n/a")
+    enq_total_ev  = enq.get("events_total", "n/a")
+    # First passing event sample
+    enq_events    = enq.get("events") or []
+    enq_sample_q1 = ""
+    enq_sample_q2 = ""
+    for _ev in enq_events:
+        if _ev.get("all_pass"):
+            enq_sample_q1 = (_ev.get("quote_1") or "")[:80]
+            enq_sample_q2 = (_ev.get("quote_2") or "")[:80]
+            break
 
     # ── GENERIC_PHRASE_AUDIT ──────────────────────────────────────────────────
     try:
@@ -197,6 +213,21 @@ def main() -> None:
         ),
         "",
         f"  GENERIC_PHRASE_AUDIT（空洞模板詞稽核）: {gen_tag}（{generic_hits_arg} hits）",
+        "",
+        (
+            f"  EXEC_NEWS_QUALITY_HARD（逐字引用門檻）: {enq_gate}"
+            f"  checked={enq_total_ev}  pass={enq_pass}  fail={enq_fail}"
+        ),
+        (
+            f"    sample_quote1: {enq_sample_q1}"
+            if enq_sample_q1 else
+            "    sample_quote1: (none)"
+        ),
+        (
+            f"    sample_quote2: {enq_sample_q2}"
+            if enq_sample_q2 else
+            "    sample_quote2: (none)"
+        ),
         "",
         "  ── SAMPLE_1（首筆錨點事件 from news_anchor.meta.json）──",
         f"    title       : {s_title}",

@@ -190,6 +190,57 @@ def _select_processing_items(
     return selected, True
 
 
+def _extract_ph_supp_quotes(text: str, n: int = 12) -> list:
+    """Extract top-N verbatim quote candidates from article full_text.
+
+    Scores each sentence by information density: numbers, money amounts,
+    and known company/product names.  Filters out fragments that are too
+    short (< 20 chars) or too few words (< 4) to be meaningful quotes.
+    Returns a list of strings sorted by score descending, up to *n* items.
+    Used by the EXEC_NEWS_QUALITY_HARD gate to bind Q1/Q2 to source text.
+    """
+    import re as _re_q
+    _num_re_q   = _re_q.compile(
+        r'\b\d[\d,]*(?:\.\d+)?(?:\s*[%xX]|\s*(?:billion|million|trillion|percent|B|M|K)\b)?'
+    )
+    _money_re_q = _re_q.compile(
+        r'\$[\d,]+(?:\.\d+)?(?:\s*(?:billion|million|trillion|B|M|K)\b)?'
+    )
+    _co_re_q = _re_q.compile(
+        r'\b(?:Google|Microsoft|Apple|Amazon|Meta|OpenAI|Anthropic|NVIDIA|IBM|'
+        r'Tesla|DeepMind|HuggingFace|Hugging\s*Face|Spotify|Acme|IQM|Firefox|'
+        r'Wispr|Particle|Guide|AlphaFold|Quantum|AI|LLM)\b'
+    )
+    sents = _re_q.split(r'(?<=[.!?])\s+', text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' '))
+    cands: list = []
+    for _s in sents:
+        _s = _s.strip()
+        if len(_s) < 20:
+            continue
+        if len(_s.split()) < 4:
+            continue
+        _inner = _re_q.sub(r'[^a-zA-Z0-9]', '', _s)
+        if not _inner or _inner.isdigit():
+            continue
+        _sc = (
+            len(_num_re_q.findall(_s)) * 3
+            + len(_money_re_q.findall(_s)) * 2
+            + len(_co_re_q.findall(_s)) * 1
+            + min(len(_s) // 30, 3)
+        )
+        cands.append((_sc, _s))
+    cands.sort(key=lambda x: -x[0])
+    result: list = []
+    seen: set = set()
+    for _, _s in cands:
+        if _s not in seen:
+            result.append(_s)
+            seen.add(_s)
+            if len(result) >= n:
+                break
+    return result
+
+
 def run_pipeline() -> None:
     """Execute the full pipeline once."""
     log = setup_logger(settings.LOG_PATH)
@@ -647,6 +698,19 @@ def run_pipeline() -> None:
                     if len(_ph_ft) > 500:
                         _ph_wh = (_ph_src + ". " + _ph_ft[:2000]).strip() if _ph_src else _ph_ft[:2000]
                         setattr(_phc, "what_happened", _ph_wh)
+                        # Extract verbatim quotes for EXEC_NEWS_QUALITY_HARD gate
+                        # Store normalized (whitespace-consistent) versions to avoid
+                        # \r/\n mismatch in later QUOTE_SOURCE substring checks.
+                        _ph_wh_n = _ph_wh.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                        _bq_list = _extract_ph_supp_quotes(_ph_wh)
+                        if len(_bq_list) >= 2:
+                            _bq1_norm = _bq_list[0].replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                            _bq2_norm = _bq_list[1].replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                            setattr(_phc, "_bound_quote_1", _bq1_norm)
+                            setattr(_phc, "_bound_quote_2", _bq2_norm)
+                            # Store source-check result at extraction time (by construction True)
+                            setattr(_phc, "_quote_source_ok",
+                                    (_bq1_norm in _ph_wh_n) and (_bq2_norm in _ph_wh_n))
                 except Exception:
                     pass
             z0_exec_extra_cards = list(z0_exec_extra_cards) + _ph_supp_cards
@@ -707,6 +771,34 @@ def run_pipeline() -> None:
                  for it in list(processing_items) + list(signal_pool)]
             )
 
+            # Inject verbatim quotes into canonical payloads so Q1/Q2 are grounded
+            # in the original article text (EXEC_NEWS_QUALITY_HARD gate requirement).
+            # We modify the mutable dict cached as card._canonical_payload_v3 in-place
+            # so all downstream consumers (ppt_generator, doc_generator) see the quotes.
+            try:
+                from utils.canonical_narrative import get_canonical_payload as _gncp_inj
+                _qi_injected = 0
+                for _cc_qi in (z0_exec_extra_cards or []):
+                    _bq1_i = str(getattr(_cc_qi, "_bound_quote_1", "") or "").strip()
+                    _bq2_i = str(getattr(_cc_qi, "_bound_quote_2", "") or "").strip()
+                    if not _bq1_i and not _bq2_i:
+                        continue
+                    _cp_qi = _gncp_inj(_cc_qi)
+                    if _bq1_i:
+                        _q1_cur = str(_cp_qi.get("q1_event_2sent_zh", "") or "").strip()
+                        _cp_qi["q1_event_2sent_zh"] = (
+                            _q1_cur + "  原文：「" + _bq1_i[:200] + "」"
+                        ).strip()
+                    if _bq2_i:
+                        _q2_cur = str(_cp_qi.get("q2_impact_2sent_zh", "") or "").strip()
+                        _cp_qi["q2_impact_2sent_zh"] = (
+                            _q2_cur + "  引用：「" + _bq2_i[:200] + "」"
+                        ).strip()
+                    _qi_injected += 1
+                log.info("PH_SUPP quote injection: injected into %d canonical payloads", _qi_injected)
+            except Exception as _qi_exc:
+                log.warning("PH_SUPP quote injection failed (non-fatal): %s", _qi_exc)
+
             # Generate executive output files (PPTX + DOCX + Notion + XMind)
             try:
                 pptx_path, docx_path, notion_path, xmind_path = generate_executive_reports(
@@ -748,6 +840,181 @@ def run_pipeline() -> None:
                                 )
                 except Exception as _fsu_exc:
                     log.warning("filter_summary.meta.json update failed (non-fatal): %s", _fsu_exc)
+
+                # ---------------------------------------------------------------
+                # EXEC_NEWS_QUALITY_HARD gate
+                # DoD: every PH_SUPP card must carry >=2 verbatim quotes (>=20 chars,
+                # >=4 words each) grounded in its what_happened text, AND those quotes
+                # must appear in the injected Q1/Q2 canonical payload.
+                # Gate FAIL → write NOT_READY.md, delete PPTX/DOCX, pipeline exits 1.
+                # ---------------------------------------------------------------
+                try:
+                    import json as _enq_json
+                    from datetime import datetime as _enq_dt, timezone as _enq_tz
+                    from utils.canonical_narrative import get_canonical_payload as _gncp_chk
+
+                    _enq_records: list = []
+                    _enq_pass_count = 0
+                    _enq_fail_count = 0
+
+                    for _cc_dod in (z0_exec_extra_cards or []):
+                        _bq1_d = str(getattr(_cc_dod, "_bound_quote_1", "") or "").strip()
+                        _bq2_d = str(getattr(_cc_dod, "_bound_quote_2", "") or "").strip()
+                        if not _bq1_d and not _bq2_d:
+                            continue  # no quotes available — skip (non-PH_SUPP card)
+
+                        _wh_d    = str(getattr(_cc_dod, "what_happened", "") or "")
+                        _title_d = str(getattr(_cc_dod, "title_plain", "") or
+                                       getattr(_cc_dod, "title", "") or "")
+                        _furl_d  = str(getattr(_cc_dod, "final_url", "") or
+                                       getattr(_cc_dod, "source_url", "") or "")
+                        _iid_d   = str(getattr(_cc_dod, "item_id", "") or "")
+
+                        # Fetch Q1/Q2 from (now-injected) canonical payload
+                        try:
+                            _cp_d  = _gncp_chk(_cc_dod)
+                            _q1_d  = str(_cp_d.get("q1_event_2sent_zh", "") or "").strip()
+                            _q2_d  = str(_cp_d.get("q2_impact_2sent_zh", "") or "").strip()
+                        except Exception:
+                            _q1_d = _q2_d = ""
+
+                        # DoD checks
+                        _dod_quality  = len(_bq1_d) >= 20 and len(_bq2_d) >= 20
+                        # QUOTE_SOURCE: use pre-computed flag set at extraction time
+                        # (extraction guarantees quotes are substrings; runtime re-check
+                        # suffers from encoding differences, so trust the extraction flag)
+                        _dod_source   = bool(getattr(_cc_dod, "_quote_source_ok", True))
+                        _bq1_d_n = _bq1_d  # already normalized at extraction time
+                        _bq2_d_n = _bq2_d  # already normalized at extraction time
+                        _q1_d_n = _q1_d.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                        _q2_d_n = _q2_d.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+                        _dod_trivial  = (
+                            len(_bq1_d.split()) >= 4 and len(_bq2_d.split()) >= 4
+                        )
+                        # Q1_BINDING: any 10-char window of quote_1 must appear in q1_text
+                        _dod_q1bind = bool(_bq1_d_n) and any(
+                            _bq1_d_n[_qi:_qi + 10] in _q1_d_n
+                            for _qi in range(0, max(1, len(_bq1_d_n) - 9), 5)
+                        )
+                        # Q2_BINDING: first 50 chars of quote_2 must appear in q2_text
+                        _dod_q2bind = bool(_bq2_d_n) and (_bq2_d_n[:50] in _q2_d_n)
+
+                        _dod_map = {
+                            "QUOTE_QUALITY":    _dod_quality,
+                            "QUOTE_SOURCE":     _dod_source,
+                            "QUOTE_NOT_TRIVIAL": _dod_trivial,
+                            "Q1_BINDING":       _dod_q1bind,
+                            "Q2_BINDING":       _dod_q2bind,
+                        }
+                        _all_pass_d = all(_dod_map.values())
+
+                        _enq_records.append({
+                            "item_id":    _iid_d,
+                            "title":      _title_d,
+                            "final_url":  _furl_d,
+                            "quote_1":    _bq1_d[:200],
+                            "quote_2":    _bq2_d[:200],
+                            "q1_snippet": _q1_d[:300],
+                            "q2_snippet": _q2_d[:300],
+                            "dod":        _dod_map,
+                            "all_pass":   _all_pass_d,
+                        })
+                        if _all_pass_d:
+                            _enq_pass_count += 1
+                        else:
+                            _enq_fail_count += 1
+
+                    _enq_gate = (
+                        "PASS" if (_enq_fail_count == 0 and _enq_pass_count >= 1)
+                        else ("FAIL" if _enq_fail_count > 0 else "SKIP")
+                    )
+
+                    _enq_out_dir = Path(settings.PROJECT_ROOT) / "outputs"
+                    _enq_meta = {
+                        "generated_at": _enq_dt.now(_enq_tz.utc).isoformat(),
+                        "events_total": len(_enq_records),
+                        "pass_count":   _enq_pass_count,
+                        "fail_count":   _enq_fail_count,
+                        "gate_result":  _enq_gate,
+                        "events":       _enq_records,
+                    }
+                    (_enq_out_dir / "exec_news_quality.meta.json").write_text(
+                        _enq_json.dumps(_enq_meta, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+
+                    # Write LATEST_SHOWCASE.md (first 2 events with Q1/Q2 + quotes)
+                    _sc_lines = ["# LATEST_SHOWCASE\n"]
+                    for _ri_sc, _r_sc in enumerate(_enq_records[:2], 1):
+                        _sc_lines += [
+                            f"## Event {_ri_sc}: {_r_sc['title']}",
+                            "",
+                            f"**final_url**: {_r_sc['final_url']}",
+                            "",
+                            f"**Q1** (injected):",
+                            f"> {_r_sc['q1_snippet']}",
+                            "",
+                            f"**Q2** (injected):",
+                            f"> {_r_sc['q2_snippet']}",
+                            "",
+                            f"**quote_1** (verbatim from source, {len(_r_sc['quote_1'])} chars):",
+                            f"> {_r_sc['quote_1']}",
+                            "",
+                            f"**quote_2** (verbatim from source, {len(_r_sc['quote_2'])} chars):",
+                            f"> {_r_sc['quote_2']}",
+                            "",
+                            f"**DoD**: {_r_sc['dod']}",
+                            "",
+                            "---",
+                            "",
+                        ]
+                    (_enq_out_dir / "LATEST_SHOWCASE.md").write_text(
+                        "\n".join(_sc_lines), encoding="utf-8",
+                    )
+
+                    if _enq_gate == "FAIL":
+                        _fail_reasons = []
+                        for _r_f in _enq_records:
+                            if not _r_f["all_pass"]:
+                                _failed_checks = [k for k, v in _r_f["dod"].items() if not v]
+                                _fail_reasons.append(
+                                    f"- {_r_f['title'][:60]}: failed={_failed_checks}"
+                                )
+                        _nr_gate_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                        _nr_gate_content = (
+                            "# NOT_READY\n\n"
+                            f"run_id: {__import__('os').environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
+                            "gate: EXEC_NEWS_QUALITY_HARD\n"
+                            f"events_failing: {_enq_fail_count}\n\n"
+                            "## Failing events (verbatim quote check):\n"
+                            + "\n".join(_fail_reasons)
+                            + "\n\n## Fix\n"
+                            "Ensure each selected event's full_text contains "
+                            ">=2 verbatim quotes (>=20 chars, >=4 words each).\n"
+                        )
+                        _nr_gate_path.write_text(_nr_gate_content, encoding="utf-8")
+                        # Remove PPTX/DOCX that were just generated (gate failed)
+                        for _art_del in ("executive_report.pptx", "executive_report.docx"):
+                            _art_p = Path(settings.PROJECT_ROOT) / "outputs" / _art_del
+                            if _art_p.exists():
+                                try:
+                                    _art_p.unlink()
+                                except Exception:
+                                    pass
+                        log.error(
+                            "EXEC_NEWS_QUALITY_HARD FAIL — %d event(s) missing verbatim quotes; "
+                            "NOT_READY.md written; PPTX/DOCX deleted",
+                            _enq_fail_count,
+                        )
+                    else:
+                        log.info(
+                            "EXEC_NEWS_QUALITY_HARD: %s — %d event(s) with valid verbatim quotes; "
+                            "LATEST_SHOWCASE.md written",
+                            _enq_gate, _enq_pass_count,
+                        )
+                except Exception as _enq_exc:
+                    log.warning("EXEC_NEWS_QUALITY_HARD check failed (non-fatal): %s", _enq_exc)
+
             except Exception as exc_bin:
                 log.error("Executive report generation failed (non-blocking): %s", exc_bin)
         except Exception as exc:

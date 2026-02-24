@@ -727,6 +727,53 @@ if (Test-Path $execQualMetaOnlinePath) {
 }
 
 # ---------------------------------------------------------------------------
+# EXEC_NEWS_QUALITY_HARD GATE (online run)
+#   Reads outputs/exec_news_quality.meta.json written by run_once.py.
+#   PASS: gate_result=PASS; SKIP: meta absent; FAIL: gate_result=FAIL (exit 1)
+# ---------------------------------------------------------------------------
+$enqMetaOnlinePath = Join-Path $repoRoot "outputs\exec_news_quality.meta.json"
+if (Test-Path $enqMetaOnlinePath) {
+    try {
+        $enqmO         = Get-Content $enqMetaOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $enqGateO      = if ($enqmO.PSObject.Properties['gate_result'])  { $enqmO.gate_result } else { "SKIP" }
+        $enqPassO      = if ($enqmO.PSObject.Properties['pass_count'])   { [int]$enqmO.pass_count }   else { 0 }
+        $enqFailO      = if ($enqmO.PSObject.Properties['fail_count'])   { [int]$enqmO.fail_count }   else { 0 }
+        $enqTotalO     = if ($enqmO.PSObject.Properties['events_total']) { [int]$enqmO.events_total } else { 0 }
+
+        Write-Output ""
+        Write-Output "EXEC_NEWS_QUALITY_HARD:"
+        Write-Output ("  events_checked: {0}  pass={1}  fail={2}" -f $enqTotalO, $enqPassO, $enqFailO)
+
+        # Print sample quote from first passing event
+        if ($enqmO.PSObject.Properties['events'] -and $enqmO.events -and $enqmO.events.Count -gt 0) {
+            $enqFirst = $enqmO.events[0]
+            Write-Output ("  sample_title : {0}" -f $enqFirst.title)
+            Write-Output ("  sample_quote1: {0}" -f $enqFirst.quote_1)
+            Write-Output ("  sample_quote2: {0}" -f $enqFirst.quote_2)
+        }
+
+        if ($enqGateO -eq "FAIL") {
+            Write-Output ("  => EXEC_NEWS_QUALITY_HARD: FAIL ({0} event(s) missing verbatim quotes)" -f $enqFailO)
+            if ($enqmO.PSObject.Properties['events'] -and $enqmO.events) {
+                foreach ($enqEvO in $enqmO.events) {
+                    if (-not $enqEvO.all_pass) {
+                        Write-Output ("     FAIL: {0}" -f $enqEvO.title)
+                    }
+                }
+            }
+            exit 1
+        } else {
+            Write-Output ("  => EXEC_NEWS_QUALITY_HARD: {0}" -f $enqGateO)
+        }
+    } catch {
+        Write-Output ("  exec_news_quality meta parse error (non-fatal): {0}" -f $_)
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC_NEWS_QUALITY_HARD: exec_news_quality.meta.json not found (skipped)"
+}
+
+# ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE — same hardened logic as verify_run v2; audits tracking
 # state; never crashes on [gone] / missing refs
 # ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE
