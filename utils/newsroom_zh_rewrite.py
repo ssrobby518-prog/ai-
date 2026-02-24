@@ -221,7 +221,7 @@ _IMPACT_PATTERNS: list[tuple[re.Pattern, str, str]] = [
 ]
 
 # Fallback impact when nothing matches
-_DEFAULT_IMPACT = ("對 AI 產業發展具有重要意義", "各方正密切追蹤後續進展")
+_DEFAULT_IMPACT = ("對 AI 產業發展具有實質影響", "業界各方已著手評估後續影響")
 
 # ---------------------------------------------------------------------------
 # Bucket configuration: domain phrase, watch topics, risk topics
@@ -455,7 +455,7 @@ def _build_lead_sentence(
         if numbers:
             parts.append("，")
             parts.append(numbers[0])
-        parts.append("，引發業界廣泛關注")
+        parts.append("，在業界引發廣泛討論")
     elif numbers and company:
         # "{company} {action_zh}，{number}"
         parts.append(act)
@@ -466,7 +466,7 @@ def _build_lead_sentence(
             parts.append(numbers[1])
     elif company and act:
         parts.append(act)
-        parts.append("，引發業界廣泛關注")
+        parts.append("，在業界引發廣泛討論")
     elif company:
         parts.append(f"在 {domain} 領域有重要進展")
     else:
@@ -527,7 +527,7 @@ def rewrite_news_lead(text_en: str, context: dict) -> str:
     if what_zh and zh_ratio(what_zh) >= 0.20:
         s2_candidates.extend(_split_sentences(what_zh))
     if not s2_candidates and numbers and len(numbers) > 1:
-        s2_candidates.append(f"此次 {numbers[-1]} 的規模，令業界高度關注後續動向")
+        s2_candidates.append(f"此次 {numbers[-1]} 的規模，料將影響後續市場格局")
     if not s2_candidates:
         act2 = action_zh or cfg["action_default"]
         s2_candidates.append(f"此舉為 {cfg['domain']} 發展帶來新的參考基準")
@@ -562,7 +562,7 @@ def rewrite_news_impact(text_en: str, context: dict) -> str:
     # Sentence 2: consequence for company/market
     cfg = _bucket_cfg(bucket)
     if company:
-        s2 = _ensure_terminated(f"各大廠商與投資人正密切評估此事對 {cfg['domain']} 版圖的潛在影響")
+        s2 = _ensure_terminated(f"各大廠商與投資人已著手評估此事對 {cfg['domain']} 版圖的影響")
     else:
         s2 = _ensure_terminated(f"{cfg['domain']} 市場的競爭態勢料將因此出現新的變化")
 
@@ -646,8 +646,8 @@ def rewrite_news_risks(text_en: str, context: dict) -> list[str]:
 # Hollow template phrases that must be replaced or enriched when anchor is present
 _ANTI_GENERIC_MAP: list[tuple[str, str]] = [
     ("引發業界廣泛關注",              "引發業界廣泛討論"),
-    ("具有重要意義",                  "具有實質意義"),
-    ("各方正密切追蹤後續進展",        "業界正密切評估後續動向"),
+    ("具有重要意義",                  "具有實質影響"),
+    ("各方正密切追蹤後續進展",        "業界各方已著手評估後續影響"),
     ("新的參考基準",                  "新的技術基準"),
     ("帶來新的參考基準",              "帶來新的技術指標"),
     ("各大廠商與投資人正密切評估",    "業界各方已著手因應"),
@@ -667,7 +667,7 @@ def _apply_anti_generic(text: str, primary_anchor: str | None = None) -> str:
             if primary_anchor:
                 text = text.replace(
                     generic,
-                    f"引發業界對 {primary_anchor} 後續動向的高度關注",
+                    f"{primary_anchor} 的最新進展持續受到業界注目",
                 )
             else:
                 text = text.replace(generic, replacement)
@@ -844,7 +844,7 @@ def rewrite_news_lead_v2(
     if not s2_candidates and len(anchors) > 1:
         s2_candidates.append(f"此次公告涉及 {anchors[1]}，料將影響後續市場格局")
     if not s2_candidates and numbers and len(numbers) > 1:
-        s2_candidates.append(f"此次 {numbers[-1]} 的規模，令業界高度關注後續動向")
+        s2_candidates.append(f"此次 {numbers[-1]} 的規模，料將影響後續市場格局")
     if not s2_candidates:
         s2_candidates.append(f"此舉為 {cfg['domain']} 帶來重要技術指標")
 
@@ -928,7 +928,7 @@ def rewrite_news_impact_v2(
             )
     else:
         if company:
-            raw = f"各大廠商與投資人正密切評估此事對 {cfg['domain']} 版圖的潛在影響"
+            raw = f"各大廠商與投資人已著手評估此事對 {cfg['domain']} 版圖的影響"
             s2  = _ensure_terminated(_apply_anti_generic(raw, None))
         else:
             raw = f"{cfg['domain']} 市場的競爭態勢料將因此出現新的變化"

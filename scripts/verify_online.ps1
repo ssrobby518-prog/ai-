@@ -792,6 +792,82 @@ if (Test-Path $enqMetaOnlinePath) {
 }
 
 # ---------------------------------------------------------------------------
+# EXEC_NARRATIVE_FIDELITY_HARD GATE (online run)
+#   Checks per-event DoD for ACTOR_BINDING, STYLE_SANITY, NAMING, AI_RELEVANCE
+#   in exec_news_quality.meta.json (written by run_once.py after pipeline).
+#   Also scans LATEST_SHOWCASE.md and outputs/notion_page.md for banned phrases.
+#   FAIL → exit 1
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "EXEC_NARRATIVE_FIDELITY_HARD:"
+$enf_fail   = $false
+$enf_detail = @()
+
+# --- A) Per-event DoD checks from meta.json ---
+if (Test-Path $enqMetaOnlinePath) {
+    try {
+        $enfMeta = Get-Content $enqMetaOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $enfFidelityKeys = @("ACTOR_BINDING","STYLE_SANITY","NAMING","AI_RELEVANCE")
+        if ($enfMeta.PSObject.Properties['events'] -and $enfMeta.events) {
+            foreach ($enfEv in $enfMeta.events) {
+                if ($enfEv.PSObject.Properties['dod'] -and $enfEv.dod) {
+                    foreach ($enfKey in $enfFidelityKeys) {
+                        $enfVal = $null
+                        if ($enfEv.dod.PSObject.Properties[$enfKey]) {
+                            $enfVal = $enfEv.dod.$enfKey
+                        }
+                        if ($enfVal -eq $null) { continue }   # key absent - skip (legacy record)
+                        if ($enfVal -eq $false) {
+                            $enf_fail = $true
+                            $enf_detail += ("  FAIL [{0}] event={1}" -f $enfKey, $enfEv.title)
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        Write-Output ("  meta parse error (non-fatal): {0}" -f $_)
+    }
+} else {
+    Write-Output "  exec_news_quality.meta.json absent - skipping per-event DoD check"
+}
+
+# --- B) Document scan for STYLE_SANITY + NAMING (pure-ASCII Unicode escapes) ---
+# \u5f15\u767c = invfa, \u95dc\u6ce8 = guanzhu, etc.
+$enfStyleRe  = [regex]'\u5f15\u767c.{0,20}\u95dc\u6ce8|\u5177\u6709.{0,20}\u610f\u7fa9|\u5bc6\u5207\u8ffd\u8e64|\u6b63\u5bc6\u5207\u8a55\u4f30|\u5f8c\u7e8c\u52d5\u5411|\u5404\u65b9.{0,20}\u95dc\u6ce8'
+$enfNamingRe = [regex]'\u514b\u52de\u5fb7|\u514b\u52b3\u5fb7'
+$enfScanPaths = @(
+    (Join-Path $repoRoot "outputs\LATEST_SHOWCASE.md"),
+    (Join-Path $repoRoot "outputs\notion_page.md")
+)
+foreach ($enfDoc in $enfScanPaths) {
+    if (-not (Test-Path $enfDoc)) { continue }
+    $enfText = Get-Content $enfDoc -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if (-not $enfText) { continue }
+    $enfDocName = Split-Path $enfDoc -Leaf
+    $enfStyleM = $enfStyleRe.Match($enfText)
+    if ($enfStyleM.Success) {
+        $enf_fail = $true
+        $enf_detail += ("  FAIL [STYLE_SANITY] doc={0} match=`"{1}`"" -f $enfDocName, $enfStyleM.Value)
+    }
+    $enfNamingM = $enfNamingRe.Match($enfText)
+    if ($enfNamingM.Success) {
+        $enf_fail = $true
+        $enf_detail += ("  FAIL [NAMING] doc={0} match=`"{1}`"" -f $enfDocName, $enfNamingM.Value)
+    }
+}
+
+if ($enf_detail.Count -gt 0) {
+    foreach ($enfLine in $enf_detail) { Write-Output $enfLine }
+}
+if ($enf_fail) {
+    Write-Output "  => EXEC_NARRATIVE_FIDELITY_HARD: FAIL"
+    exit 1
+} else {
+    Write-Output "  => EXEC_NARRATIVE_FIDELITY_HARD: PASS"
+}
+
+# ---------------------------------------------------------------------------
 # GIT UPSTREAM PROBE — same hardened logic as verify_run v2; audits tracking
 # state; never crashes on [gone] / missing refs
 # ORIGIN_REF_MODE values: HEAD | REMOTE_SHOW | FALLBACK | NONE

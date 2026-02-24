@@ -157,6 +157,18 @@ Write-Host "  Education quality gate passed." -ForegroundColor Green
 
 # 8) Executive output files check (DOCX/PPTX/Notion/XMind)
 Write-Host "`n[8/9] Checking executive output files..." -ForegroundColor Yellow
+# Detect sparse day: Notion/XMind are only required when main events passed the pipeline.
+$vrSparseDay = $false
+$vrFlowCountsPath = "outputs\flow_counts.meta.json"
+if (Test-Path $vrFlowCountsPath) {
+    try {
+        $vrFc = Get-Content $vrFlowCountsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $vrSparseDay = ($vrFc.PSObject.Properties['event_gate_pass_total'] -and [int]$vrFc.event_gate_pass_total -eq 0)
+    } catch { }
+}
+if ($vrSparseDay) {
+    Write-Host "  [sparse day detected: event_gate_pass_total=0 - Notion/XMind optional]" -ForegroundColor Yellow
+}
 $execFiles = @(
     @{ Name="DOCX"; Path="outputs\executive_report.docx" },
     @{ Name="PPTX"; Path="outputs\executive_report.pptx" },
@@ -178,8 +190,13 @@ foreach ($ef in $execFiles) {
             $binPass = $false
         }
     } else {
-        Write-Host "  FAIL: $($ef.Path) not found" -ForegroundColor Red
-        $binPass = $false
+        $isSparseOptional = ($ef.Name -eq "Notion" -or $ef.Name -eq "XMind") -and $vrSparseDay
+        if ($isSparseOptional) {
+            Write-Host "  SKIP: $($ef.Path) not found (sparse day - optional)" -ForegroundColor Yellow
+        } else {
+            Write-Host "  FAIL: $($ef.Path) not found" -ForegroundColor Red
+            $binPass = $false
+        }
     }
 }
 
@@ -209,14 +226,22 @@ $notionBannedHits = 0
 $docxBannedHits = 0
 $pptxBannedHits = 0
 
-# Check banned words in Notion page (plain text)
-$notionContent = Get-Content "outputs\notion_page.md" -Raw -Encoding UTF8
-foreach ($bw in $bannedWords) {
-    if ($notionContent -match [regex]::Escape($bw)) {
-        Write-Host "  FAIL: Banned word '$bw' found in notion_page.md" -ForegroundColor Red
-        $notionBannedHits++
-        $v3Pass = $false
+# Check banned words in Notion page (plain text) — skip on sparse day if file absent
+if ((Test-Path "outputs\notion_page.md") -or -not $vrSparseDay) {
+    $notionContent = Get-Content "outputs\notion_page.md" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+    if ($notionContent) {
+        foreach ($bw in $bannedWords) {
+            if ($notionContent -match [regex]::Escape($bw)) {
+                Write-Host "  FAIL: Banned word '$bw' found in notion_page.md" -ForegroundColor Red
+                $notionBannedHits++
+                $v3Pass = $false
+            }
+        }
+    } else {
+        Write-Host "  SKIP: notion_page.md absent (sparse day)" -ForegroundColor Yellow
     }
+} else {
+    Write-Host "  SKIP: notion_page.md absent (sparse day)" -ForegroundColor Yellow
 }
 
 # Check banned words in DOCX (extract text via python; strip URLs to avoid false positives from base64 URL fragments)

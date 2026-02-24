@@ -856,6 +856,16 @@ def run_pipeline() -> None:
                     _enq_records: list = []
                     _enq_pass_count = 0
                     _enq_fail_count = 0
+                    import re as _re_dod
+                    _style_bad_re = _re_dod.compile(
+                        r'引發.{0,20}關注|具有.{0,20}意義|密切追蹤|正密切評估|後續動向|各方.{0,20}關注'
+                    )
+                    _naming_bad_re = _re_dod.compile(r'克勞德|克劳德')
+                    _ai_kw_re = _re_dod.compile(
+                        r'\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini'
+                        r'|人工智[能慧]|大型語言模型|生成式\s*AI',
+                        _re_dod.IGNORECASE,
+                    )
 
                     for _cc_dod in (z0_exec_extra_cards or []):
                         _bq1_d = str(getattr(_cc_dod, "_bound_quote_1", "") or "").strip()
@@ -875,8 +885,9 @@ def run_pipeline() -> None:
                             _cp_d  = _gncp_chk(_cc_dod)
                             _q1_d  = str(_cp_d.get("q1_event_2sent_zh", "") or "").strip()
                             _q2_d  = str(_cp_d.get("q2_impact_2sent_zh", "") or "").strip()
+                            _primary_anchor_d = str(_cp_d.get("primary_anchor", "") or "").strip()
                         except Exception:
-                            _q1_d = _q2_d = ""
+                            _q1_d = _q2_d = _primary_anchor_d = ""
 
                         # DoD checks
                         _dod_quality  = len(_bq1_d) >= 20 and len(_bq2_d) >= 20
@@ -898,6 +909,14 @@ def run_pipeline() -> None:
                         )
                         # Q2_BINDING: first 50 chars of quote_2 must appear in q2_text
                         _dod_q2bind = bool(_bq2_d_n) and (_bq2_d_n[:50] in _q2_d_n)
+                        # ACTOR_BINDING: primary_anchor must appear in quote_1 (empty → pass)
+                        _dod_actor_bind = (not _primary_anchor_d) or (_primary_anchor_d in _bq1_d)
+                        # STYLE_SANITY: injected Q1/Q2 must not contain banned template phrases
+                        _dod_style = not bool(_style_bad_re.search(_q1_d + " " + _q2_d))
+                        # NAMING: no banned Chinese transliterations of Claude
+                        _dod_naming = not bool(_naming_bad_re.search(_q1_d + " " + _q2_d))
+                        # AI_RELEVANCE: title or Q1/Q2 must reference an AI topic
+                        _dod_ai_rel = bool(_ai_kw_re.search(_title_d + " " + _q1_d + " " + _q2_d))
 
                         _dod_map = {
                             "QUOTE_QUALITY":    _dod_quality,
@@ -905,6 +924,10 @@ def run_pipeline() -> None:
                             "QUOTE_NOT_TRIVIAL": _dod_trivial,
                             "Q1_BINDING":       _dod_q1bind,
                             "Q2_BINDING":       _dod_q2bind,
+                            "ACTOR_BINDING":    _dod_actor_bind,
+                            "STYLE_SANITY":     _dod_style,
+                            "NAMING":           _dod_naming,
+                            "AI_RELEVANCE":     _dod_ai_rel,
                         }
                         _all_pass_d = all(_dod_map.values())
 
@@ -912,6 +935,7 @@ def run_pipeline() -> None:
                             "item_id":    _iid_d,
                             "title":      _title_d,
                             "final_url":  _furl_d,
+                            "actor":      _primary_anchor_d,
                             "quote_1":    _bq1_d[:200],
                             "quote_2":    _bq2_d[:200],
                             "q1_snippet": _q1_d[:300],
@@ -950,6 +974,8 @@ def run_pipeline() -> None:
                             f"## Event {_ri_sc}: {_r_sc['title']}",
                             "",
                             f"**final_url**: {_r_sc['final_url']}",
+                            "",
+                            f"**actor**: {_r_sc.get('actor', '')}",
                             "",
                             f"**Q1** (injected):",
                             f"> {_r_sc['q1_snippet']}",
