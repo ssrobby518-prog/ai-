@@ -173,6 +173,65 @@ def _make_simple_table(doc: Document, headers: list[str],
                     run.font.size = Pt(10)
 
 
+def _norm_key(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _load_final_cards(metrics: dict | None) -> list[dict]:
+    if not isinstance(metrics, dict):
+        return []
+    payload = metrics.get("final_cards", [])
+    if not isinstance(payload, list):
+        return []
+    return [p for p in payload if isinstance(p, dict)]
+
+
+def _align_event_cards_with_final_cards(
+    event_cards: list[EduNewsCard],
+    final_cards: list[dict],
+) -> tuple[list[EduNewsCard], list[dict | None]]:
+    if not final_cards:
+        return event_cards, [None for _ in event_cards]
+
+    by_id: dict[str, EduNewsCard] = {}
+    by_title: dict[str, EduNewsCard] = {}
+    for c in event_cards:
+        cid = str(getattr(c, "item_id", "") or "").strip()
+        if cid:
+            by_id[cid] = c
+        ctitle = _norm_key(getattr(c, "title_plain", "") or getattr(c, "title", ""))
+        if ctitle:
+            by_title[ctitle] = c
+
+    ordered_cards: list[EduNewsCard] = []
+    ordered_payloads: list[dict] = []
+    used_ids: set[str] = set()
+
+    for payload in final_cards:
+        pid = str(payload.get("item_id", "") or "").strip()
+        ptitle = _norm_key(payload.get("title", ""))
+        card = None
+        if pid and pid in by_id and pid not in used_ids:
+            card = by_id[pid]
+        elif ptitle and ptitle in by_title:
+            cand = by_title[ptitle]
+            cid = str(getattr(cand, "item_id", "") or "").strip()
+            if cid and cid not in used_ids:
+                card = cand
+        if card is None:
+            continue
+        cid = str(getattr(card, "item_id", "") or "").strip() or f"idx_{len(ordered_cards)}"
+        if cid in used_ids:
+            continue
+        used_ids.add(cid)
+        ordered_cards.append(card)
+        ordered_payloads.append(payload)
+
+    if ordered_cards:
+        return ordered_cards, ordered_payloads
+    return event_cards, [None for _ in event_cards]
+
+
 # ---------------------------------------------------------------------------
 # Section builders
 # ---------------------------------------------------------------------------
@@ -371,7 +430,12 @@ def _build_structured_summary(doc: Document, cards: list[EduNewsCard],
     _add_divider(doc)
 
 
-def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> None:
+def _build_brief_card_section(
+    doc: Document,
+    card: EduNewsCard,
+    idx: int,
+    final_payload: dict | None = None,
+) -> None:
     """CEO Brief card — Anti-Fragment v1 fixed 3-section format.
 
     Sections (EXEC_VISUAL_TEMPLATE_V1 DOCX sync):
@@ -394,7 +458,8 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     _add_divider(doc)
 
     # Section heading
-    _add_heading(doc, f"#{idx}  {sanitize(card.title_plain[:45])}", level=2)
+    _title_for_card = str((final_payload or {}).get("title", "") or card.title_plain or "")
+    _add_heading(doc, f"#{idx}  {sanitize(_title_for_card[:45])}", level=2)
 
     # Embedded image
     try:
@@ -417,7 +482,7 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
 
     # ── Q1: What Happened (canonical q1_event_2sent_zh) ──
     _add_heading(doc, "Q1 — What Happened", level=3)
-    _q1_doc = _cp_doc.get("q1_event_2sent_zh", "") or _nc_build(card)
+    _q1_doc = str((final_payload or {}).get("q1", "") or _cp_doc.get("q1_event_2sent_zh", "") or _nc_build(card))
     narrative = _doc_norm_gloss(sanitize(_q1_doc), _DOC_GLOSSARY, _gloss_seen)
     p_what = doc.add_paragraph(narrative)
     p_what.paragraph_format.space_after = Pt(6)
@@ -427,7 +492,11 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
 
     # ── Q2: WHY IT MATTERS (canonical q2_impact_2sent_zh) ──
     _add_heading(doc, "Q2 — WHY IT MATTERS", level=3)
-    _q2_doc = _cp_doc.get("q2_impact_2sent_zh", "") or (card.why_important or brief.get("q1_meaning", ""))
+    _q2_doc = str(
+        (final_payload or {}).get("q2", "")
+        or _cp_doc.get("q2_impact_2sent_zh", "")
+        or (card.why_important or brief.get("q1_meaning", ""))
+    )
     why_combined = _doc_norm_gloss(sanitize(_q2_doc), _DOC_GLOSSARY, _gloss_seen)
     p_why = doc.add_paragraph(why_combined)
     p_why.paragraph_format.space_after = Pt(6)
@@ -449,6 +518,15 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
     proof_lines = [sanitize(_proof_doc)]
     if card.source_url and card.source_url.startswith("http"):
         proof_lines.append(_safe_url_display(card.source_url))
+    if final_payload:
+        _proof_url = str(final_payload.get("final_url", "") or "").strip()
+        _proof_q1 = str(final_payload.get("quote_1", "") or "").strip()
+        _proof_q2 = str(final_payload.get("quote_2", "") or "").strip()
+        proof_lines = [
+            sanitize(f"final_url: {_proof_url}"),
+            sanitize(f"quote_1: {_proof_q1}"),
+            sanitize(f"quote_2: {_proof_q2}"),
+        ]
     _add_callout(doc, "Proof", proof_lines)
 
     # ── Data Card ──
@@ -467,7 +545,10 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
 
     # ── Q3 Moves (3 bullets, bullet_normalizer + fragment guard + glossing) ──
     _add_heading(doc, "Q3 — 現在要做什麼 / Moves", level=3)
-    raw_actions = brief.get("q3_actions", []) or []
+    if final_payload and isinstance(final_payload.get("moves"), list):
+        raw_actions = list(final_payload.get("moves", []) or [])
+    else:
+        raw_actions = brief.get("q3_actions", []) or []
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_mv
     moves = _nb_safe([sanitize(a) for a in raw_actions[:3]])
     if not moves:
@@ -492,7 +573,10 @@ def _build_brief_card_section(doc: Document, card: EduNewsCard, idx: int) -> Non
         _add_callout(doc, "Video Source", [sanitize(l) for l in vid_lines])
 
     # ── Risks (canonical risks_2bullets_zh preferred) ──
-    raw_risks = list(_cp_doc.get("risks_2bullets_zh", []) or []) or dc.get("risks", []) or []
+    if final_payload and isinstance(final_payload.get("risks"), list):
+        raw_risks = list(final_payload.get("risks", []) or [])
+    else:
+        raw_risks = list(_cp_doc.get("risks_2bullets_zh", []) or []) or dc.get("risks", []) or []
     from utils.semantic_quality import is_placeholder_or_fragment as _is_frag_rk
     risks = _nb_safe([sanitize(r) for r in raw_risks[:2]])
     risks = [
@@ -769,6 +853,8 @@ def generate_executive_docx(
     _build_corp_watch(doc, cards, metrics=metrics)
 
     event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+    _final_cards_payload = _load_final_cards(metrics)
+    event_cards, _event_payloads = _align_event_cards_with_final_cards(event_cards, _final_cards_payload)
 
     # Quality guard: ensure per-card text density meets thresholds.
     for ec in event_cards:
@@ -790,7 +876,8 @@ def generate_executive_docx(
 
     # 8. Per-event: CEO Brief card (WHAT HAPPENED + WHY IT MATTERS)
     for i, card in enumerate(event_cards, 1):
-        _build_brief_card_section(doc, card, i)
+        _payload = _event_payloads[i - 1] if i - 1 < len(_event_payloads) else None
+        _build_brief_card_section(doc, card, i, final_payload=_payload)
 
     # 9. Recommended Moves (v5)
     _build_recommended_moves(doc, cards)

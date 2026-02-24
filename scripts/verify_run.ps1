@@ -807,6 +807,49 @@ if (Test-Path $enqMetaPath) {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# EXEC_DELIVERABLE_DOCX_PPTX_HARD GATE
+# ---------------------------------------------------------------------------
+$execDelivMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_deliverable_docx_pptx_hard.meta.json"
+if (Test-Path $execDelivMetaPath) {
+    try {
+        $edm = Get-Content $execDelivMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $edGate  = if ($edm.PSObject.Properties['gate_result']) { $edm.gate_result } else { "FAIL" }
+        $edTotal = if ($edm.PSObject.Properties['events_total']) { [int]$edm.events_total } else { 0 }
+        $edPass  = if ($edm.PSObject.Properties['pass_count']) { [int]$edm.pass_count } else { 0 }
+        $edFail  = if ($edm.PSObject.Properties['fail_count']) { [int]$edm.fail_count } else { 0 }
+
+        Write-Host ""
+        Write-Host "EXEC_DELIVERABLE_DOCX_PPTX_HARD:"
+        Write-Host ("  events_checked: {0}  pass={1}  fail={2}" -f $edTotal, $edPass, $edFail)
+
+        if ($edGate -ne "PASS") {
+            Write-Host ("  => EXEC_DELIVERABLE_DOCX_PPTX_HARD: FAIL ({0} failing event(s))" -f $edFail) -ForegroundColor Red
+            if ($edm.PSObject.Properties['events'] -and $edm.events) {
+                foreach ($edEv in $edm.events) {
+                    if (-not $edEv.all_pass) {
+                        $edReasons = @()
+                        if ($edEv.PSObject.Properties['dod'] -and $edEv.dod) {
+                            foreach ($p in $edEv.dod.PSObject.Properties) {
+                                if (-not [bool]$p.Value) { $edReasons += $p.Name }
+                            }
+                        }
+                        Write-Host ("     FAIL: {0}  reasons={1}" -f $edEv.title, ($edReasons -join ",")) -ForegroundColor Red
+                    }
+                }
+            }
+            exit 1
+        }
+        Write-Host "  => EXEC_DELIVERABLE_DOCX_PPTX_HARD: PASS" -ForegroundColor Green
+    } catch {
+        Write-Host ("  EXEC_DELIVERABLE_DOCX_PPTX_HARD parse error: {0}" -f $_) -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host ""
+    Write-Host "EXEC_DELIVERABLE_DOCX_PPTX_HARD: FAIL (meta missing)" -ForegroundColor Red
+    exit 1
+}
 # LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
 # ---------------------------------------------------------------------------
 $longformMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_longform.meta.json"
@@ -1166,3 +1209,4 @@ foreach ($_spec in $_artSpecs) {
 }
 
 Write-Host "=======================================" -ForegroundColor Cyan
+

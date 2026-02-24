@@ -749,6 +749,50 @@ if (Test-Path $execQualMetaOnlinePath) {
 }
 
 # ---------------------------------------------------------------------------
+# EXEC_DELIVERABLE_DOCX_PPTX_HARD GATE (online run)
+# ---------------------------------------------------------------------------
+$execDelivMetaOnlinePath = Join-Path $repoRoot "outputs\exec_deliverable_docx_pptx_hard.meta.json"
+if (Test-Path $execDelivMetaOnlinePath) {
+    try {
+        $edmO = Get-Content $execDelivMetaOnlinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $edGateO  = if ($edmO.PSObject.Properties['gate_result']) { $edmO.gate_result } else { "FAIL" }
+        $edTotalO = if ($edmO.PSObject.Properties['events_total']) { [int]$edmO.events_total } else { 0 }
+        $edPassO  = if ($edmO.PSObject.Properties['pass_count']) { [int]$edmO.pass_count } else { 0 }
+        $edFailO  = if ($edmO.PSObject.Properties['fail_count']) { [int]$edmO.fail_count } else { 0 }
+
+        Write-Output ""
+        Write-Output "EXEC_DELIVERABLE_DOCX_PPTX_HARD:"
+        Write-Output ("  events_checked: {0}  pass={1}  fail={2}" -f $edTotalO, $edPassO, $edFailO)
+
+        if ($edGateO -ne "PASS") {
+            Write-Output ("  => EXEC_DELIVERABLE_DOCX_PPTX_HARD: FAIL ({0} failing event(s))" -f $edFailO)
+            if ($edmO.PSObject.Properties['events'] -and $edmO.events) {
+                foreach ($edEvO in $edmO.events) {
+                    if (-not $edEvO.all_pass) {
+                        $edReasonsO = @()
+                        if ($edEvO.PSObject.Properties['dod'] -and $edEvO.dod) {
+                            foreach ($p in $edEvO.dod.PSObject.Properties) {
+                                if (-not [bool]$p.Value) { $edReasonsO += $p.Name }
+                            }
+                        }
+                        Write-Output ("     FAIL: {0}  reasons={1}" -f $edEvO.title, ($edReasonsO -join ","))
+                    }
+                }
+            }
+            exit 1
+        }
+        Write-Output "  => EXEC_DELIVERABLE_DOCX_PPTX_HARD: PASS"
+    } catch {
+        Write-Output ("  EXEC_DELIVERABLE_DOCX_PPTX_HARD parse error: {0}" -f $_)
+        exit 1
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC_DELIVERABLE_DOCX_PPTX_HARD: FAIL (meta missing)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # EXEC_NEWS_QUALITY_HARD GATE (online run)
 #   Reads outputs/exec_news_quality.meta.json written by run_once.py.
 #   PASS: gate_result=PASS; SKIP: meta absent; FAIL: gate_result=FAIL (exit 1)

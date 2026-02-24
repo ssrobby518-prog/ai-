@@ -253,6 +253,65 @@ def _add_table_slide(prs: Presentation, title: str,
             cell.fill.fore_color.rgb = CARD_BG
 
 
+def _norm_key(text: str) -> str:
+    return " ".join(str(text or "").strip().lower().split())
+
+
+def _load_final_cards(metrics: dict | None) -> list[dict]:
+    if not isinstance(metrics, dict):
+        return []
+    payload = metrics.get("final_cards", [])
+    if not isinstance(payload, list):
+        return []
+    return [p for p in payload if isinstance(p, dict)]
+
+
+def _align_event_cards_with_final_cards(
+    event_cards: list[EduNewsCard],
+    final_cards: list[dict],
+) -> tuple[list[EduNewsCard], list[dict | None]]:
+    if not final_cards:
+        return event_cards, [None for _ in event_cards]
+
+    by_id: dict[str, EduNewsCard] = {}
+    by_title: dict[str, EduNewsCard] = {}
+    for c in event_cards:
+        cid = str(getattr(c, "item_id", "") or "").strip()
+        if cid:
+            by_id[cid] = c
+        ctitle = _norm_key(getattr(c, "title_plain", "") or getattr(c, "title", ""))
+        if ctitle:
+            by_title[ctitle] = c
+
+    ordered_cards: list[EduNewsCard] = []
+    ordered_payloads: list[dict] = []
+    used_ids: set[str] = set()
+
+    for payload in final_cards:
+        pid = str(payload.get("item_id", "") or "").strip()
+        ptitle = _norm_key(payload.get("title", ""))
+        card = None
+        if pid and pid in by_id and pid not in used_ids:
+            card = by_id[pid]
+        elif ptitle and ptitle in by_title:
+            cand = by_title[ptitle]
+            cid = str(getattr(cand, "item_id", "") or "").strip()
+            if cid and cid not in used_ids:
+                card = cand
+        if card is None:
+            continue
+        cid = str(getattr(card, "item_id", "") or "").strip() or f"idx_{len(ordered_cards)}"
+        if cid in used_ids:
+            continue
+        used_ids.add(cid)
+        ordered_cards.append(card)
+        ordered_payloads.append(payload)
+
+    if ordered_cards:
+        return ordered_cards, ordered_payloads
+    return event_cards, [None for _ in event_cards]
+
+
 # ---------------------------------------------------------------------------
 # Slide builders
 # ---------------------------------------------------------------------------
@@ -376,7 +435,12 @@ def _slide_overview_table(
     _add_table_slide(prs, "今日總覽  Overview", headers, rows)
 
 
-def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+def _slide_brief_page1(
+    prs: Presentation,
+    card: EduNewsCard,
+    idx: int,
+    final_payload: dict | None = None,
+) -> None:
     """WHAT HAPPENED slide — event badge, title, AI trend, hero image,
     event liner, data card, CEO metaphor."""
     brief = build_ceo_brief_blocks(card)
@@ -445,7 +509,12 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         run.font.italic = True
 
 
-def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+def _slide_brief_page2(
+    prs: Presentation,
+    card: EduNewsCard,
+    idx: int,
+    final_payload: dict | None = None,
+) -> None:
     """WHY IT MATTERS (Q&A) slide — Q1/Q2/Q3, video reference, sources."""
     brief = build_ceo_brief_blocks(card)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -912,6 +981,8 @@ def generate_executive_ppt(
 
     # Event pool: only verifiable event cards (no synthetic placeholders).
     event_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+    _final_cards_payload = _load_final_cards(metrics)
+    event_cards, _event_payloads = _align_event_cards_with_final_cards(event_cards, _final_cards_payload)
 
     # Quality guard: ensure per-card text density meets thresholds.
     for ec in event_cards:
@@ -933,8 +1004,9 @@ def generate_executive_ppt(
 
     # 8. Per-event: brief_page1 + brief_page2
     for i, card in enumerate(event_cards, 1):
-        _slide_brief_page1(prs, card, i)
-        _slide_brief_page2(prs, card, i)
+        _payload = _event_payloads[i - 1] if i - 1 < len(_event_payloads) else None
+        _slide_brief_page1(prs, card, i, final_payload=_payload)
+        _slide_brief_page2(prs, card, i, final_payload=_payload)
 
     # 9. Recommended Moves (v5)
     _slide_recommended_moves(prs, cards)
@@ -1218,6 +1290,7 @@ def _v1_add_card(
     body_color=None,
     header_font_size: int = 12,
     body_font_size: int = 10,
+    body_text_limit: int = 120,
     shape_type: int = 1,
 ) -> None:
     """Draw a card (filled rectangle) with optional header + body lines."""
@@ -1249,7 +1322,7 @@ def _v1_add_card(
 
     # Body lines
     if body_lines:
-        clean = [safe_text(b, 120) for b in body_lines if b.strip()]
+        clean = [safe_text(b, body_text_limit) for b in body_lines if b.strip()]
         if clean:
             _add_multiline_textbox(
                 slide,
@@ -1686,7 +1759,12 @@ def _slide_pending_decisions(prs: Presentation, event_cards: list[EduNewsCard]) 
 # T1: Three-card Curved Timeline — Event Slide A: What / Why / Proof
 # ---------------------------------------------------------------------------
 
-def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+def _slide_brief_page1(
+    prs: Presentation,
+    card: EduNewsCard,
+    idx: int,
+    final_payload: dict | None = None,
+) -> None:
     """T1: Three-card Curved Timeline layout for WHAT HAPPENED slide."""
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     _set_slide_bg(slide)
@@ -1698,7 +1776,7 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     )
     _add_textbox(
         slide, Cm(4.5), Cm(0.5), Cm(26.0), Cm(1.2),
-        safe_text(card.title_plain or '', 55),
+        safe_text(str((final_payload or {}).get("title", "") or card.title_plain or ''), 55),
         font_size=22, bold=True, color=TEXT_WHITE,
     )
     _v1_slide_header(slide, 'WHAT HAPPENED')
@@ -1730,7 +1808,7 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         _cp_T1 = {}
 
     # Card 1: Q1 — What Happened (canonical q1_event_2sent_zh)
-    _q1_body = safe_text(_cp_T1.get('q1_event_2sent_zh', '') or '', 200)
+    _q1_body = safe_text(str((final_payload or {}).get("q1", "") or _cp_T1.get('q1_event_2sent_zh', '') or ''), 200)
     if not _q1_body:
         _q1_body = safe_text(_v1_norm_gloss(_v1_narrative(card), _V1_GLOSSARY, _gloss_seen), 200)
     else:
@@ -1752,7 +1830,7 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     # Card 2: Q2 — Why It Matters (canonical q2_impact_2sent_zh)
     card2_top = card1_top + card1_h + 0.6
     card2_h = 3.5
-    _q2_body = safe_text(_cp_T1.get('q2_impact_2sent_zh', '') or '', 200)
+    _q2_body = safe_text(str((final_payload or {}).get("q2", "") or _cp_T1.get('q2_impact_2sent_zh', '') or ''), 200)
     if not _q2_body:
         _q2_body = safe_text(card.why_important or brief.get('q1_meaning', ''), 150)
     _q2_body = safe_text(_v1_norm_gloss(_q2_body, _V1_GLOSSARY, _gloss_seen), 200)
@@ -1785,6 +1863,15 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     proof_lines_T1 = [_proof_canonical]
     if source_url_T1 and source_url_T1.startswith('http'):
         proof_lines_T1.append(safe_text(source_url_T1, 55))
+    if final_payload:
+        _proof_url = safe_text(str(final_payload.get("final_url", "") or ""), 110)
+        _proof_q1 = safe_text(str(final_payload.get("quote_1", "") or ""), 110)
+        _proof_q2 = safe_text(str(final_payload.get("quote_2", "") or ""), 110)
+        proof_lines_T1 = [
+            f"final_url: {_proof_url}",
+            f"quote_1: {_proof_q1}",
+            f"quote_2: {_proof_q2}",
+        ]
     _v1_add_card(
         slide, card_left, card3_top, card_w, card3_h,
         header_text='Proof — Hard Evidence',
@@ -1794,6 +1881,7 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         body_color=_V1_TEXT_GRAY,
         header_font_size=_V1_CARD_TITLE_FS,
         body_font_size=_V1_CARD_BODY_FS,
+        body_text_limit=220,
         shape_type=_V1_ROUNDED_RECT,
     )
 
@@ -1802,7 +1890,12 @@ def _slide_brief_page1(prs: Presentation, card: EduNewsCard, idx: int) -> None:
 # T3: Growth Steps — Event Slide B: Moves / Risks / Owner
 # ---------------------------------------------------------------------------
 
-def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
+def _slide_brief_page2(
+    prs: Presentation,
+    card: EduNewsCard,
+    idx: int,
+    final_payload: dict | None = None,
+) -> None:
     """T3: Growth Steps staircase for WHY IT MATTERS — Action Plan slide."""
     brief = build_ceo_brief_blocks(card)
 
@@ -1827,7 +1920,7 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
     # Q3 actions → staircase steps
     # 直接讀 canonical q3_moves_3bullets_zh，不套 bucket 模板
     _gloss_seen_p2: set = set()
-    _canon_q3 = list(_cp_T3p2.get('q3_moves_3bullets_zh', []) or [])
+    _canon_q3 = list((final_payload or {}).get("moves", []) or _cp_T3p2.get('q3_moves_3bullets_zh', []) or [])
     if _canon_q3:
         actions = _canon_q3[:3]
     else:
@@ -1870,7 +1963,7 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
         'Risks / Watch', font_size=13, bold=True, color=TEXT_WHITE,
     )
     try:
-        raw_risks = list(_cp_T3p2.get('risks_2bullets_zh', []) or [])
+        raw_risks = list((final_payload or {}).get("risks", []) or _cp_T3p2.get('risks_2bullets_zh', []) or [])
     except Exception:
         raw_risks = []
     if not raw_risks:
@@ -1893,6 +1986,8 @@ def _slide_brief_page2(prs: Presentation, card: EduNewsCard, idx: int) -> None:
 
     # Proof line（canonical 100% 單源：Slide1 與 Slide2 同一個 payload）
     _proof_t3 = _cp_T3p2.get('proof_line', '') or brief.get('proof_line', '')
+    if final_payload and str(final_payload.get("final_url", "") or "").strip():
+        _proof_t3 = f"final_url: {safe_text(str(final_payload.get('final_url', '') or ''), 110)}"
     if _proof_t3:
         _add_textbox(
             slide, Cm(2), Cm(18.0), Cm(29), Cm(0.7),
@@ -2228,6 +2323,8 @@ def generate_executive_ppt(
         output_path=output_path, theme=theme, metrics=metrics,
     )
     ev_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+    _final_cards_payload = _load_final_cards(metrics)
+    ev_cards, _ev_payloads = _align_event_cards_with_final_cards(ev_cards, _final_cards_payload)
     try:
         _v1_write_exec_layout_meta(result, ev_cards, cards)
     except Exception as exc:
@@ -2257,4 +2354,3 @@ def generate_executive_ppt(
     except Exception as exc:
         get_logger().warning('watchlist longform error (non-fatal): %s', exc)
     return result
-
