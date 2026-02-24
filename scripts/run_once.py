@@ -787,7 +787,7 @@ def run_pipeline() -> None:
                     # ACTOR_BINDING fix: if primary_anchor absent from quote_1, re-select
                     # a sentence from what_happened that contains it so the gate can bind.
                     _pa_qi = str(_cp_qi.get("primary_anchor", "") or "").strip()
-                    if _pa_qi and _bq1_i and _pa_qi not in _bq1_i:
+                    if _pa_qi and _bq1_i and _pa_qi.lower() not in _bq1_i.lower():
                         import re as _re_resel_qi
                         _wh_qi = str(getattr(_cc_qi, "what_happened", "") or "")
                         _sents_qi = [
@@ -800,7 +800,7 @@ def run_pipeline() -> None:
                         for _sr_qi in _sents_qi:
                             if (len(_sr_qi) >= 20
                                     and len(_sr_qi.split()) >= 4
-                                    and _pa_qi in _sr_qi):
+                                    and _pa_qi.lower() in _sr_qi.lower()):
                                 _bq1_i = _sr_qi.replace(
                                     '\r\n', ' ').replace('\r', ' ').replace('\n', ' ')[:200]
                                 setattr(_cc_qi, "_bound_quote_1", _bq1_i)
@@ -933,13 +933,14 @@ def run_pipeline() -> None:
                         # Q2_BINDING: first 50 chars of quote_2 must appear in q2_text
                         _dod_q2bind = bool(_bq2_d_n) and (_bq2_d_n[:50] in _q2_d_n)
                         # ACTOR_BINDING: primary_anchor in quote_1 (injection re-selected it);
-                        # fallback to quote_2 or what_happened if sentence-split missed it
+                        # fallback to quote_2 or what_happened; case-insensitive
                         _wh_d_actor = str(getattr(_cc_dod, "what_happened", "") or "")
+                        _pa_ci = _primary_anchor_d.lower()
                         _dod_actor_bind = (
                             (not _primary_anchor_d)
-                            or (_primary_anchor_d in _bq1_d)
-                            or (_primary_anchor_d in _bq2_d)
-                            or (_primary_anchor_d in _wh_d_actor)
+                            or (_pa_ci in _bq1_d.lower())
+                            or (_pa_ci in _bq2_d.lower())
+                            or (_pa_ci in _wh_d_actor.lower())
                         )
                         # STYLE_SANITY: injected Q1/Q2 must not contain banned template phrases
                         _dod_style = not bool(_style_bad_re.search(_q1_d + " " + _q2_d))
