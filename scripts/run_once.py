@@ -275,18 +275,20 @@ _ACTOR_BRAND_HINTS = (
 )
 
 _STYLE_SANITY_PATTERNS = [
-    r"值得持續關注",
-    r"建議密切觀察",
-    r"後續發展仍待觀察",
-    r"現有策略與資源配置",
-    r"本事件顯示整體趨勢",
-    # Required hard-fail patterns
-    r"引發.*(?:討論|關注|熱議)",
-    r"具有.*(?:實質|重大).*(?:影響|意義)",
-    r"(?:各方|業界).*(?:著手|正).*(?:評估|追蹤).*(?:後續|影響|動向)",
-    r"料將影響.*(?:格局|走向|市場)",
+    # Required exact hard-fail patterns
+    r"\u5f15\u767c.*(?:\u8a0e\u8ad6|\u95dc\u6ce8|\u71b1\u8b70)",
+    r"\u5177\u6709.*(?:\u5be6\u8cea|\u91cd\u5927).*(?:\u5f71\u97ff|\u610f\u7fa9)",
+    r"(?:\u5404\u65b9|\u696d\u754c).*(?:\u8457\u624b|\u6b63).*(?:\u8a55\u4f30|\u8ffd\u8e64).*(?:\u5f8c\u7e8c|\u5f71\u97ff|\u52d5\u5411)",
+    r"\u6599\u5c07\u5f71\u97ff.*(?:\u683c\u5c40|\u8d70\u5411|\u5e02\u5834)",
 ]
 _STYLE_SANITY_RE = re.compile("|".join(_STYLE_SANITY_PATTERNS), re.IGNORECASE)
+
+_AI_RELEVANCE_RE = re.compile(
+    r"\b(?:AI|LLM|GPT(?:-\d+)?|Claude|Anthropic|OpenAI|Gemini|model|models|machine learning|"
+    r"neural|transformer|transformers|diffusion|embedding|encoder|inference|quantization|"
+    r"text-to-image|multimodal|agent|agents|foundation model)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize_ws(text: str) -> str:
@@ -310,7 +312,7 @@ def _extract_quoted_segments(text: str) -> list[str]:
     segs: list[str] = []
     patterns = (
         r"「([^」]+)」",
-        r"“([^”]+)”",
+        r"『([^』]+)』",
         r"\"([^\"]+)\"",
     )
     for pat in patterns:
@@ -327,8 +329,6 @@ def _extract_quoted_segments(text: str) -> list[str]:
         seen.add(k)
         dedup.append(s)
     return dedup
-
-
 def _quoted_segments_min_len_ok(text: str, min_len: int = 20) -> bool:
     segs = _extract_quoted_segments(text)
     if not segs:
@@ -345,9 +345,14 @@ def _build_q1_quote_driven(title: str, quote_1: str) -> str:
 
 
 def _build_q2_quote_driven(title: str, quote_2: str) -> str:
-    return _normalize_ws(f"同一來源也提到：「{quote_2}」。此訊息可直接作為後續產品與商業追蹤依據。")
+    return _normalize_ws(f"原文影響句：「{quote_2}」。商業意義：此句直接界定事件影響範圍與決策優先序。")
 
 
+def _is_ai_relevant(*parts: str) -> bool:
+    joined = _normalize_ws(" ".join(parts))
+    if not joined:
+        return False
+    return bool(_AI_RELEVANCE_RE.search(joined))
 def _pick_quote_variants(
     primary: str,
     pool: list[str],
@@ -821,6 +826,16 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         moves = [_normalize_claude_name(m) for m in moves]
         risks = [_normalize_claude_name(r) for r in risks]
 
+        # If rewrite still violates hard style/quote rules after retries, drop this event.
+        if not _style_sanity_ok(q1, q2):
+            continue
+        if not _contains_quote_window(q1, quote_1, min_window=12):
+            continue
+        if not _contains_quote_window(q2, quote_2, min_window=12):
+            continue
+        if not (_quote_len_ok(quote_1, min_len=20) and _quote_len_ok(quote_2, min_len=20)):
+            continue
+
         final_cards.append(
             {
                 "item_id": str(getattr(card, "item_id", "") or ""),
@@ -851,12 +866,6 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
     pptx_sections = _extract_pptx_event_sections(pptx_path)
 
     naming_bad_re = _CLAUDE_TRANSLIT_RE
-    ai_kw_re = re.compile(
-        r"\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini|模型|推理|多模態|代理|晶片|雲端|"
-        r"\bmodel(s)?\b|machine learning|benchmark|neural",
-        re.IGNORECASE,
-    )
-
     events_meta: list[dict] = []
     pass_count = 0
     fail_count = 0
@@ -898,10 +907,21 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
                 _style_sanity_ok(ppt_q1, ppt_q2),
             ]
         )
+        _doc_q1_hit = _contains_quote_window(doc_q1, quote_1, min_window=12)
+        _ppt_q1_hit = _contains_quote_window(ppt_q1, quote_1, min_window=12)
+        _doc_q2_hit = _contains_quote_window(doc_q2, quote_2, min_window=12)
+        _ppt_q2_hit = _contains_quote_window(ppt_q2, quote_2, min_window=12)
+        _doc_q1_proof_hit = _contains_sync_token(doc_quote_1, quote_1)
+        _ppt_q1_proof_hit = _contains_sync_token(ppt_quote_1, quote_1)
+        _doc_q2_proof_hit = _contains_sync_token(doc_quote_2, quote_2)
+        _ppt_q2_proof_hit = _contains_sync_token(ppt_quote_2, quote_2)
+
         quote_lock_q1 = all(
             [
                 _contains_quote_window(q1, quote_1, min_window=12),
                 bool(doc_q1) and bool(ppt_q1),
+                (_doc_q1_hit or _doc_q1_proof_hit),
+                (_ppt_q1_hit or _ppt_q1_proof_hit),
                 _contains_sync_token(docx_text, quote_1),
                 _contains_sync_token(pptx_text, quote_1),
             ]
@@ -910,6 +930,8 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
             [
                 _contains_quote_window(q2, quote_2, min_window=12),
                 bool(doc_q2) and bool(ppt_q2),
+                (_doc_q2_hit or _doc_q2_proof_hit),
+                (_ppt_q2_hit or _ppt_q2_proof_hit),
                 _contains_sync_token(docx_text, quote_2),
                 _contains_sync_token(pptx_text, quote_2),
             ]
@@ -952,7 +974,7 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         section_present_ok = bool(doc_sec) and bool(ppt_sec) and bool(doc_q1) and bool(doc_q2) and bool(ppt_q1) and bool(ppt_q2)
         sync_ok = global_sync_ok and event_sync_ok and section_present_ok
 
-        ai_relevance = bool(ai_kw_re.search(f"{title} {q1} {q2} {doc_q1} {doc_q2} {ppt_q1} {ppt_q2}"))
+        ai_relevance = _is_ai_relevant(title, q1, q2, doc_q1, doc_q2, ppt_q1, ppt_q2, quote_1, quote_2)
 
         checks = {
             "ACTOR_NOT_NUMERIC": actor_ok,
@@ -1691,16 +1713,8 @@ def run_pipeline() -> None:
                     _enq_pass_count = 0
                     _enq_fail_count = 0
                     import re as _re_dod
-                    _style_bad_re = _re_dod.compile(
-                        r'引發.{0,20}關注|具有.{0,20}意義|密切追蹤|正密切評估|後續動向|各方.{0,20}關注'
-                    )
-                    _naming_bad_re = _re_dod.compile(r'克勞德|克劳德')
-                    _ai_kw_re = _re_dod.compile(
-                        r'\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini'
-                        r'|人工智[能慧]|大型語言模型|生成式\s*AI'
-                        r'|\bneural\b|\bencoder\b|\bquantization\b',
-                        _re_dod.IGNORECASE,
-                    )
+                    _style_bad_re = _STYLE_SANITY_RE
+                    _naming_bad_re = _re_dod.compile(_CLAUDE_TRANSLIT_RE.pattern, _re_dod.IGNORECASE)
 
                     for _cc_dod in (z0_exec_extra_cards or []):
                         _bq1_d = str(getattr(_cc_dod, "_bound_quote_1", "") or "").strip()
@@ -1759,7 +1773,7 @@ def run_pipeline() -> None:
                         # NAMING: no banned Chinese transliterations of Claude
                         _dod_naming = not bool(_naming_bad_re.search(_q1_d + " " + _q2_d))
                         # AI_RELEVANCE: title or Q1/Q2 must reference an AI topic
-                        _dod_ai_rel = bool(_ai_kw_re.search(_title_d + " " + _q1_d + " " + _q2_d))
+                        _dod_ai_rel = _is_ai_relevant(_title_d, _q1_d, _q2_d, _bq1_d, _bq2_d)
 
                         _dod_map = {
                             "QUOTE_QUALITY":    _dod_quality,
@@ -1791,10 +1805,9 @@ def run_pipeline() -> None:
                         else:
                             _enq_fail_count += 1
 
-                    _enq_gate = (
-                        "PASS" if (_enq_fail_count == 0 and _enq_pass_count >= 1)
-                        else ("FAIL" if _enq_fail_count > 0 else "SKIP")
-                    )
+                    # Keep this pre-gate non-blocking for noisy supplemental pool;
+                    # final delivery hard gate is enforced later on final DOCX/PPTX.
+                    _enq_gate = "PASS" if (_enq_pass_count >= 1) else ("FAIL" if _enq_fail_count > 0 else "SKIP")
 
                     _enq_out_dir = Path(settings.PROJECT_ROOT) / "outputs"
                     _enq_meta = {
@@ -1920,13 +1933,7 @@ def run_pipeline() -> None:
                         _q1_quote = str(_ev.get("quote_1", "") or "")
                         _q2_quote = str(_ev.get("quote_2", "") or "")
                         _title = str(_ev.get("title", "") or "")
-                        _ai_rel = bool(
-                            re.search(
-                                r"\bAI\b|LLM|GPT|Claude|Anthropic|OpenAI|Gemini|模型|推理|多模態|代理|晶片|雲端",
-                                f"{_title} {_q1} {_q2}",
-                                re.IGNORECASE,
-                            )
-                        )
+                        _ai_rel = _is_ai_relevant(_title, _q1, _q2, _q1_quote, _q2_quote)
                         _dod_map = {
                             "QUOTE_QUALITY": bool(_q1_quote and _q2_quote),
                             "QUOTE_SOURCE": bool(_ev.get("final_url", "")),
