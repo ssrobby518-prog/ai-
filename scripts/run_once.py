@@ -39,6 +39,7 @@ from schemas.models import RawItem
 from utils.entity_cleaner import clean_entities
 from utils.logger import setup_logger
 from utils.metrics import get_collector, reset_collector
+from utils.zh_narrative_validator import validate_zh_card_fields
 
 
 def _apply_entity_cleaning(all_results: list) -> None:
@@ -900,11 +901,38 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         moves = [_normalize_claude_name(m) for m in moves]
         risks = [_normalize_claude_name(r) for r in risks]
 
-        # Compute zh narrative fields (quote-window + Chinese main narrative)
+        # Compute zh narrative fields (quote-window + Chinese main narrative).
+        # IMPORTANT: actor is already _normalize_claude_name'd above (line ~899).
+        # Do NOT re-apply _normalize_claude_name to the entire q_zh string — that
+        # would alter text inside 「quote_window」 (e.g. "Claude Code" → "Claude
+        # （Anthropic） Code"), making the stored quote_window no longer a verbatim
+        # match and breaking the Q*_ZH_WINDOW gate check.
         quote_window_1 = _extract_quote_window(quote_1, min_len=20, max_len=30)
         quote_window_2 = _extract_quote_window(quote_2, min_len=20, max_len=30)
-        q1_zh = _normalize_claude_name(_build_q1_zh_narrative(actor, quote_window_1))
-        q2_zh = _normalize_claude_name(_build_q2_zh_narrative(actor, quote_window_2))
+        q1_zh = _build_q1_zh_narrative(actor, quote_window_1)
+        q2_zh = _build_q2_zh_narrative(actor, quote_window_2)
+
+        # Self-healing: validate once; retry with relaxed min_len if needed.
+        _zh_ok, _zh_reasons = validate_zh_card_fields(
+            q1_zh, q2_zh, quote_window_1, quote_window_2, quote_1, quote_2
+        )
+        if not _zh_ok:
+            _qw1_r = _extract_quote_window(quote_1, min_len=10, max_len=30)
+            _qw2_r = _extract_quote_window(quote_2, min_len=10, max_len=30)
+            _q1zh_r = _build_q1_zh_narrative(actor, _qw1_r)
+            _q2zh_r = _build_q2_zh_narrative(actor, _qw2_r)
+            _zh_ok2, _zh_reasons2 = validate_zh_card_fields(
+                _q1zh_r, _q2zh_r, _qw1_r, _qw2_r, quote_1, quote_2
+            )
+            if _zh_ok2 or (len(_zh_reasons2) < len(_zh_reasons)):
+                quote_window_1, quote_window_2 = _qw1_r, _qw2_r
+                q1_zh, q2_zh = _q1zh_r, _q2zh_r
+                _zh_reasons = _zh_reasons2
+            if _zh_reasons:
+                log.debug(
+                    "ZH narrative self-heal: reasons=%s title=%.60s",
+                    _zh_reasons, title,
+                )
 
         # If rewrite still violates hard style/quote rules after retries, drop this event.
         if not _style_sanity_ok(q1, q2):
