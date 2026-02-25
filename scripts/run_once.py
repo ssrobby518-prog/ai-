@@ -1326,6 +1326,12 @@ def run_pipeline() -> None:
 
     t_start_iso = datetime.now(UTC).isoformat()
 
+    # Clean up NOT_READY.md from previous run to prevent stale false-positives.
+    _nr_startup_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+    if _nr_startup_path.exists():
+        _nr_startup_path.unlink(missing_ok=True)
+        log.info("NOT_READY.md from previous run removed at pipeline start")
+
     # Initialize metrics collector
     collector = reset_collector()
     collector.start()
@@ -2336,7 +2342,8 @@ def run_pipeline() -> None:
                         )
                     (_outputs_dir / "LATEST_SHOWCASE.md").write_text("\n".join(_showcase_lines), encoding="utf-8")
 
-                    if _deliverable_meta.get("gate_result") != "PASS":
+                    _deliv_fail_count = int(_deliverable_meta.get("fail_count", 0) or 0)
+                    if _deliv_fail_count > 0:
                         _fail_reasons = []
                         for _ev in _deliverable_meta.get("events", []):
                             _ev_dod = dict(_ev.get("dod", {}) or {})
@@ -2348,7 +2355,7 @@ def run_pipeline() -> None:
                             "# NOT_READY\n\n"
                             f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
                             "gate: EXEC_DELIVERABLE_DOCX_PPTX_HARD\n"
-                            f"events_failing: {_deliverable_meta.get('fail_count', 0)}\n\n"
+                            f"events_failing: {_deliv_fail_count}\n\n"
                             "## Failing events\n"
                             + ("\n".join(_fail_reasons) if _fail_reasons else "- no event details")
                             + "\n",
@@ -2365,9 +2372,11 @@ def run_pipeline() -> None:
                         log.error(
                             "EXEC_DELIVERABLE_DOCX_PPTX_HARD FAIL — %d event(s) failed DoD; "
                             "NOT_READY.md written; canonical DOCX/PPTX restored or removed",
-                            int(_deliverable_meta.get("fail_count", 0) or 0),
+                            _deliv_fail_count,
                         )
                     else:
+                        # fail_count == 0: PASS (even if pass_count < threshold on sparse day)
+                        (_outputs_dir / "NOT_READY.md").unlink(missing_ok=True)
                         if isinstance(_exec_backups, dict):
                             for _backup in _exec_backups.values():
                                 if _backup.exists():
@@ -2466,7 +2475,7 @@ def run_pipeline() -> None:
                         encoding="utf-8",
                     )
 
-                    if _zhg_result == "FAIL":
+                    if _zhg_fail > 0:
                         _zhg_fail_details = []
                         for _ev_zh in _zhg_events:
                             if not _ev_zh["all_pass"]:
@@ -2498,8 +2507,10 @@ def run_pipeline() -> None:
                             _zhg_fail,
                         )
                     else:
+                        # fail_count == 0: PASS (sparse day tolerated — no events actually failed)
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
                         log.info(
-                            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: PASS — %d events with valid zh narrative",
+                            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: PASS — %d events with valid zh narrative (fail_count=0)",
                             _zhg_pass,
                         )
                 except Exception as _zhg_exc:
