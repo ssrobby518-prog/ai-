@@ -272,6 +272,41 @@ if ($exitCode -ne 0) {
 }
 
 # ---------------------------------------------------------------------------
+# EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD — gate summary (verify_online view)
+# verify_run.ps1 already enforced this gate; here we print the meta summary.
+# ---------------------------------------------------------------------------
+$zhMetaPath = Join-Path $repoRoot "outputs\exec_zh_narrative.meta.json"
+if (Test-Path $zhMetaPath) {
+    try {
+        $zhMeta = Get-Content $zhMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $zhResult = if ($zhMeta.PSObject.Properties['gate_result']) { $zhMeta.gate_result } else { "UNKNOWN" }
+        $zhPass   = if ($zhMeta.PSObject.Properties['pass_count'])  { [int]$zhMeta.pass_count }  else { 0 }
+        $zhFail   = if ($zhMeta.PSObject.Properties['fail_count'])  { [int]$zhMeta.fail_count }  else { 0 }
+        $zhColor  = if ($zhResult -eq "PASS") { "Green" } else { "Red" }
+        Write-Output ""
+        Write-Output "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD:"
+        Write-Output ("  gate_result : {0}" -f $zhResult)
+        Write-Output ("  pass_count  : {0}" -f $zhPass)
+        Write-Output ("  fail_count  : {0}" -f $zhFail)
+        if ($zhMeta.PSObject.Properties['events']) {
+            foreach ($ev in $zhMeta.events | Select-Object -First 2) {
+                $evTitle = if ($ev.PSObject.Properties['title']) { $ev.title } else { "" }
+                $evQW1   = if ($ev.PSObject.Properties['quote_window_1']) { $ev.quote_window_1 } else { "" }
+                $evQW2   = if ($ev.PSObject.Properties['quote_window_2']) { $ev.quote_window_2 } else { "" }
+                $evPass  = if ($ev.PSObject.Properties['all_pass']) { $ev.all_pass } else { $false }
+                Write-Output ("  event: {0} | all_pass={1} | qw1=|{2}| qw2=|{3}|" -f $evTitle.Substring(0,[Math]::Min(40,$evTitle.Length)), $evPass, $evQW1, $evQW2)
+            }
+        }
+        Write-Output ("  => EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: {0}" -f $zhResult)
+    } catch {
+        Write-Output "  exec_zh_narrative.meta.json parse error (non-fatal): $_"
+    }
+} else {
+    Write-Output ""
+    Write-Output "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: exec_zh_narrative.meta.json not found (gate enforced by verify_run.ps1)"
+}
+
+# ---------------------------------------------------------------------------
 # EXEC KPI GATE EVIDENCE — reads exec_selection.meta.json written by pipeline
 # ---------------------------------------------------------------------------
 $execSelMetaPath = Join-Path $repoRoot "outputs\exec_selection.meta.json"

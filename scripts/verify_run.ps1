@@ -337,6 +337,99 @@ if (-not $v3Pass) {
 Write-Host "  Executive Output v3 guard passed." -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
+# EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD gate
+# Reads outputs/final_cards.meta.json; checks q1_zh/q2_zh/quote_window fields.
+# FAIL behaviour: exit 1 (NOT_READY.md was already written by pipeline).
+# ---------------------------------------------------------------------------
+Write-Host "`n[ZH Narrative Gate] EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD..." -ForegroundColor Yellow
+$zhGateOutput = & $py -c @"
+import json, re, sys
+from pathlib import Path
+p = Path('outputs/final_cards.meta.json')
+if not p.exists():
+    print('SKIP: final_cards.meta.json not found')
+    sys.exit(0)
+data = json.loads(p.read_text(encoding='utf-8'))
+zh_re = re.compile(r'[\u4e00-\u9fff]')
+en_re = re.compile(r'[a-zA-Z]')
+style_re = re.compile(
+    r'\u5f15\u767c.*(?:\u8a0e\u8ad6|\u95dc\u6ce8|\u71b1\u8b70)'
+    r'|\u5177\u6709.*(?:\u5be6\u8cea|\u91cd\u5927).*(?:\u5f71\u97ff|\u610f\u7fa9)'
+    r'|(?:\u5404\u65b9|\u696d\u754c).*(?:\u8457\u624b|\u6b63).*(?:\u8a55\u4f30|\u8ffd\u8e64).*(?:\u5f8c\u7e8c|\u5f71\u97ff|\u52d5\u5411)'
+    r'|\u6599\u5c07\u5f71\u97ff.*(?:\u683c\u5c40|\u8d70\u5411|\u5e02\u5834)',
+    re.IGNORECASE
+)
+trans_re = re.compile(r'(?:\u514b\u52de\u5fb7|\u514b\u52b3\u5fb7|\u67ef\u52de\u5fb7|\u53ef\u52de\u5fb7|\u53ef\u52b3\u5fb7|\u514b\u6d1b\u5fb7)', re.IGNORECASE)
+fail_count = 0
+pass_count = 0
+fail_lines = []
+for ev in data.get('events', []):
+    title = ev.get('title', '')
+    q1zh = ev.get('q1_zh', '') or ''
+    q2zh = ev.get('q2_zh', '') or ''
+    qw1 = ev.get('quote_window_1', '') or ''
+    qw2 = ev.get('quote_window_2', '') or ''
+    q1r = ev.get('quote_1', '') or ''
+    q2r = ev.get('quote_2', '') or ''
+    lq = '\u300c'
+    rq = '\u300d'
+    fails = []
+    if qw1 and (lq + qw1 + rq) not in q1zh:
+        fails.append('Q1_ZH_NO_WINDOW')
+    if qw2 and (lq + qw2 + rq) not in q2zh:
+        fails.append('Q2_ZH_NO_WINDOW')
+    zh1 = len(zh_re.findall(q1zh))
+    zh2 = len(zh_re.findall(q2zh))
+    if zh1 < 40:
+        fails.append('Q1_ZH_CHARS=' + str(zh1))
+    if zh2 < 40:
+        fails.append('Q2_ZH_CHARS=' + str(zh2))
+    en1 = len(en_re.findall(q1zh))
+    en2 = len(en_re.findall(q2zh))
+    r1 = en1 / len(q1zh) if q1zh else 0
+    r2 = en2 / len(q2zh) if q2zh else 0
+    if r1 > 0.5:
+        fails.append('Q1_EN_RATIO=' + str(round(r1, 2)))
+    if r2 > 0.5:
+        fails.append('Q2_EN_RATIO=' + str(round(r2, 2)))
+    if qw1 and qw1 not in q1r:
+        fails.append('QW1_NOT_SUBSTRING')
+    if qw2 and qw2 not in q2r:
+        fails.append('QW2_NOT_SUBSTRING')
+    if not qw1:
+        fails.append('QW1_EMPTY')
+    if not qw2:
+        fails.append('QW2_EMPTY')
+    if style_re.search(q1zh + ' ' + q2zh):
+        fails.append('STYLE_SANITY')
+    if trans_re.search(q1zh + ' ' + q2zh):
+        fails.append('NAMING')
+    if fails:
+        fail_count += 1
+        fail_lines.append('FAIL ' + title[:50] + ': ' + ','.join(fails))
+    else:
+        pass_count += 1
+result = ('FAIL fail=' + str(fail_count) + ' pass=' + str(pass_count)) if fail_count > 0 else ('PASS pass=' + str(pass_count))
+print(result)
+for l in fail_lines:
+    print(l)
+sys.exit(1 if fail_count > 0 else 0)
+"@ 2>&1
+$zhGateExitCode = $LASTEXITCODE
+foreach ($line in $zhGateOutput) {
+    $lineStr = [string]$line
+    $color = if ($lineStr -like "FAIL*") { "Red" } elseif ($lineStr -like "PASS*") { "Green" } elseif ($lineStr -like "SKIP*") { "Yellow" } else { "White" }
+    Write-Host "  $lineStr" -ForegroundColor $color
+}
+$zhGateLabel = if ($zhGateExitCode -eq 0) { "PASS" } else { "FAIL" }
+$zhGateColor = if ($zhGateExitCode -eq 0) { "Green" } else { "Red" }
+Write-Host ("  EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD : {0}" -f $zhGateLabel) -ForegroundColor $zhGateColor
+if ($zhGateExitCode -ne 0) {
+    Write-Host "  Fix: ensure final_cards have q1_zh/q2_zh with >=40 Chinese chars, <=50% EN ratio, embedded quote_window in brackets." -ForegroundColor Yellow
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # Executive Slide Density Audit (post-step-9; hard gate for 3 key slides)
 # ---------------------------------------------------------------------------
 Write-Host "`n[Density Audit] Executive Slide Density Audit..." -ForegroundColor Yellow

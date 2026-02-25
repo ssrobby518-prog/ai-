@@ -480,9 +480,14 @@ def _build_brief_card_section(
     # EN-ZH Hybrid Glossing v1: shared seen-set for dedup across fields in this card section
     _gloss_seen: set = set()
 
-    # ── Q1: What Happened (canonical q1_event_2sent_zh) ──
+    # ── Q1: What Happened (q1_zh: Traditional Chinese narrative with embedded quote_window_1) ──
     _add_heading(doc, "Q1 — What Happened", level=3)
-    _q1_doc = str((final_payload or {}).get("q1", "") or _cp_doc.get("q1_event_2sent_zh", "") or _nc_build(card))
+    _q1_doc = str(
+        (final_payload or {}).get("q1_zh", "")
+        or (final_payload or {}).get("q1", "")
+        or _cp_doc.get("q1_event_2sent_zh", "")
+        or _nc_build(card)
+    )
     narrative = _doc_norm_gloss(sanitize(_q1_doc), _DOC_GLOSSARY, _gloss_seen)
     p_what = doc.add_paragraph(narrative)
     p_what.paragraph_format.space_after = Pt(6)
@@ -490,10 +495,11 @@ def _build_brief_card_section(
         run.font.size = Pt(11)
         run.font.color.rgb = DARK_TEXT
 
-    # ── Q2: WHY IT MATTERS (canonical q2_impact_2sent_zh) ──
+    # ── Q2: WHY IT MATTERS (q2_zh: Traditional Chinese narrative with embedded quote_window_2) ──
     _add_heading(doc, "Q2 — WHY IT MATTERS", level=3)
     _q2_doc = str(
-        (final_payload or {}).get("q2", "")
+        (final_payload or {}).get("q2_zh", "")
+        or (final_payload or {}).get("q2", "")
         or _cp_doc.get("q2_impact_2sent_zh", "")
         or (card.why_important or brief.get("q1_meaning", ""))
     )
