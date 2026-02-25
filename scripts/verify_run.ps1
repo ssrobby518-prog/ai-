@@ -88,6 +88,45 @@ if (Test-Path $notReadyPath) {
     exit 1
 }
 
+# ---------------------------------------------------------------------------
+# SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
+# Reads outputs/showcase_ready.meta.json written by run_once.py.
+# showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)
+# showcase_ready=false => FAIL exit 1 (deck has < 6 AI events)
+# meta missing         => FAIL exit 1 (pipeline did not reach this stage)
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "SHOWCASE_READY_HARD:" -ForegroundColor Yellow
+$vrScPath = Join-Path $PSScriptRoot "..\outputs\showcase_ready.meta.json"
+if (Test-Path $vrScPath) {
+    try {
+        $vrSc           = Get-Content $vrScPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $vrScReady      = [bool]($vrSc.PSObject.Properties["showcase_ready"]      -and $vrSc.showcase_ready)
+        $vrScAiSel      = if ($vrSc.PSObject.Properties["ai_selected_events"])    { [int]$vrSc.ai_selected_events }    else { 0 }
+        $vrScDeckEv     = if ($vrSc.PSObject.Properties["deck_events"])           { [int]$vrSc.deck_events }           else { 0 }
+        $vrScMode       = if ($vrSc.PSObject.Properties["mode"])                  { [string]$vrSc.mode }               else { "manual" }
+        $vrScFallback   = if ($vrSc.PSObject.Properties["fallback_used"])         { [bool]$vrSc.fallback_used }        else { $false }
+        Write-Host ("  ai_selected_events : {0}" -f $vrScAiSel)
+        Write-Host ("  deck_events        : {0}" -f $vrScDeckEv)
+        Write-Host ("  mode               : {0}" -f $vrScMode)
+        Write-Host ("  fallback_used      : {0}" -f $vrScFallback)
+        Write-Host ("  showcase_ready     : {0}" -f $vrScReady)
+        if ($vrScReady) {
+            Write-Host ("  => SHOWCASE_READY_HARD: PASS (ai_selected={0} mode={1})" -f $vrScAiSel, $vrScMode) -ForegroundColor Green
+        } else {
+            Write-Host ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < 6, mode={1})" -f $vrScAiSel, $vrScMode) -ForegroundColor Red
+            Write-Host "     Fix: run in demo mode (-Mode demo) or wait for a day with >= 6 AI events." -ForegroundColor Yellow
+            exit 1
+        }
+    } catch {
+        Write-Host ("  => SHOWCASE_READY_HARD: FAIL (parse error: {0})" -f $_) -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "  => SHOWCASE_READY_HARD: FAIL (showcase_ready.meta.json not found — pipeline did not write readiness meta)" -ForegroundColor Red
+    exit 1
+}
+
 # 3) Verify FILTER_SUMMARY exists in log
 Write-Host "`n[3/9] Verifying FILTER_SUMMARY log..." -ForegroundColor Yellow
 $filterLog = Select-String -Path "logs\app.log" -Pattern "FILTER_SUMMARY" -SimpleMatch | Select-Object -Last 1

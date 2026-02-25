@@ -6,8 +6,8 @@
 # Both paths   : write outputs\LAST_RUN_SUMMARY.txt + outputs\desktop_button.last_run.log
 #
 # Params:
-#   -Mode     manual|daily   (default: manual; Task Scheduler passes "daily")
-#   -AutoOpen true|false     (default: true;   pass false for headless/scheduled runs)
+#   -Mode     manual|demo|daily  (default: manual; demo = guaranteed 6-12 AI events for presentations)
+#   -AutoOpen true|false         (default: true;   pass false for headless/scheduled runs)
 param(
     [string]$Mode     = "manual",
     [string]$AutoOpen = "true"
@@ -44,6 +44,7 @@ $py = "python"
 # ?? Env vars for run_once.py ??????????????????????????????????????????????????
 $env:PIPELINE_RUN_ID       = $RunId
 $env:PIPELINE_TRIGGERED_BY = "run_pipeline.ps1"
+$env:PIPELINE_MODE         = $Mode
 
 # ?? Run pipeline ??tee stdout+stderr to log AND console ??????????????????????
 Set-Location $RepoRoot
@@ -53,6 +54,7 @@ $ExitCode = $LASTEXITCODE
 
 $env:PIPELINE_RUN_ID       = $null
 $env:PIPELINE_TRIGGERED_BY = $null
+$env:PIPELINE_MODE         = $null
 
 $FinishObj  = Get-Date
 $FinishISO  = $FinishObj.ToString("o")
@@ -67,9 +69,23 @@ $NotReadyExists = Test-Path $NotReadyPath
 $DocxUpdated    = (Test-Path $DocxPath) -and ((Get-Item $DocxPath).LastWriteTime -gt $StartObj)
 $PptxUpdated    = (Test-Path $PptxPath) -and ((Get-Item $PptxPath).LastWriteTime -gt $StartObj)
 
-$IsSuccess = ($ExitCode -eq 0) -and (-not $NotReadyExists) -and $DocxUpdated -and $PptxUpdated
+# DoD-1: OK requires showcase_ready=true (ai_selected_events >= 6) in showcase_ready.meta.json
+$ShowcaseMetaPath = Join-Path $OutputsDir "showcase_ready.meta.json"
+$ShowcaseReady    = $false
+$AiSelectedEvents = 0
+$SelectedEvents   = 0
+if (Test-Path $ShowcaseMetaPath) {
+    try {
+        $srMeta = Get-Content $ShowcaseMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $ShowcaseReady    = [bool]($srMeta.PSObject.Properties["showcase_ready"] -and $srMeta.showcase_ready)
+        $AiSelectedEvents = if ($srMeta.PSObject.Properties["ai_selected_events"]) { [int]$srMeta.ai_selected_events } else { 0 }
+        $SelectedEvents   = if ($srMeta.PSObject.Properties["selected_events"])    { [int]$srMeta.selected_events }    else { $AiSelectedEvents }
+    } catch { $ShowcaseReady = $false }
+}
 
-"success_eval: IsSuccess=$IsSuccess NotReadyExists=$NotReadyExists DocxUpdated=$DocxUpdated PptxUpdated=$PptxUpdated ExitCode=$ExitCode" |
+$IsSuccess = ($ExitCode -eq 0) -and (-not $NotReadyExists) -and $DocxUpdated -and $PptxUpdated -and $ShowcaseReady
+
+"success_eval: IsSuccess=$IsSuccess NotReadyExists=$NotReadyExists DocxUpdated=$DocxUpdated PptxUpdated=$PptxUpdated ShowcaseReady=$ShowcaseReady AiSelectedEvents=$AiSelectedEvents ExitCode=$ExitCode" |
     Add-Content $LogFile -Encoding UTF8
 
 # ?? Determine fail reason (human-readable one-liner) ?????????????????????????
@@ -82,6 +98,9 @@ if (-not $IsSuccess) {
             $FailReason = ($nrRaw -replace '[\r\n\s]+', ' ').Trim()
             if ($FailReason.Length -gt 300) { $FailReason = $FailReason.Substring(0,300) }
         } catch { $FailReason = "NOT_READY.md exists (read error)" }
+    }
+    if (-not $FailReason -and -not $ShowcaseReady) {
+        $FailReason = "SHOWCASE_READY_HARD FAIL -- ai_selected_events=$AiSelectedEvents < 6 (deck has no presentable content)"
     }
     if (-not $FailReason) {
         if ($ExitCode -ne 0) {
@@ -129,9 +148,11 @@ $SummaryTxt  = @"
 run_id              = $RunId
 started_at          = $StartISO
 finished_at         = $FinishISO
+mode                = $Mode
 status              = $StatusStr
-canonical_output_dir = outputs\
-produced_files      = $ProducedStr$FailLine
+selected_events     = $SelectedEvents
+ai_selected_events  = $AiSelectedEvents
+canonical_output_dir = outputs\nproduced_files      = $ProducedStr$FailLine
 "@
 $SummaryPath = Join-Path $OutputsDir "LAST_RUN_SUMMARY.txt"
 $SummaryTxt | Out-File $SummaryPath -Encoding UTF8 -NoNewline

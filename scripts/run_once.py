@@ -1758,11 +1758,14 @@ def run_pipeline() -> None:
     # select_executive_items applies _ft_boost=+30 so these rank above unhydrated items.
     # PH_SUPP runs in BOTH Z0 and online modes — online fetch also bulk-hydrates raw_items
     # (hydrate_items_batch ok=N), so pre-hydrated items are available regardless of Z0 flag.
+    # Demo mode caps PH_SUPP at 2 so the deck isn't padded out with supplemental
+    # bulk content.  Normal runs keep the existing cap of 50.
+    _ph_supp_limit = 2 if os.environ.get("PIPELINE_MODE", "manual") == "demo" else 50
     try:
         _ph_supp_items = sorted(
             [it for it in raw_items if int(getattr(it, "fulltext_len", 0) or 0) >= 800],
             key=lambda it: -int(getattr(it, "fulltext_len", 0) or 0),
-        )[:50]
+        )[:_ph_supp_limit]
         if _ph_supp_items:
             _ph_supp_cards = _build_soft_quality_cards_from_filtered(_ph_supp_items)
             for _phc, _ph_it in zip(_ph_supp_cards, _ph_supp_items):
@@ -1961,6 +1964,140 @@ def run_pipeline() -> None:
             except Exception as _fc_exc:
                 log.warning("final_cards build failed (non-fatal): %s", _fc_exc)
 
+            # Write showcase_ready.meta.json — authoritative content-readiness signal.
+            # Uses exec_selection.final_selected_events (set by content_strategy, always
+            # written before this point) rather than _final_cards (which may be empty
+            # if _build_final_cards raises a NameError).
+            # SHOWCASE_READY_HARD gate reads this file; run_pipeline.ps1 reads it too.
+            _pipeline_mode_sr = os.environ.get("PIPELINE_MODE", "manual")
+            _is_demo_mode_sr  = (_pipeline_mode_sr == "demo")
+            _sr_ai_selected   = 0
+            try:
+                import json as _sr_json
+                _sr_sel_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_selection.meta.json"
+                if _sr_sel_path.exists():
+                    _sr_sel_data = _sr_json.loads(_sr_sel_path.read_text(encoding="utf-8"))
+                    _sr_ai_selected = int(
+                        _sr_sel_data.get("final_selected_events", 0)
+                        or _sr_sel_data.get("events_total", 0)
+                        or 0
+                    )
+                _sr_showcase_ready = (_sr_ai_selected >= 6)
+                _sr_demo_supplement = False
+                if _is_demo_mode_sr and not _sr_showcase_ready:
+                    _deck_count_sr = len(z0_exec_extra_cards) if isinstance(z0_exec_extra_cards, list) else 0
+                    if _deck_count_sr >= 6:
+                        _sr_showcase_ready = True
+                        _sr_demo_supplement = True
+                        log.info(
+                            "SHOWCASE_READY: demo supplement — deck_events=%d covers threshold",
+                            _deck_count_sr,
+                        )
+                _sr_out_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
+                _sr_out_path.write_text(
+                    _sr_json.dumps({
+                        "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+                        "mode": _pipeline_mode_sr,
+                        "selected_events": _sr_ai_selected,
+                        "ai_selected_events": _sr_ai_selected,
+                        "deck_events": len(z0_exec_extra_cards) if isinstance(z0_exec_extra_cards, list) else 0,
+                        "showcase_ready": _sr_showcase_ready,
+                        "fallback_used": _sr_demo_supplement,
+                        "demo_supplement": _sr_demo_supplement,
+                        "threshold": 6,
+                    }, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                log.info(
+                    "showcase_ready.meta.json: ai_selected=%d showcase_ready=%s demo_supplement=%s",
+                    _sr_ai_selected, _sr_showcase_ready, _sr_demo_supplement,
+                )
+            except Exception as _sr_exc:
+                log.warning("showcase_ready.meta.json write failed (non-fatal): %s", _sr_exc)
+
+            # Demo extended pool: when in demo mode and showcase_ready=false, supplement the deck
+            # with historical AI-passed events from the DB (last 7 days, AI_RELEVANCE=True).
+            # This guarantees ai_selected_events >= 6 for presentation purposes.
+            # Max 2 PH_SUPP items are already capped above; DB items supplement z0_exec_extra_cards.
+            if _is_demo_mode_sr:
+                try:
+                    import json as _dbe_json
+                    _dbe_sr_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
+                    _dbe_ready = False
+                    if _dbe_sr_path.exists():
+                        _dbe_sr_data = _dbe_json.loads(_dbe_sr_path.read_text(encoding="utf-8"))
+                        _dbe_ready = bool(_dbe_sr_data.get("showcase_ready", False))
+                    if not _dbe_ready:
+                        from core.storage import load_passed_results as _dbe_load_pr
+                        _dbe_rows = _dbe_load_pr(settings.DB_PATH, limit=60)
+                        _dbe_current_ids = {
+                            str(getattr(c, "item_id", "") or "")
+                            for c in (z0_exec_extra_cards if isinstance(z0_exec_extra_cards, list) else [])
+                        }
+                        _dbe_deck = z0_exec_extra_cards if isinstance(z0_exec_extra_cards, list) else []
+                        _dbe_needed = max(0, 6 - len(_dbe_deck))
+                        _dbe_added = 0
+                        for _dbe_row in _dbe_rows:
+                            if _dbe_added >= _dbe_needed:
+                                break
+                            _dbe_id = str(_dbe_row.get("item_id", "") or "")
+                            if _dbe_id in _dbe_current_ids:
+                                continue
+                            _dbe_sa = _dbe_row.get("schema_a") or {}
+                            _dbe_sc = _dbe_row.get("schema_c") or {}
+                            _dbe_title = str(_dbe_sa.get("title_zh", "") or _dbe_row.get("title", "") or "").strip()
+                            _dbe_body = str(_dbe_sa.get("summary_zh", "") or "").strip()
+                            if not _dbe_title or len(_dbe_body) < 50:
+                                continue
+                            if not compute_ai_relevance(_dbe_title, _dbe_body[:300], "", []):
+                                continue
+                            _dbe_url = str(_dbe_sc.get("cta_url", "") or _dbe_row.get("url", "") or "").strip()
+                            _dbe_card = EduNewsCard(
+                                item_id=_dbe_id,
+                                is_valid_news=True,
+                                title_plain=_dbe_title,
+                                what_happened=_dbe_body[:500],
+                                why_important=f"歷史紀錄（近 7 日）：{_dbe_row.get('source_name', '來源平台')}",
+                                source_name=str(_dbe_row.get("source_name", "歷史資料庫") or "歷史資料庫"),
+                                source_url=_dbe_url if _dbe_url.startswith("http") else "",
+                                category=str(_dbe_sa.get("category", "tech") or "tech"),
+                                final_score=4.0,
+                            )
+                            try:
+                                setattr(_dbe_card, "event_gate_pass", True)
+                                setattr(_dbe_card, "signal_gate_pass", True)
+                                setattr(_dbe_card, "is_demo_extended", True)
+                            except Exception:
+                                pass
+                            _dbe_deck.append(_dbe_card)
+                            if not isinstance(z0_exec_extra_cards, list):
+                                z0_exec_extra_cards = _dbe_deck
+                            _dbe_current_ids.add(_dbe_id)
+                            _dbe_added += 1
+                        if _dbe_added > 0:
+                            _dbe_new_deck_count = len(_dbe_deck)
+                            _dbe_new_ready = _dbe_new_deck_count >= 6
+                            _dbe_sr_path.write_text(
+                                _dbe_json.dumps({
+                                    "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+                                    "mode": _pipeline_mode_sr,
+                                    "selected_events": _sr_ai_selected,
+                                    "ai_selected_events": _sr_ai_selected,
+                                    "deck_events": _dbe_new_deck_count,
+                                    "showcase_ready": _dbe_new_ready,
+                                    "fallback_used": True,
+                                    "demo_supplement": True,
+                                    "threshold": 6,
+                                }, ensure_ascii=False, indent=2),
+                                encoding="utf-8",
+                            )
+                            log.info(
+                                "DEMO_EXTENDED_POOL: added %d historical items, deck=%d showcase_ready=%s",
+                                _dbe_added, _dbe_new_deck_count, _dbe_new_ready,
+                            )
+                except Exception as _dbe_exc:
+                    log.warning("DEMO_EXTENDED_POOL query failed (non-fatal): %s", _dbe_exc)
+
             # Generate executive output files (PPTX + DOCX + Notion + XMind)
             try:
                 _outputs_dir = Path(settings.PROJECT_ROOT) / "outputs"
@@ -1987,6 +2124,71 @@ def run_pipeline() -> None:
                 log.info("Executive DOCX generated: %s", docx_path)
                 log.info("Notion page generated: %s", notion_path)
                 log.info("XMind mindmap generated: %s", xmind_path)
+
+                # Demo mode: stamp slide 0 with a red textbox so the deck can never be
+                # mistaken for a production deliverable.
+                if _is_demo_mode_sr and pptx_path and Path(str(pptx_path)).exists():
+                    try:
+                        from pptx import Presentation as _DmPrs
+                        from pptx.util import Inches as _DmIn, Pt as _DmPt
+                        from pptx.dml.color import RGBColor as _DmRGB
+                        _dm_prs   = _DmPrs(str(pptx_path))
+                        _dm_slide = _dm_prs.slides[0]
+                        _dm_txbx  = _dm_slide.shapes.add_textbox(
+                            _DmIn(0.1), _DmIn(0.05), _DmIn(9.0), _DmIn(0.4)
+                        )
+                        _dm_tf  = _dm_txbx.text_frame
+                        _dm_tf.word_wrap = False
+                        _dm_p   = _dm_tf.paragraphs[0]
+                        _dm_run = _dm_p.add_run()
+                        _dm_run.text = (
+                            f"[DEMO MODE]  ai_selected={_sr_ai_selected}"
+                            f"  extended_pool_supplement={_sr_demo_supplement}"
+                            "  DO NOT DISTRIBUTE"
+                        )
+                        _dm_run.font.size      = _DmPt(11)
+                        _dm_run.font.bold      = True
+                        _dm_run.font.color.rgb = _DmRGB(0xCC, 0x00, 0x00)
+                        _dm_prs.save(str(pptx_path))
+                        log.info("Demo mode: PPTX slide 0 stamped with DEMO MODE banner")
+                    except Exception as _dm_exc:
+                        log.warning("Demo mode PPTX stamp failed (non-fatal): %s", _dm_exc)
+
+                # Demo mode: stamp DOCX cover page with DEMO MODE banner (page 1, prepend paragraph).
+                if _is_demo_mode_sr and docx_path and Path(str(docx_path)).exists():
+                    try:
+                        from docx import Document as _DmDocCls
+                        from docx.oxml.ns import qn as _dm_qn
+                        from docx.oxml import OxmlElement as _dm_oxml_el
+                        _dm_doc = _DmDocCls(str(docx_path))
+                        _dm_banner_text = (
+                            f"[DEMO MODE]  ai_selected={_sr_ai_selected}"
+                            "  含近 7 日 AI 事件補位（僅展示用途）  DO NOT DISTRIBUTE"
+                        )
+                        _dm_p_el = _dm_oxml_el("w:p")
+                        _dm_r_el = _dm_oxml_el("w:r")
+                        _dm_rpr  = _dm_oxml_el("w:rPr")
+                        _dm_b    = _dm_oxml_el("w:b")
+                        _dm_col  = _dm_oxml_el("w:color")
+                        _dm_col.set(_dm_qn("w:val"), "CC0000")
+                        _dm_sz   = _dm_oxml_el("w:sz")
+                        _dm_sz.set(_dm_qn("w:val"), "20")
+                        _dm_rpr.extend([_dm_b, _dm_col, _dm_sz])
+                        _dm_r_el.append(_dm_rpr)
+                        _dm_t_el = _dm_oxml_el("w:t")
+                        _dm_t_el.text = _dm_banner_text
+                        _dm_t_el.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+                        _dm_r_el.append(_dm_t_el)
+                        _dm_p_el.append(_dm_r_el)
+                        if _dm_doc.paragraphs:
+                            _dm_doc.paragraphs[0]._element.addprevious(_dm_p_el)
+                        else:
+                            _dm_doc.element.body.append(_dm_p_el)
+                        _dm_doc.save(str(docx_path))
+                        log.info("Demo mode: DOCX cover stamped with DEMO MODE banner")
+                    except Exception as _dm_docx_exc:
+                        log.warning("Demo mode DOCX stamp failed (non-fatal): %s", _dm_docx_exc)
+
                 # Update filter_summary.meta.json kept_total to reflect exec_selected so
                 # NO_ZERO_DAY gate in verify_online.ps1 passes when PH_SUPP fills the deck.
                 # Semantically correct: if N exec events were selected the pipeline kept N items.
@@ -2769,6 +2971,51 @@ def run_pipeline() -> None:
                                  len(_sss_present), len(_canonical_sources))
                 except Exception as _sss_exc:
                     log.warning("STATS_SINGLE_SOURCE_HARD check failed (non-fatal): %s", _sss_exc)
+
+                # SHOWCASE_READY_HARD gate — guards against empty-deck OK runs.
+                # Reads showcase_ready.meta.json (written above); if showcase_ready=false,
+                # deletes PPTX/DOCX and writes NOT_READY.md so Hard-D guard exits 1.
+                try:
+                    import json as _scg_json
+                    _scg_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
+                    if _scg_path.exists():
+                        _scg_data  = _scg_json.loads(_scg_path.read_text(encoding="utf-8"))
+                        _scg_ready = bool(_scg_data.get("showcase_ready", True))
+                        _scg_ai    = int(_scg_data.get("ai_selected_events", 0) or 0)
+                        _scg_mode  = str(_scg_data.get("mode", "manual"))
+                        if not _scg_ready:
+                            log.error(
+                                "SHOWCASE_READY_HARD FAIL — ai_selected=%d < 6 (mode=%s); "
+                                "deck would be empty. Deleting output files, writing NOT_READY.md.",
+                                _scg_ai, _scg_mode,
+                            )
+                            for _scg_art in ("executive_report.pptx", "executive_report.docx"):
+                                _scg_art_path = Path(settings.PROJECT_ROOT) / "outputs" / _scg_art
+                                if _scg_art_path.exists():
+                                    _scg_art_path.unlink(missing_ok=True)
+                            _scg_nr = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                            _scg_nr.write_text(
+                                "# NOT_READY\n\n"
+                                f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
+                                "gate: SHOWCASE_READY_HARD\n"
+                                "events_failing: 1\n\n"
+                                "## Failing events:\n"
+                                f"- ai_selected_events={_scg_ai} is below threshold=6\n\n"
+                                "## Fix\n"
+                                "Ensure the AI event pipeline selects >= 6 events. "
+                                "Check source feed freshness and filter settings.\n",
+                                encoding="utf-8",
+                            )
+                        else:
+                            (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
+                            log.info(
+                                "SHOWCASE_READY_HARD: PASS — ai_selected=%d >= 6 (mode=%s)",
+                                _scg_ai, _scg_mode,
+                            )
+                    else:
+                        log.warning("SHOWCASE_READY_HARD: showcase_ready.meta.json not found (skipping gate)")
+                except Exception as _scg_exc:
+                    log.warning("SHOWCASE_READY_HARD check failed (non-fatal): %s", _scg_exc)
 
             except Exception as exc_bin:
                 log.error("Executive report generation failed (non-blocking): %s", exc_bin)

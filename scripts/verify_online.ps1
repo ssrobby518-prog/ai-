@@ -1499,6 +1499,45 @@ if (Test-Path $voFznPath) {
 }
 
 # ---------------------------------------------------------------------------
+# SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
+# Reads outputs/showcase_ready.meta.json written by run_once.py.
+# showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)
+# showcase_ready=false => FAIL exit 1 (deck has < 6 AI events)
+# meta missing         => FAIL exit 1 (pipeline did not reach readiness check)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "SHOWCASE_READY_HARD:"
+$voScPath = Join-Path $repoRoot "outputs\showcase_ready.meta.json"
+if (Test-Path $voScPath) {
+    try {
+        $voSc         = Get-Content $voScPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voScReady    = [bool]($voSc.PSObject.Properties["showcase_ready"]      -and $voSc.showcase_ready)
+        $voScAiSel    = if ($voSc.PSObject.Properties["ai_selected_events"])    { [int]$voSc.ai_selected_events }    else { 0 }
+        $voScDeckEv   = if ($voSc.PSObject.Properties["deck_events"])           { [int]$voSc.deck_events }           else { 0 }
+        $voScMode     = if ($voSc.PSObject.Properties["mode"])                  { [string]$voSc.mode }               else { "manual" }
+        $voScFallback = if ($voSc.PSObject.Properties["fallback_used"])         { [bool]$voSc.fallback_used }        else { $false }
+        Write-Output ("  ai_selected_events : {0}" -f $voScAiSel)
+        Write-Output ("  deck_events        : {0}" -f $voScDeckEv)
+        Write-Output ("  mode               : {0}" -f $voScMode)
+        Write-Output ("  fallback_used      : {0}" -f $voScFallback)
+        Write-Output ("  showcase_ready     : {0}" -f $voScReady)
+        if ($voScReady) {
+            Write-Output ("  => SHOWCASE_READY_HARD: PASS (ai_selected={0}  mode={1})" -f $voScAiSel, $voScMode)
+        } else {
+            Write-Output ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < 6  mode={1})" -f $voScAiSel, $voScMode)
+            Write-Output "     Fix: run in demo mode (-Mode demo) or wait for a day with >= 6 AI events."
+            exit 1
+        }
+    } catch {
+        Write-Output ("  => SHOWCASE_READY_HARD: FAIL (parse error: {0})" -f $_)
+        exit 1
+    }
+} else {
+    Write-Output "  => SHOWCASE_READY_HARD: FAIL (showcase_ready.meta.json not found — pipeline did not write readiness meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # GENERIC_PHRASE_AUDIT (Iteration 4) — soft audit (WARN, not exit 1)
 #   Counts hollow template phrases in PPT/DOCX output.
 #   WARN if hit count > events_total.
