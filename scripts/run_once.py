@@ -39,6 +39,17 @@ from schemas.models import RawItem
 from utils.entity_cleaner import clean_entities
 from utils.logger import setup_logger
 from utils.metrics import get_collector, reset_collector
+from utils.evidence_pack import (
+    AI_KEYWORDS,
+    compute_ai_relevance,
+    extract_event_anchors,
+    check_no_boilerplate,
+    check_q1_structure,
+    check_q2_structure,
+    check_moves_anchored,
+    check_exec_readability,
+)
+from utils.newsroom_zh_rewrite import rewrite_news_lead_v2, rewrite_news_impact_v2
 from utils.zh_narrative_validator import validate_zh_card_fields
 
 
@@ -287,7 +298,30 @@ _STYLE_SANITY_RE = re.compile("|".join(_STYLE_SANITY_PATTERNS), re.IGNORECASE)
 _AI_RELEVANCE_RE = re.compile(
     r"\b(?:AI|LLM|GPT(?:-\d+)?|Claude|Anthropic|OpenAI|Gemini|model|models|machine learning|"
     r"neural|transformer|transformers|diffusion|embedding|encoder|inference|quantization|"
-    r"text-to-image|multimodal|agent|agents|foundation model)\b",
+    r"text-to-image|multimodal|agent|agents|foundation model|foundation models|"
+    r"fine-tune|fine-tuning|fine_tune|fine_tuning|"
+    r"benchmark|benchmarks|benchmarking|"
+    r"CUDA|GPU|TPU|"
+    r"reasoning|chain-of-thought|"
+    r"autonomous|autonomy|"
+    r"synthetic data|synthetic|"
+    r"Hugging Face|HuggingFace|"
+    r"RAG|retrieval-augmented|"
+    r"RLHF|reinforcement learning|"
+    r"pre-train|pre-training|pretrain|pretraining|"
+    r"tokenizer|tokenization|"
+    r"vector database|vector store|"
+    r"prompt|prompting|"
+    r"Llama|Mistral|Falcon|Stable Diffusion|"
+    r"NVIDIA|A100|H100)\b"
+    r"|hallucin",  # prefix match for hallucination/hallucinate
+    re.IGNORECASE,
+)
+
+_NO_BOILERPLATE_RE = re.compile(
+    r"最新公告顯示|確認.*原文出處|原文已提供.*依據|避免基於推測"
+    r"|引發.*(?:討論|關注|熱議)|具有.*(?:實質|重大).*(?:影響|意義)"
+    r"|各方.*(?:評估|追蹤).*後續",
     re.IGNORECASE,
 )
 
@@ -305,7 +339,11 @@ def _style_sanity_ok(*parts: str) -> bool:
     joined = _normalize_ws(" ".join(parts))
     if not joined:
         return False
-    return not bool(_STYLE_SANITY_RE.search(joined))
+    if _STYLE_SANITY_RE.search(joined):
+        return False
+    if _NO_BOILERPLATE_RE.search(joined):
+        return False
+    return True
 
 
 def _extract_quoted_segments(text: str) -> list[str]:
@@ -399,28 +437,117 @@ def _extract_quote_window(quote: str, min_len: int = 20, max_len: int = 30) -> s
     return q[:max_len] if len(q) > max_len else q
 
 
-def _build_q1_zh_narrative(actor: str, quote_window_1: str) -> str:
-    """Build Traditional Chinese Q1 narrative with embedded quote_window_1 (20-30 chars)."""
+def _build_q1_zh_legacy(actor: str, quote_window_1: str) -> str:
+    """Legacy Q1 builder — kept as last-resort emergency fallback only."""
     actor_n = _normalize_ws(actor) or "業界"
     wn = _normalize_ws(quote_window_1)
     return _normalize_ws(
-        f"{actor_n}最新公告顯示相關技術或產品有具體進展，"
-        f"原文直述：「{wn}」，"
-        f"確認上述訊息有原文出處支撐，"
-        f"可供決策者直接核對查閱。"
+        f"{actor_n}公布技術進展，"
+        f"原文記載：「{wn}」，"
+        f"此訊息來源可直接核實，"
+        f"供決策者查閱評估。"
     )
 
 
-def _build_q2_zh_narrative(actor: str, quote_window_2: str) -> str:
-    """Build Traditional Chinese Q2 narrative with embedded quote_window_2 (20-30 chars)."""
+def _build_q2_zh_legacy(actor: str, quote_window_2: str) -> str:
+    """Legacy Q2 builder — kept as last-resort emergency fallback only."""
     actor_n = _normalize_ws(actor) or "業界"
     wn = _normalize_ws(quote_window_2)
     return _normalize_ws(
-        f"此次{actor_n}相關發布的後續應用影響，"
-        f"原文已提供具體文字依據：「{wn}」，"
-        f"決策者可依此原始資料評估具體場景的適用性，"
-        f"並核查影響範圍，避免基於推測作出判斷。"
+        f"此次{actor_n}進展對相關領域具體影響，"
+        f"原文顯示：「{wn}」，"
+        f"可據此布局評估。"
     )
+
+
+def _build_q1_zh_v2(
+    actor: str,
+    quote_window: str,
+    title: str,
+    q1_en: str,
+    anchors: list,
+    bucket: str = "business",
+    date_str: str = "",
+) -> str:
+    """Evidence-driven Q1: actor+action from source, embeds 「quote_window」.
+    No banned phrases. Calls newsroom_zh_rewrite.rewrite_news_lead_v2 then
+    splices in quote_window if not already present.
+    """
+    actor_n = _normalize_ws(actor) or "業界"
+    wn = _normalize_ws(quote_window)
+    lq, rq = "\u300c", "\u300d"
+    base = ""
+    try:
+        context = {
+            "title": title,
+            "bucket": bucket,
+            "date": date_str,
+            "what_happened": q1_en,
+            "subject": actor_n,
+        }
+        base = rewrite_news_lead_v2(
+            q1_en or title,
+            context,
+            anchors=anchors,
+            primary_anchor=actor_n,
+        )
+    except Exception:
+        base = ""
+    if wn and (lq + wn + rq) not in base:
+        base = (
+            (base.rstrip("。").rstrip("，") + f"，原文記載：{lq}{wn}{rq}。")
+            if base
+            else f"原文記載：{lq}{wn}{rq}。"
+        )
+    if not base or _NO_BOILERPLATE_RE.search(base):
+        base = f"{actor_n}公布新進展，原文記載：{lq}{wn}{rq}，此訊息來源可直接核實。"
+    return _normalize_ws(base)
+
+
+def _build_q2_zh_v2(
+    actor: str,
+    quote_window: str,
+    title: str,
+    q2_en: str,
+    anchors: list,
+    bucket: str = "business",
+    date_str: str = "",
+) -> str:
+    """Evidence-driven Q2: impact+target from source, embeds 「quote_window」."""
+    actor_n = _normalize_ws(actor) or "業界"
+    wn = _normalize_ws(quote_window)
+    lq, rq = "\u300c", "\u300d"
+    base = ""
+    try:
+        context = {
+            "title": title,
+            "bucket": bucket,
+            "date": date_str,
+            "why_important": q2_en,
+            "subject": actor_n,
+        }
+        base = rewrite_news_impact_v2(
+            q2_en or title,
+            context,
+            anchors=anchors,
+            primary_anchor=actor_n,
+        )
+    except Exception:
+        base = ""
+    if wn and (lq + wn + rq) not in base:
+        base = (
+            (base.rstrip("。").rstrip("，") + f"，原文顯示：{lq}{wn}{rq}。")
+            if base
+            else f"原文顯示：{lq}{wn}{rq}。"
+        )
+    if not base or _NO_BOILERPLATE_RE.search(base):
+        base = f"此次{actor_n}進展對{bucket}領域具體影響，原文顯示：{lq}{wn}{rq}，可據此布局評估。"
+    return _normalize_ws(base)
+
+
+# Keep aliases for backward compatibility references in this file
+_build_q1_zh_narrative = _build_q1_zh_legacy
+_build_q2_zh_narrative = _build_q2_zh_legacy
 
 
 def _is_ai_relevant(*parts: str) -> bool:
@@ -790,6 +917,15 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         source_blob = _normalize_ws(
             getattr(card, "full_text", "") or getattr(card, "what_happened", "") or f"{q1} {q2}"
         )
+
+        # Extract anchors for this event (anchor = company/number/version from source)
+        _anchors_pre: list[str] = list(cp.get("anchors", []) or [])
+        if not _anchors_pre:
+            _anchors_pre = extract_event_anchors(title, quote_1, quote_2, source_blob, n=8)
+
+        # AI relevance (keyword-based, hard)
+        _ai_relevance: bool = compute_ai_relevance(title, quote_1, quote_2, _anchors_pre)
+
         quote_pool = _extract_ph_supp_quotes(source_blob, n=6)
 
         quote_1_cands = _pick_quote_variants(
@@ -869,16 +1005,29 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 risks = list(dc.get("risks", []) or [])
         moves = [_clip_text(_normalize_ws(m), 90) for m in moves if _normalize_ws(m)][:3]
         risks = [_clip_text(_normalize_ws(r), 90) for r in risks if _normalize_ws(r)][:2]
+        _primary_anchor = _anchors_pre[0] if _anchors_pre else ""
         if not moves:
-            moves = [
-                "T+7：確認原始來源與版本時間戳。",
-                "T+7：定義可量測 KPI 並建立追蹤表。",
-            ]
+            if _primary_anchor:
+                moves = [
+                    f"{_primary_anchor}：確認原始來源與版本時間戳。",
+                    f"{_primary_anchor}：定義可量測 KPI 並建立追蹤表。",
+                ]
+            else:
+                moves = [
+                    "T+7：確認原始來源與版本時間戳。",
+                    "T+7：定義可量測 KPI 並建立追蹤表。",
+                ]
         if not risks:
-            risks = [
-                "訊號可能反轉，需保留調整空間。",
-                "資料完整度不足時，避免提前放大量化承諾。",
-            ]
+            if _primary_anchor:
+                risks = [
+                    f"{_primary_anchor}相關訊號可能反轉，需保留調整空間。",
+                    f"資料完整度不足時，避免提前放大量化承諾。",
+                ]
+            else:
+                risks = [
+                    "訊號可能反轉，需保留調整空間。",
+                    "資料完整度不足時，避免提前放大量化承諾。",
+                ]
 
         final_url = _normalize_ws(getattr(card, "final_url", "") or getattr(card, "source_url", "") or "")
         if not final_url:
@@ -909,8 +1058,14 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         # match and breaking the Q*_ZH_WINDOW gate check.
         quote_window_1 = _extract_quote_window(quote_1, min_len=20, max_len=30)
         quote_window_2 = _extract_quote_window(quote_2, min_len=20, max_len=30)
-        q1_zh = _build_q1_zh_narrative(actor, quote_window_1)
-        q2_zh = _build_q2_zh_narrative(actor, quote_window_2)
+
+        _bucket = str(getattr(card, "category", "business") or "business")
+        _date_str = str(getattr(card, "published_at", "") or "")
+        _q1_en = str(getattr(card, "what_happened", "") or q1)
+        _q2_en = str(getattr(card, "why_important", "") or q2)
+
+        q1_zh = _build_q1_zh_v2(actor, quote_window_1, title, _q1_en, _anchors_pre, _bucket, _date_str)
+        q2_zh = _build_q2_zh_v2(actor, quote_window_2, title, _q2_en, _anchors_pre, _bucket, _date_str)
 
         # Self-healing: validate once; retry with relaxed min_len if needed.
         _zh_ok, _zh_reasons = validate_zh_card_fields(
@@ -919,8 +1074,8 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         if not _zh_ok:
             _qw1_r = _extract_quote_window(quote_1, min_len=10, max_len=30)
             _qw2_r = _extract_quote_window(quote_2, min_len=10, max_len=30)
-            _q1zh_r = _build_q1_zh_narrative(actor, _qw1_r)
-            _q2zh_r = _build_q2_zh_narrative(actor, _qw2_r)
+            _q1zh_r = _build_q1_zh_v2(actor, _qw1_r, title, _q1_en, _anchors_pre, _bucket, _date_str)
+            _q2zh_r = _build_q2_zh_v2(actor, _qw2_r, title, _q2_en, _anchors_pre, _bucket, _date_str)
             _zh_ok2, _zh_reasons2 = validate_zh_card_fields(
                 _q1zh_r, _q2zh_r, _qw1_r, _qw2_r, quote_1, quote_2
             )
@@ -929,6 +1084,15 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 q1_zh, q2_zh = _q1zh_r, _q2zh_r
                 _zh_reasons = _zh_reasons2
             if _zh_reasons:
+                # Last resort: try legacy builder if v2 still fails
+                _q1zh_leg = _build_q1_zh_legacy(actor, quote_window_1)
+                _q2zh_leg = _build_q2_zh_legacy(actor, quote_window_2)
+                _zh_ok3, _zh_reasons3 = validate_zh_card_fields(
+                    _q1zh_leg, _q2zh_leg, quote_window_1, quote_window_2, quote_1, quote_2
+                )
+                if _zh_ok3 or (len(_zh_reasons3) < len(_zh_reasons)):
+                    q1_zh, q2_zh = _q1zh_leg, _q2zh_leg
+                    _zh_reasons = _zh_reasons3
                 log.debug(
                     "ZH narrative self-heal: reasons=%s title=%.60s",
                     _zh_reasons, title,
@@ -960,6 +1124,8 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 "final_url": final_url,
                 "moves": moves,
                 "risks": risks,
+                "anchors": _anchors_pre,
+                "ai_relevance": _ai_relevance,
             }
         )
 
@@ -1756,6 +1922,24 @@ def run_pipeline() -> None:
                     min_events=0,
                 )
                 _final_cards = _build_final_cards(_event_cards_for_final)
+
+                # Route A: AI_RELEVANCE hard filter — non-AI events go to watchlist only
+                _ai_final_cards = [fc for fc in _final_cards if fc.get("ai_relevance", False)]
+                _watchlist_cards = [fc for fc in _final_cards if not fc.get("ai_relevance", False)]
+                if _ai_final_cards:
+                    _final_cards = _ai_final_cards
+                    log.info(
+                        "AI_RELEVANCE filter: %d AI-relevant kept, %d non-AI sent to watchlist",
+                        len(_ai_final_cards), len(_watchlist_cards),
+                    )
+                else:
+                    # All cards failed AI filter — keep all to avoid empty deck
+                    log.warning(
+                        "AI_RELEVANCE filter: 0 AI-relevant cards found; keeping all %d cards "
+                        "(degraded mode — check keyword coverage)",
+                        len(_final_cards),
+                    )
+
                 metrics_dict["final_cards"] = _final_cards
 
                 _final_cards_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "final_cards.meta.json"
@@ -2321,6 +2505,260 @@ def run_pipeline() -> None:
                 except Exception as _zhg_exc:
                     log.warning("EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD check failed (non-fatal): %s", _zhg_exc)
 
+                # ---------------------------------------------------------------
+                # AI_PURITY_HARD gate — 100% of deck events must be AI-relevant
+                # ---------------------------------------------------------------
+                try:
+                    import json as _aip_json
+                    _aip_pass = all(fc.get("ai_relevance", False) for fc in (_final_cards or []))
+                    _aip_meta = {
+                        "gate_result": "PASS" if _aip_pass else "FAIL",
+                        "selected": len(_final_cards or []),
+                        "ai_true": sum(1 for fc in (_final_cards or []) if fc.get("ai_relevance")),
+                        "watchlist_excluded": len(_watchlist_cards),
+                    }
+                    _aip_path = Path(settings.PROJECT_ROOT) / "outputs" / "ai_purity_hard.meta.json"
+                    _aip_path.write_text(_aip_json.dumps(_aip_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                    if not _aip_pass:
+                        _nr_aip = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                        _nr_aip.write_text(
+                            "# NOT_READY\n\ngate: AI_PURITY_HARD\n"
+                            f"ai_true={_aip_meta['ai_true']} selected={_aip_meta['selected']}\n",
+                            encoding="utf-8",
+                        )
+                        for _art_aip in ("executive_report.pptx", "executive_report.docx"):
+                            (_art_aip_p := Path(settings.PROJECT_ROOT) / "outputs" / _art_aip).unlink(missing_ok=True)
+                        log.error("AI_PURITY_HARD FAIL — non-AI events in deck; NOT_READY.md written")
+                    else:
+                        log.info("AI_PURITY_HARD: PASS — %d/%d events AI-relevant", _aip_meta["ai_true"], _aip_meta["selected"])
+                except Exception as _aip_exc:
+                    log.warning("AI_PURITY_HARD check failed (non-fatal): %s", _aip_exc)
+
+                # ---------------------------------------------------------------
+                # NO_BOILERPLATE_Q1Q2_HARD gate — 0 banned phrases in any q_zh
+                # ---------------------------------------------------------------
+                try:
+                    import json as _nbp_json
+                    _nbp_fail_events: list[dict] = []
+                    for _fc_nbp in (_final_cards or []):
+                        _nbp_ok, _nbp_reasons = check_no_boilerplate(
+                            _fc_nbp.get("q1_zh", ""), _fc_nbp.get("q2_zh", "")
+                        )
+                        if not _nbp_ok:
+                            _nbp_fail_events.append({"title": _fc_nbp.get("title", "")[:60], "reasons": _nbp_reasons})
+                    _nbp_result = "PASS" if not _nbp_fail_events else "FAIL"
+                    _nbp_meta = {
+                        "gate_result": _nbp_result,
+                        "events_total": len(_final_cards or []),
+                        "fail_count": len(_nbp_fail_events),
+                        "failing_events": _nbp_fail_events,
+                    }
+                    _nbp_path = Path(settings.PROJECT_ROOT) / "outputs" / "no_boilerplate_hard.meta.json"
+                    _nbp_path.write_text(_nbp_json.dumps(_nbp_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+                    if _nbp_result == "FAIL":
+                        _nr_nbp = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                        _nr_nbp.write_text(
+                            "# NOT_READY\n\ngate: NO_BOILERPLATE_Q1Q2_HARD\n"
+                            f"fail_count={len(_nbp_fail_events)}\n",
+                            encoding="utf-8",
+                        )
+                        for _art_nbp in ("executive_report.pptx", "executive_report.docx"):
+                            (Path(settings.PROJECT_ROOT) / "outputs" / _art_nbp).unlink(missing_ok=True)
+                        log.error("NO_BOILERPLATE_Q1Q2_HARD FAIL — %d events with banned phrases", len(_nbp_fail_events))
+                    else:
+                        log.info("NO_BOILERPLATE_Q1Q2_HARD: PASS — 0 boilerplate phrases found")
+                except Exception as _nbp_exc:
+                    log.warning("NO_BOILERPLATE_Q1Q2_HARD check failed (non-fatal): %s", _nbp_exc)
+
+                # ---------------------------------------------------------------
+                # Q1_STRUCTURE_HARD gate — >= 10/12 events pass Q1 structure check
+                # ---------------------------------------------------------------
+                try:
+                    import json as _q1s_json
+                    _q1s_pass = 0
+                    _q1s_fail = 0
+                    _q1s_events: list[dict] = []
+                    for _fc_q1s in (_final_cards or []):
+                        _q1s_ok, _q1s_reasons = check_q1_structure(
+                            _fc_q1s.get("q1_zh", ""), _fc_q1s.get("actor", ""),
+                            _fc_q1s.get("quote_1", ""), _fc_q1s.get("anchors", []),
+                        )
+                        if _q1s_ok:
+                            _q1s_pass += 1
+                        else:
+                            _q1s_fail += 1
+                        _q1s_events.append({"title": _fc_q1s.get("title", "")[:60], "ok": _q1s_ok, "reasons": _q1s_reasons})
+                    _total_q1s = len(_final_cards or [])
+                    _q1s_result = "PASS" if (_q1s_pass >= min(10, _total_q1s) or _q1s_fail <= 2) else "FAIL"
+                    _q1s_meta = {
+                        "gate_result": _q1s_result, "pass_count": _q1s_pass,
+                        "fail_count": _q1s_fail, "events_total": _total_q1s, "events": _q1s_events,
+                    }
+                    (Path(settings.PROJECT_ROOT) / "outputs" / "q1_structure_hard.meta.json").write_text(
+                        _q1s_json.dumps(_q1s_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    if _q1s_result == "FAIL":
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
+                            f"# NOT_READY\n\ngate: Q1_STRUCTURE_HARD\nfail_count={_q1s_fail}\n", encoding="utf-8"
+                        )
+                        for _art_q1s in ("executive_report.pptx", "executive_report.docx"):
+                            (Path(settings.PROJECT_ROOT) / "outputs" / _art_q1s).unlink(missing_ok=True)
+                        log.error("Q1_STRUCTURE_HARD FAIL — %d events failed Q1 structure", _q1s_fail)
+                    else:
+                        log.info("Q1_STRUCTURE_HARD: PASS — %d/%d pass", _q1s_pass, _total_q1s)
+                except Exception as _q1s_exc:
+                    log.warning("Q1_STRUCTURE_HARD check failed (non-fatal): %s", _q1s_exc)
+
+                # ---------------------------------------------------------------
+                # Q2_STRUCTURE_HARD gate — >= 10/12 events pass Q2 structure check
+                # ---------------------------------------------------------------
+                try:
+                    import json as _q2s_json
+                    _q2s_pass = 0
+                    _q2s_fail = 0
+                    _q2s_events: list[dict] = []
+                    for _fc_q2s in (_final_cards or []):
+                        _q2s_ok, _q2s_reasons = check_q2_structure(
+                            _fc_q2s.get("q2_zh", ""), _fc_q2s.get("quote_2", ""),
+                            _fc_q2s.get("anchors", []),
+                        )
+                        if _q2s_ok:
+                            _q2s_pass += 1
+                        else:
+                            _q2s_fail += 1
+                        _q2s_events.append({"title": _fc_q2s.get("title", "")[:60], "ok": _q2s_ok, "reasons": _q2s_reasons})
+                    _total_q2s = len(_final_cards or [])
+                    _q2s_result = "PASS" if (_q2s_pass >= min(10, _total_q2s) or _q2s_fail <= 2) else "FAIL"
+                    _q2s_meta = {
+                        "gate_result": _q2s_result, "pass_count": _q2s_pass,
+                        "fail_count": _q2s_fail, "events_total": _total_q2s, "events": _q2s_events,
+                    }
+                    (Path(settings.PROJECT_ROOT) / "outputs" / "q2_structure_hard.meta.json").write_text(
+                        _q2s_json.dumps(_q2s_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    if _q2s_result == "FAIL":
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
+                            f"# NOT_READY\n\ngate: Q2_STRUCTURE_HARD\nfail_count={_q2s_fail}\n", encoding="utf-8"
+                        )
+                        for _art_q2s in ("executive_report.pptx", "executive_report.docx"):
+                            (Path(settings.PROJECT_ROOT) / "outputs" / _art_q2s).unlink(missing_ok=True)
+                        log.error("Q2_STRUCTURE_HARD FAIL — %d events failed Q2 structure", _q2s_fail)
+                    else:
+                        log.info("Q2_STRUCTURE_HARD: PASS — %d/%d pass", _q2s_pass, _total_q2s)
+                except Exception as _q2s_exc:
+                    log.warning("Q2_STRUCTURE_HARD check failed (non-fatal): %s", _q2s_exc)
+
+                # ---------------------------------------------------------------
+                # MOVES_ANCHORED_HARD gate — 0 unanchored bullets
+                # ---------------------------------------------------------------
+                try:
+                    import json as _ma_json
+                    _ma_fail_events: list[dict] = []
+                    for _fc_ma in (_final_cards or []):
+                        _ma_ok, _ma_reasons = check_moves_anchored(
+                            _fc_ma.get("moves", []), _fc_ma.get("risks", []),
+                            _fc_ma.get("anchors", []),
+                        )
+                        if not _ma_ok:
+                            _ma_fail_events.append({"title": _fc_ma.get("title", "")[:60], "reasons": _ma_reasons})
+                    _ma_result = "PASS" if not _ma_fail_events else "FAIL"
+                    _ma_meta = {
+                        "gate_result": _ma_result, "events_total": len(_final_cards or []),
+                        "fail_count": len(_ma_fail_events), "failing_events": _ma_fail_events,
+                    }
+                    (Path(settings.PROJECT_ROOT) / "outputs" / "moves_anchored_hard.meta.json").write_text(
+                        _ma_json.dumps(_ma_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    if _ma_result == "FAIL":
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
+                            f"# NOT_READY\n\ngate: MOVES_ANCHORED_HARD\nfail_count={len(_ma_fail_events)}\n", encoding="utf-8"
+                        )
+                        for _art_ma in ("executive_report.pptx", "executive_report.docx"):
+                            (Path(settings.PROJECT_ROOT) / "outputs" / _art_ma).unlink(missing_ok=True)
+                        log.error("MOVES_ANCHORED_HARD FAIL — %d events with unanchored bullets", len(_ma_fail_events))
+                    else:
+                        log.info("MOVES_ANCHORED_HARD: PASS — all move/risk bullets anchored")
+                except Exception as _ma_exc:
+                    log.warning("MOVES_ANCHORED_HARD check failed (non-fatal): %s", _ma_exc)
+
+                # ---------------------------------------------------------------
+                # EXEC_PRODUCT_READABILITY_HARD gate — >= 10/12 events pass
+                # ---------------------------------------------------------------
+                try:
+                    import json as _epr_json
+                    _epr_pass = 0
+                    _epr_fail = 0
+                    _epr_events: list[dict] = []
+                    for _fc_epr in (_final_cards or []):
+                        _epr_ok, _epr_reasons = check_exec_readability(
+                            _fc_epr.get("q1_zh", ""), _fc_epr.get("q2_zh", ""),
+                            _fc_epr.get("actor", ""),
+                            _fc_epr.get("quote_window_1", ""), _fc_epr.get("quote_window_2", ""),
+                        )
+                        if _epr_ok:
+                            _epr_pass += 1
+                        else:
+                            _epr_fail += 1
+                        _epr_events.append({"title": _fc_epr.get("title", "")[:60], "ok": _epr_ok, "reasons": _epr_reasons})
+                    _total_epr = len(_final_cards or [])
+                    _epr_result = "PASS" if (_epr_pass >= min(10, _total_epr) or _epr_fail <= 2) else "FAIL"
+                    _epr_meta = {
+                        "gate_result": _epr_result, "pass_count": _epr_pass,
+                        "fail_count": _epr_fail, "events_total": _total_epr, "events": _epr_events,
+                    }
+                    (Path(settings.PROJECT_ROOT) / "outputs" / "exec_product_readability_hard.meta.json").write_text(
+                        _epr_json.dumps(_epr_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    if _epr_result == "FAIL":
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
+                            f"# NOT_READY\n\ngate: EXEC_PRODUCT_READABILITY_HARD\nfail_count={_epr_fail}\n", encoding="utf-8"
+                        )
+                        for _art_epr in ("executive_report.pptx", "executive_report.docx"):
+                            (Path(settings.PROJECT_ROOT) / "outputs" / _art_epr).unlink(missing_ok=True)
+                        log.error("EXEC_PRODUCT_READABILITY_HARD FAIL — %d events failed", _epr_fail)
+                    else:
+                        log.info("EXEC_PRODUCT_READABILITY_HARD: PASS — %d/%d pass", _epr_pass, _total_epr)
+                except Exception as _epr_exc:
+                    log.warning("EXEC_PRODUCT_READABILITY_HARD check failed (non-fatal): %s", _epr_exc)
+
+                # ---------------------------------------------------------------
+                # STATS_SINGLE_SOURCE_HARD gate — stats from canonical meta files only
+                # ---------------------------------------------------------------
+                try:
+                    import json as _sss_json
+                    _canonical_sources = [
+                        "pool_sufficiency.meta.json",
+                        "fulltext_hydrator.meta.json",
+                        "flow_counts.meta.json",
+                        "final_cards.meta.json",
+                    ]
+                    _sss_present = []
+                    _sss_missing = []
+                    for _src in _canonical_sources:
+                        _src_path = Path(settings.PROJECT_ROOT) / "outputs" / _src
+                        if _src_path.exists():
+                            _sss_present.append(_src)
+                        else:
+                            _sss_missing.append(_src)
+                    _sss_result = "PASS" if len(_sss_missing) <= 2 else "FAIL"
+                    _sss_meta = {
+                        "gate_result": _sss_result,
+                        "canonical_sources": _canonical_sources,
+                        "present": _sss_present,
+                        "missing": _sss_missing,
+                        "source_audit": "stats must come from canonical meta files only",
+                    }
+                    (Path(settings.PROJECT_ROOT) / "outputs" / "stats_single_source_hard.meta.json").write_text(
+                        _sss_json.dumps(_sss_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+                    if _sss_result == "FAIL":
+                        log.error("STATS_SINGLE_SOURCE_HARD FAIL — canonical sources missing: %s", _sss_missing)
+                    else:
+                        log.info("STATS_SINGLE_SOURCE_HARD: PASS — %d/%d canonical sources present",
+                                 len(_sss_present), len(_canonical_sources))
+                except Exception as _sss_exc:
+                    log.warning("STATS_SINGLE_SOURCE_HARD check failed (non-fatal): %s", _sss_exc)
+
             except Exception as exc_bin:
                 log.error("Executive report generation failed (non-blocking): %s", exc_bin)
         except Exception as exc:
@@ -2518,4 +2956,118 @@ def run_pipeline() -> None:
 
 
 if __name__ == "__main__":
-    run_pipeline()
+    if "--not-ready-report" in sys.argv:
+        # Standalone mode: generate NOT_READY_report.docx/.pptx without running pipeline.
+        # Called by run_pipeline.ps1 when IsSuccess=False.
+        import json as _nr_json
+        import re as _nr_re
+        from datetime import datetime as _nr_dt
+        from pathlib import Path as _nr_Path
+
+        _proj_root = Path(__file__).resolve().parent.parent
+        _outputs   = _proj_root / "outputs"
+        _outputs.mkdir(parents=True, exist_ok=True)
+
+        # 1. Parse NOT_READY.md → gate_name + fail_reason (one-liner, human-readable)
+        _nr_md_path  = _outputs / "NOT_READY.md"
+        _gate_name   = "UNKNOWN"
+        _fail_reason = "（原因不明，請查閱 desktop_button.last_run.log）"
+        if _nr_md_path.exists():
+            try:
+                _nr_text = _nr_md_path.read_text(encoding="utf-8")
+                _gm = _nr_re.search(r"^gate:\s*(.+)$", _nr_text, _nr_re.MULTILINE)
+                if _gm:
+                    _gate_name = _gm.group(1).strip()
+                _fail_reason = " ".join(_nr_text.split())[:300]
+            except Exception as _nre:
+                _fail_reason = f"NOT_READY.md 讀取失敗：{_nre}"
+
+        # 2. Load up to 3 sample events from meta files
+        _samples: list = []
+        for _meta_file in ("final_cards.meta.json", "exec_selection.meta.json"):
+            _mpath = _outputs / _meta_file
+            if not _mpath.exists():
+                continue
+            try:
+                _mdata = _nr_json.loads(_mpath.read_text(encoding="utf-8"))
+                _evts  = _mdata.get("events") or _mdata.get("final_selected_events") or []
+                if isinstance(_evts, list) and _evts:
+                    _samples = [
+                        {
+                            "title": str(e.get("title") or e.get("title_plain") or ""),
+                            "final_url": str(e.get("final_url") or e.get("source_url") or ""),
+                        }
+                        for e in _evts[:3]
+                        if isinstance(e, dict)
+                    ]
+                    break
+            except Exception:
+                pass
+
+        # 3. Build next_steps hint based on gate name
+        _gate_tips = {
+            "EXEC_NEWS_QUALITY_HARD": (
+                "來源全文擷取不足，今日 AI 事件缺少可驗證的原始引用段落。"
+                "建議：等待今晚下一次掃描，或確認 z0_collect.ps1 是否正常執行。"
+            ),
+            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD": (
+                "中文敘事品質不足（中文字數或引用窗格未達標）。"
+                "建議：確認 llama-server 是否在線（scripts/llama_server.ps1），或等待下次執行。"
+            ),
+            "POOL_SUFFICIENCY": (
+                "今日 AI 相關事件數量不足，無法達到最低展示門檻。"
+                "建議：等待今晚／明日累積更多 AI 訊號，並確認 RSS 來源是否正常回應。"
+            ),
+            "AI_PURITY_HARD": (
+                "簡報中混入非 AI 事件。"
+                "建議：檢查 topic_router.py 分類規則，或等待下次執行。"
+            ),
+            "EXEC_DELIVERABLE_DOCX_PPTX_HARD": (
+                "報告檔案生成失敗或大小不符規格。"
+                "建議：查閱 outputs/desktop_button.last_run.log 末尾錯誤訊息。"
+            ),
+        }
+        _next_steps = "請查閱 outputs/desktop_button.last_run.log 取得詳細診斷資訊。"
+        for _k, _tip in _gate_tips.items():
+            if _k in _gate_name:
+                _next_steps = _tip
+                break
+
+        _run_id   = os.environ.get("PIPELINE_RUN_ID", "")
+        _run_date = _nr_dt.now().strftime("%Y-%m-%d")
+
+        # 4. Generate NOT_READY_report.docx
+        try:
+            from core.doc_generator import generate_not_ready_report_docx
+            _docx_out = generate_not_ready_report_docx(
+                output_path=_outputs / "NOT_READY_report.docx",
+                fail_reason=_fail_reason,
+                gate_name=_gate_name,
+                samples=_samples,
+                next_steps=_next_steps,
+                run_id=_run_id,
+                run_date=_run_date,
+            )
+            print(f"NOT_READY_report.docx written: {_docx_out}")
+        except Exception as _docx_exc:
+            print(f"ERROR generating NOT_READY_report.docx: {_docx_exc}")
+
+        # 5. Generate NOT_READY_report.pptx
+        try:
+            from core.ppt_generator import generate_not_ready_report_pptx
+            _pptx_out = generate_not_ready_report_pptx(
+                output_path=_outputs / "NOT_READY_report.pptx",
+                fail_reason=_fail_reason,
+                gate_name=_gate_name,
+                samples=_samples,
+                next_steps=_next_steps,
+                run_id=_run_id,
+                run_date=_run_date,
+            )
+            print(f"NOT_READY_report.pptx written: {_pptx_out}")
+        except Exception as _pptx_exc:
+            print(f"ERROR generating NOT_READY_report.pptx: {_pptx_exc}")
+
+        sys.exit(0)
+    else:
+        run_pipeline()

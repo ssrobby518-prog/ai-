@@ -2366,3 +2366,104 @@ def generate_executive_ppt(
     except Exception as exc:
         get_logger().warning('watchlist longform error (non-fatal): %s', exc)
     return result
+
+
+# ---------------------------------------------------------------------------
+# NOT_READY_report PPTX generator (standalone — no EduNewsCard dependency)
+# Called by run_pipeline.ps1 via run_once.py --not-ready-report
+# ---------------------------------------------------------------------------
+
+def generate_not_ready_report_pptx(
+    output_path: "Path",
+    fail_reason: str,
+    gate_name: str,
+    samples: "list[dict]",
+    next_steps: str,
+    run_id: str = "",
+    run_date: str = "",
+) -> "Path":
+    """Generate outputs/NOT_READY_report.pptx with human-readable failure info."""
+    from datetime import datetime as _dt_nr
+
+    prs = Presentation()
+    prs.slide_width  = SLIDE_WIDTH
+    prs.slide_height = SLIDE_HEIGHT
+    blank_layout = prs.slide_layouts[6]  # blank
+
+    # ── Slide 1: Cover ───────────────────────────────────────────────────────
+    sl1 = prs.slides.add_slide(blank_layout)
+    _set_slide_bg(sl1, DARK_BG)
+    date_str = run_date or _dt_nr.now().strftime("%Y-%m-%d")
+    _add_textbox(
+        sl1, Cm(2), Cm(3), Cm(29.8), Cm(3),
+        "\u274c  \u4eca\u65e5 AI \u60c5\u5831\u5831\u544a\u672a\u80fd\u7522\u51fa",
+        font_size=32, color=ACCENT, bold=True,
+        alignment=PP_ALIGN.LEFT,
+    )
+    _add_divider(sl1, Cm(2), Cm(6.5), Cm(29.8), ACCENT)
+    _add_textbox(
+        sl1, Cm(2), Cm(7.2), Cm(29.8), Cm(1.8),
+        f"\u65e5\u671f\uff1a{date_str}   run_id\uff1a{run_id or '\u2014'}",
+        font_size=16, color=DARK_MUTED,
+    )
+    _add_textbox(
+        sl1, Cm(2), Cm(9.2), Cm(29.8), Cm(3),
+        "\u672c\u5831\u544a\u7531\u7cfb\u7d71\u81ea\u52d5\u751f\u6210\uff0c\u8aaa\u660e\u4eca\u65e5\u6b63\u5f0f\u5831\u544a\u7121\u6cd5\u7522\u51fa\u7684\u539f\u56e0\u3002",
+        font_size=18, color=DARK_TEXT,
+    )
+
+    # ── Slide 2: Failure Reason ──────────────────────────────────────────────
+    sl2 = prs.slides.add_slide(blank_layout)
+    _set_slide_bg(sl2, DARK_BG)
+    _add_textbox(sl2, Cm(2), Cm(1.2), Cm(29.8), Cm(1.8),
+                 "\u2460 \u70ba\u4f55\u4eca\u65e5\u7121\u6cd5\u751f\u6210\u6b63\u5f0f\u5831\u544a\uff1f",
+                 font_size=22, color=HIGHLIGHT_YELLOW, bold=True)
+    _add_divider(sl2, Cm(2), Cm(3.3), Cm(29.8), HIGHLIGHT_YELLOW)
+    _add_textbox(sl2, Cm(2), Cm(3.8), Cm(29.8), Cm(6),
+                 fail_reason or "\uff08\u539f\u56e0\u4e0d\u660e\uff0c\u8acb\u67e5\u95b1 desktop_button.last_run.log\uff09",
+                 font_size=17, color=DARK_TEXT)
+    _add_textbox(sl2, Cm(2), Cm(10.5), Cm(29.8), Cm(1.8),
+                 f"\u5931\u6557 Gate\uff1a{gate_name or '\u2014'}",
+                 font_size=16, color=ACCENT, bold=True)
+
+    # ── Slide 3: Sample Events ────────────────────────────────────────────────
+    sl3 = prs.slides.add_slide(blank_layout)
+    _set_slide_bg(sl3, DARK_BG)
+    _add_textbox(sl3, Cm(2), Cm(1.2), Cm(29.8), Cm(1.8),
+                 "\u2461 \u4eca\u65e5\u641c\u96c6\u5230\u7684\u6a23\u672c\u4e8b\u4ef6\uff08\u6700\u591a 3 \u5247\uff09",
+                 font_size=22, color=HIGHLIGHT_YELLOW, bold=True)
+    _add_divider(sl3, Cm(2), Cm(3.3), Cm(29.8), HIGHLIGHT_YELLOW)
+    _y_starts = [3.8, 8.0, 12.2]
+    if samples:
+        for _i, _s in enumerate(samples[:3]):
+            _title = str(_s.get("title") or "\uff08\u7121\u6a19\u984c\uff09")[:100]
+            _url   = str(_s.get("final_url") or _s.get("url") or "\u2014")[:120]
+            _add_textbox(sl3, Cm(2), Cm(_y_starts[_i]), Cm(29.8), Cm(1.8),
+                         f"{_i + 1}. {_title}",
+                         font_size=16, color=DARK_TEXT, bold=True)
+            _add_textbox(sl3, Cm(2.5), Cm(_y_starts[_i] + 2.0), Cm(29.3), Cm(1.4),
+                         f"\u4f86\u6e90\uff1a{_url}",
+                         font_size=13, color=DARK_MUTED)
+    else:
+        _add_textbox(sl3, Cm(2), Cm(4), Cm(29.8), Cm(3),
+                     "\uff08\u672c\u6b21\u672a\u641c\u96c6\u5230\u4e8b\u4ef6\u6a23\u672c\uff09",
+                     font_size=16, color=DARK_MUTED)
+
+    # ── Slide 4: Next Steps ───────────────────────────────────────────────────
+    sl4 = prs.slides.add_slide(blank_layout)
+    _set_slide_bg(sl4, DARK_BG)
+    _add_textbox(sl4, Cm(2), Cm(1.2), Cm(29.8), Cm(1.8),
+                 "\u2462 \u5efa\u8b70\u4e0b\u4e00\u6b65",
+                 font_size=22, color=HIGHLIGHT_YELLOW, bold=True)
+    _add_divider(sl4, Cm(2), Cm(3.3), Cm(29.8), HIGHLIGHT_YELLOW)
+    _add_textbox(sl4, Cm(2), Cm(3.8), Cm(29.8), Cm(8),
+                 next_steps or "\u8acb\u67e5\u95b1 outputs/desktop_button.last_run.log \u53d6\u5f97\u8a73\u7d30\u8a3a\u65b7\u8cc7\u8a0a\u3002",
+                 font_size=17, color=DARK_TEXT)
+    _add_textbox(sl4, Cm(2), Cm(16.8), Cm(29.8), Cm(1.4),
+                 "\u672c\u6587\u4ef6\u7531\u7cfb\u7d71\u81ea\u52d5\u751f\u6210\uff0c\u50c5\u4f9b\u8a3a\u65b7\u7528\u9014\u3002",
+                 font_size=13, color=DARK_MUTED)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(str(output_path))
+    return output_path

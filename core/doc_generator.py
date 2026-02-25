@@ -968,3 +968,92 @@ def _build_key_takeaways(
         )
     _add_callout(doc, "Key Takeaways", lines)
     _add_divider(doc)
+
+
+# ---------------------------------------------------------------------------
+# NOT_READY_report DOCX generator (standalone — no EduNewsCard dependency)
+# Called by run_pipeline.ps1 via run_once.py --not-ready-report
+# ---------------------------------------------------------------------------
+
+def generate_not_ready_report_docx(
+    output_path: "Path",
+    fail_reason: str,
+    gate_name: str,
+    samples: "list[dict]",
+    next_steps: str,
+    run_id: str = "",
+    run_date: str = "",
+) -> "Path":
+    """Generate outputs/NOT_READY_report.docx with human-readable failure info."""
+    from datetime import datetime as _dt_nr
+
+    doc = Document()
+
+    _sect = doc.sections[0]
+    _sect.left_margin   = Cm(2.0)
+    _sect.right_margin  = Cm(2.0)
+    _sect.top_margin    = Cm(2.0)
+    _sect.bottom_margin = Cm(2.0)
+
+    def _h1(text: str) -> None:
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        run.bold = True
+        run.font.size = Pt(18)
+        run.font.color.rgb = RGBColor(0xE6, 0x5A, 0x37)
+        p.paragraph_format.space_before = Pt(6)
+        p.paragraph_format.space_after  = Pt(4)
+
+    def _h2(text: str) -> None:
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        run.bold = True
+        run.font.size = Pt(13)
+        run.font.color.rgb = RGBColor(0x21, 0x28, 0x38)
+        p.paragraph_format.space_before = Pt(10)
+        p.paragraph_format.space_after  = Pt(2)
+
+    def _body(text: str, indent: bool = False) -> None:
+        p = doc.add_paragraph()
+        if indent:
+            p.paragraph_format.left_indent = Cm(0.5)
+        run = p.add_run(text)
+        run.font.size = Pt(11)
+        p.paragraph_format.space_after = Pt(2)
+
+    def _divider() -> None:
+        p = doc.add_paragraph("\u2500" * 48)
+        run = p.runs[0]
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+
+    _h1("\u274c  \u4eca\u65e5 AI \u60c5\u5831\u5831\u544a\u672a\u80fd\u7522\u51fa")
+    date_str = run_date or _dt_nr.now().strftime("%Y-%m-%d")
+    _body(f"\u65e5\u671f\uff1a{date_str}   run_id\uff1a{run_id or '\u2014'}")
+    _divider()
+
+    _h2("\u2460 \u70ba\u4f55\u4eca\u65e5\u7121\u6cd5\u751f\u6210\u6b63\u5f0f\u5831\u544a\uff1f")
+    _body(fail_reason or "\uff08\u539f\u56e0\u4e0d\u660e\uff0c\u8acb\u67e5\u95b1 desktop_button.last_run.log\uff09")
+    _body(f"\u5931\u6557 Gate\uff1a{gate_name or '\u2014'}")
+    _divider()
+
+    _h2("\u2461 \u4eca\u65e5\u641c\u96c6\u5230\u7684\u6a23\u672c\u4e8b\u4ef6\uff08\u6700\u591a 3 \u5247\uff09")
+    if samples:
+        for i, s in enumerate(samples[:3], 1):
+            title = str(s.get("title") or "\uff08\u7121\u6a19\u984c\uff09")
+            url   = str(s.get("final_url") or s.get("url") or "\u2014")
+            _body(f"{i}. {title}", indent=True)
+            _body(f"   \u4f86\u6e90\uff1a{url}", indent=True)
+    else:
+        _body("\uff08\u672c\u6b21\u672a\u6536\u96c6\u5230\u4e8b\u4ef6\u6a23\u672c\uff09")
+    _divider()
+
+    _h2("\u2462 \u5efa\u8b70\u4e0b\u4e00\u6b65")
+    _body(next_steps or "\u8acb\u67e5\u95b1 outputs/desktop_button.last_run.log \u53d6\u5f97\u8a73\u7d30\u8a3a\u65b7\u8cc7\u8a0a\u3002")
+    _divider()
+    _body("\u672c\u6587\u4ef6\u7531\u7cfb\u7d71\u81ea\u52d5\u751f\u6210\uff0c\u50c5\u4f9b\u8a3a\u65b7\u7528\u9014\u3002")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    return output_path

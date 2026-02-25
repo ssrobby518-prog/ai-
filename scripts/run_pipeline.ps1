@@ -1,82 +1,194 @@
 # FILE: scripts\run_pipeline.ps1
-# Desktop-button entry point: runs the real pipeline (run_once.py),
-# writes outputs/desktop_button.meta.json, opens latest output on success.
+# Desktop-button entry point — ALWAYS produces a visible output file.
+#
+# Success path : updates outputs\executive_report.pptx/.docx → AutoOpen pptx
+# Failure path : generates outputs\NOT_READY_report.pptx/.docx → AutoOpen that
+# Both paths   : write outputs\LAST_RUN_SUMMARY.txt + outputs\desktop_button.last_run.log
+#
 # Params:
 #   -Mode     manual|daily   (default: manual; Task Scheduler passes "daily")
-#   -AutoOpen true|false     (default: true;   Task Scheduler passes "false" to suppress UI)
+#   -AutoOpen true|false     (default: true;   pass false for headless/scheduled runs)
 param(
     [string]$Mode     = "manual",
     [string]$AutoOpen = "true"
 )
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'   # don't stop on errors — we handle them explicitly
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
-Set-Location $RepoRoot
+# ── Canonical paths (always derived from $PSScriptRoot, never from CWD) ───────
+$RepoRoot   = Split-Path -Parent $PSScriptRoot
+$OutputsDir = Join-Path $RepoRoot "outputs"
+$LogFile    = Join-Path $OutputsDir "desktop_button.last_run.log"
 
-# Generate run_id = YYYYMMDD_HHMMSS (Beijing time if possible, else local)
-$RunId = (Get-Date -Format "yyyyMMdd_HHmmss")
-$StartAt = (Get-Date -Format "o")
+if (-not (Test-Path $OutputsDir)) { New-Item -ItemType Directory -Path $OutputsDir | Out-Null }
+
+# ── Timing ────────────────────────────────────────────────────────────────────
+$RunId      = (Get-Date -Format "yyyyMMdd_HHmmss")
+$StartObj   = Get-Date
+$StartISO   = $StartObj.ToString("o")
+
+# ── Initialise log (overwrite for each run) ───────────────────────────────────
+@"
+========================================
+ AI Intel Pipeline
+ run_id     = $RunId
+ mode       = $Mode
+ started_at = $StartISO
+========================================
+"@ | Out-File $LogFile -Encoding UTF8
 
 Write-Host "=== AI Intel Scraper — run_id=$RunId ===" -ForegroundColor Cyan
 
-# Pass run_id into run_once.py via env var so it writes desktop_button.meta.json with correct run_id
+# ── Locate Python ─────────────────────────────────────────────────────────────
+$py = "python"
+
+# ── Env vars for run_once.py ──────────────────────────────────────────────────
 $env:PIPELINE_RUN_ID       = $RunId
 $env:PIPELINE_TRIGGERED_BY = "run_pipeline.ps1"
 
-# Run the real pipeline
-python scripts/run_once.py
+# ── Run pipeline — tee stdout+stderr to log AND console ──────────────────────
+Set-Location $RepoRoot
+Write-Host "[1/3] Running pipeline (stdout+stderr → log)..." -ForegroundColor Yellow
+& $py "$RepoRoot\scripts\run_once.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
 $ExitCode = $LASTEXITCODE
 
 $env:PIPELINE_RUN_ID       = $null
 $env:PIPELINE_TRIGGERED_BY = $null
-$FinishedAt = (Get-Date -Format "o")
 
-# Write desktop_button.meta.json
-$MetaDir = Join-Path $RepoRoot "outputs"
-if (-not (Test-Path $MetaDir)) { New-Item -ItemType Directory -Path $MetaDir | Out-Null }
-$MetaPath = Join-Path $MetaDir "desktop_button.meta.json"
-$MetaObj = [ordered]@{
-    run_id        = $RunId
-    started_at    = $StartAt
-    finished_at   = $FinishedAt
-    exit_code     = $ExitCode
-    success       = ($ExitCode -eq 0)
-    pipeline      = "scripts/run_once.py"
-    triggered_by  = "run_pipeline.ps1"
-}
-$MetaObj | ConvertTo-Json -Depth 3 | Out-File -FilePath $MetaPath -Encoding UTF8 -NoNewline
-Write-Host ("desktop_button.meta.json written: exit_code={0}" -f $ExitCode)
+$FinishObj  = Get-Date
+$FinishISO  = $FinishObj.ToString("o")
+"pipeline exit_code=$ExitCode  finished_at=$FinishISO" | Add-Content $LogFile -Encoding UTF8
 
-# Write delivery_path.meta.json — canonical path/hash + autoopen_target (always canonical)
-$CanonicalPptx       = Join-Path $RepoRoot "outputs\executive_report.pptx"
-$CanonicalPptxHash   = $null
-if (Test-Path $CanonicalPptx) {
-    try { $CanonicalPptxHash = (Get-FileHash -Path $CanonicalPptx -Algorithm SHA256).Hash } catch {}
-}
-$DeliveryMetaPath = Join-Path $MetaDir "delivery_path.meta.json"
-$DeliveryMetaObj  = [ordered]@{
-    run_id               = $RunId
-    canonical_pptx_path  = $CanonicalPptx
-    canonical_pptx_hash  = $CanonicalPptxHash
-    delivery_pptx_path   = $null
-    delivery_pptx_hash   = $null
-    autoopen_target_path = $CanonicalPptx
-    started_at           = $StartAt
-    finished_at          = $FinishedAt
-}
-$DeliveryMetaObj | ConvertTo-Json -Depth 3 | Out-File -FilePath $DeliveryMetaPath -Encoding UTF8 -NoNewline
-Write-Host ("delivery_path.meta.json written: autoopen_target=outputs\executive_report.pptx")
+# ── Evaluate success ──────────────────────────────────────────────────────────
+$NotReadyPath = Join-Path $OutputsDir "NOT_READY.md"
+$DocxPath     = Join-Path $OutputsDir "executive_report.docx"
+$PptxPath     = Join-Path $OutputsDir "executive_report.pptx"
 
-if ($ExitCode -eq 0 -and $AutoOpen -ne "false") {
-    # Open latest output (try open_latest.ps1, fallback to open_ppt.ps1)
-    # Suppressed when -AutoOpen false (e.g. scheduled/headless runs)
-    $OpenLatest = Join-Path $RepoRoot "scripts\open_latest.ps1"
-    $OpenPpt    = Join-Path $RepoRoot "scripts\open_ppt.ps1"
-    if (Test-Path $OpenLatest) {
-        & $OpenLatest
-    } elseif (Test-Path $OpenPpt) {
-        & $OpenPpt
+$NotReadyExists = Test-Path $NotReadyPath
+$DocxUpdated    = (Test-Path $DocxPath) -and ((Get-Item $DocxPath).LastWriteTime -gt $StartObj)
+$PptxUpdated    = (Test-Path $PptxPath) -and ((Get-Item $PptxPath).LastWriteTime -gt $StartObj)
+
+$IsSuccess = ($ExitCode -eq 0) -and (-not $NotReadyExists) -and $DocxUpdated -and $PptxUpdated
+
+"success_eval: IsSuccess=$IsSuccess NotReadyExists=$NotReadyExists DocxUpdated=$DocxUpdated PptxUpdated=$PptxUpdated ExitCode=$ExitCode" |
+    Add-Content $LogFile -Encoding UTF8
+
+# ── Determine fail reason (human-readable one-liner) ─────────────────────────
+$FailReason = ""
+if (-not $IsSuccess) {
+    if ($NotReadyExists) {
+        try {
+            $nrRaw = Get-Content $NotReadyPath -Encoding UTF8 -Raw -ErrorAction SilentlyContinue
+            # Collapse whitespace, take first 300 chars
+            $FailReason = ($nrRaw -replace '[\r\n\s]+', ' ').Trim()
+            if ($FailReason.Length -gt 300) { $FailReason = $FailReason.Substring(0,300) + "…" }
+        } catch { $FailReason = "NOT_READY.md exists (read error)" }
+    }
+    if (-not $FailReason) {
+        if ($ExitCode -ne 0) {
+            $FailReason = "Pipeline 執行失敗（exit code $ExitCode）— 請查閱 desktop_button.last_run.log"
+        } elseif (-not $PptxUpdated -and -not $DocxUpdated) {
+            $FailReason = "executive_report.docx / .pptx 未在本次執行中更新（gate 攔截，無正式輸出）"
+        } elseif (-not $PptxUpdated) {
+            $FailReason = "executive_report.pptx 未更新（gate 攔截）"
+        } else {
+            $FailReason = "executive_report.docx 未更新（gate 攔截）"
+        }
     }
 }
 
+# ── Generate NOT_READY_report if failure ─────────────────────────────────────
+if (-not $IsSuccess) {
+    Write-Host "[2/3] Failure detected — generating NOT_READY_report..." -ForegroundColor Red
+    "generating NOT_READY_report..." | Add-Content $LogFile -Encoding UTF8
+    $nrOut = & $py "$RepoRoot\scripts\run_once.py" --not-ready-report 2>&1
+    $nrOut | ForEach-Object {
+        $_ | Add-Content $LogFile -Encoding UTF8
+        Write-Host "  [report] $_" -ForegroundColor DarkYellow
+    }
+} else {
+    Write-Host "[2/3] Success — outputs updated." -ForegroundColor Green
+}
+
+# ── Collect produced files for summary ───────────────────────────────────────
+$CheckFiles   = @(
+    "executive_report.docx",
+    "executive_report.pptx",
+    "NOT_READY_report.docx",
+    "NOT_READY_report.pptx"
+)
+$ProducedList = $CheckFiles |
+    Where-Object { Test-Path (Join-Path $OutputsDir $_) } |
+    ForEach-Object { "outputs\$_" }
+$ProducedStr  = if ($ProducedList) { $ProducedList -join ", " } else { "(none)" }
+
+# ── Write LAST_RUN_SUMMARY.txt (always, human-readable) ──────────────────────
+Write-Host "[3/3] Writing LAST_RUN_SUMMARY.txt..." -ForegroundColor Yellow
+$StatusStr   = if ($IsSuccess) { "OK" } else { "FAIL" }
+$FailLine    = if (-not $IsSuccess) { "`nfail_reason         = $FailReason" } else { "" }
+$SummaryTxt  = @"
+run_id              = $RunId
+started_at          = $StartISO
+finished_at         = $FinishISO
+status              = $StatusStr
+canonical_output_dir = outputs\
+produced_files      = $ProducedStr$FailLine
+"@
+$SummaryPath = Join-Path $OutputsDir "LAST_RUN_SUMMARY.txt"
+$SummaryTxt | Out-File $SummaryPath -Encoding UTF8 -NoNewline
+"LAST_RUN_SUMMARY.txt written: status=$StatusStr" | Add-Content $LogFile -Encoding UTF8
+Write-Host "LAST_RUN_SUMMARY.txt: status=$StatusStr" -ForegroundColor $(if ($IsSuccess) { "Green" } else { "Red" })
+
+# ── Write desktop_button.meta.json (backward-compat JSON for other scripts) ──
+$MetaPath = Join-Path $OutputsDir "desktop_button.meta.json"
+[ordered]@{
+    run_id       = $RunId
+    started_at   = $StartISO
+    finished_at  = $FinishISO
+    exit_code    = $ExitCode
+    success      = [bool]$IsSuccess
+    pipeline     = "scripts/run_once.py"
+    triggered_by = "run_pipeline.ps1"
+} | ConvertTo-Json -Depth 3 | Out-File $MetaPath -Encoding UTF8 -NoNewline
+
+# ── Write delivery_path.meta.json (backward-compat for open_latest.ps1) ───────
+$CanonicalPptx     = Join-Path $RepoRoot "outputs\executive_report.pptx"
+$CanonicalPptxHash = $null
+if (Test-Path $CanonicalPptx) {
+    try { $CanonicalPptxHash = (Get-FileHash -Path $CanonicalPptx -Algorithm SHA256).Hash } catch {}
+}
+$DeliveryMetaPath = Join-Path $OutputsDir "delivery_path.meta.json"
+[ordered]@{
+    run_id               = $RunId
+    canonical_pptx_path  = $CanonicalPptx
+    canonical_pptx_hash  = $CanonicalPptxHash
+    autoopen_target_path = $CanonicalPptx
+    started_at           = $StartISO
+    finished_at          = $FinishISO
+} | ConvertTo-Json -Depth 3 | Out-File $DeliveryMetaPath -Encoding UTF8 -NoNewline
+
+# ── AutoOpen — ALWAYS opens something visible ─────────────────────────────────
+if ($AutoOpen -ne "false") {
+    if ($IsSuccess) {
+        $OpenTarget = $PptxPath
+    } else {
+        $NrPptx = Join-Path $OutputsDir "NOT_READY_report.pptx"
+        $NrDocx = Join-Path $OutputsDir "NOT_READY_report.docx"
+        if    (Test-Path $NrPptx) { $OpenTarget = $NrPptx }
+        elseif (Test-Path $NrDocx) { $OpenTarget = $NrDocx }
+        else  { $OpenTarget = $null }
+    }
+
+    if ($OpenTarget -and (Test-Path $OpenTarget)) {
+        Write-Host "AutoOpen → $OpenTarget" -ForegroundColor Cyan
+        "autoopen: $OpenTarget" | Add-Content $LogFile -Encoding UTF8
+        Start-Process $OpenTarget
+    } else {
+        Write-Host "AutoOpen: no file to open (report generation may have failed)" -ForegroundColor Red
+        "autoopen: none (no file found)" | Add-Content $LogFile -Encoding UTF8
+    }
+} else {
+    "autoopen: suppressed (AutoOpen=false)" | Add-Content $LogFile -Encoding UTF8
+}
+
+Write-Host "=== Done: run_id=$RunId  status=$StatusStr ===" -ForegroundColor $(if ($IsSuccess) { "Green" } else { "Red" })
 exit $ExitCode
