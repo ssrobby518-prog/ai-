@@ -1232,9 +1232,9 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
             quote_window_1 = _clip_text(quote_1, 30)
         if not quote_window_2:
             quote_window_2 = _clip_text(quote_2, 30)
-        _anchor_for_zh = _normalize_ws(_anchors_pre[0] if _anchors_pre else actor)
+        _anchor_for_zh = _normalize_claude_name(_normalize_ws(_anchors_pre[0] if _anchors_pre else actor))
         if not _anchor_for_zh:
-            _anchor_for_zh = actor
+            _anchor_for_zh = _normalize_claude_name(actor)
 
         q1_zh = _normalize_ws(
             f"{actor} 這則事件可由原文「{quote_window_1}」直接驗證，"
@@ -1430,7 +1430,17 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         section_present_ok = bool(doc_sec) and bool(ppt_sec) and bool(doc_q1) and bool(doc_q2) and bool(ppt_q1) and bool(ppt_q2)
         sync_ok = global_sync_ok and event_sync_ok and section_present_ok
 
-        ai_relevance = _is_ai_relevant(title, q1, q2, doc_q1, doc_q2, ppt_q1, ppt_q2, quote_1, quote_2)
+        ai_relevance = bool(fc.get("ai_relevance", False))
+        if not ai_relevance:
+            _ai_payload_eval = _normalize_ws(" ".join([title, q1, q2, quote_1, quote_2]))
+            _ai_url_eval = final_url if final_url.startswith(("http://", "https://")) else ""
+            try:
+                from utils.topic_router import is_relevant_ai as _eval_is_relevant_ai
+                ai_relevance, _ = _eval_is_relevant_ai(_ai_payload_eval, _ai_url_eval)
+            except Exception:
+                ai_relevance = _is_ai_relevant(
+                    title, q1, q2, doc_q1, doc_q2, ppt_q1, ppt_q2, quote_1, quote_2
+                )
 
         checks = {
             "ACTOR_NOT_NUMERIC": actor_ok,
@@ -2711,24 +2721,30 @@ def run_pipeline() -> None:
                     # Write LATEST_SHOWCASE.md (first 2 events with Q1/Q2 + quotes)
                     _sc_lines = ["# LATEST_SHOWCASE\n"]
                     for _ri_sc, _r_sc in enumerate(_enq_records[:2], 1):
+                        _sc_title = _normalize_claude_name(str(_r_sc.get("title", "") or ""))
+                        _sc_actor = _normalize_claude_name(str(_r_sc.get("actor", "") or ""))
+                        _sc_q1 = _normalize_claude_name(str(_r_sc.get("q1_snippet", "") or ""))
+                        _sc_q2 = _normalize_claude_name(str(_r_sc.get("q2_snippet", "") or ""))
+                        _sc_quote_1 = _normalize_claude_name(str(_r_sc.get("quote_1", "") or ""))
+                        _sc_quote_2 = _normalize_claude_name(str(_r_sc.get("quote_2", "") or ""))
                         _sc_lines += [
-                            f"## Event {_ri_sc}: {_r_sc['title']}",
+                            f"## Event {_ri_sc}: {_sc_title}",
                             "",
                             f"**final_url**: {_r_sc['final_url']}",
                             "",
-                            f"**actor**: {_r_sc.get('actor', '')}",
+                            f"**actor**: {_sc_actor}",
                             "",
                             f"**Q1** (injected):",
-                            f"> {_r_sc['q1_snippet']}",
+                            f"> {_sc_q1}",
                             "",
                             f"**Q2** (injected):",
-                            f"> {_r_sc['q2_snippet']}",
+                            f"> {_sc_q2}",
                             "",
-                            f"**quote_1** (verbatim from source, {len(_r_sc['quote_1'])} chars):",
-                            f"> {_r_sc['quote_1']}",
+                            f"**quote_1** (verbatim from source, {len(_sc_quote_1)} chars):",
+                            f"> {_sc_quote_1}",
                             "",
-                            f"**quote_2** (verbatim from source, {len(_r_sc['quote_2'])} chars):",
-                            f"> {_r_sc['quote_2']}",
+                            f"**quote_2** (verbatim from source, {len(_sc_quote_2)} chars):",
+                            f"> {_sc_quote_2}",
                             "",
                             f"**DoD**: {_r_sc['dod']}",
                             "",
@@ -2818,7 +2834,9 @@ def run_pipeline() -> None:
                         _q1_quote = str(_ev.get("quote_1", "") or "")
                         _q2_quote = str(_ev.get("quote_2", "") or "")
                         _title = str(_ev.get("title", "") or "")
-                        _ai_rel = _is_ai_relevant(_title, _q1, _q2, _q1_quote, _q2_quote)
+                        _ai_rel = bool(_dod_raw.get("AI_RELEVANCE", False))
+                        if not _ai_rel:
+                            _ai_rel = _is_ai_relevant(_title, _q1, _q2, _q1_quote, _q2_quote)
                         _dod_map = {
                             "QUOTE_QUALITY": bool(_q1_quote and _q2_quote),
                             "QUOTE_SOURCE": bool(_ev.get("final_url", "")),
@@ -2877,25 +2895,31 @@ def run_pipeline() -> None:
                     # Engineering audit only (not delivery artifact).
                     _showcase_lines = ["# LATEST_SHOWCASE", ""]
                     for _idx_show, _ev in enumerate(_enq_records[:2], 1):
+                        _show_title = _normalize_claude_name(str(_ev.get("title", "") or ""))
+                        _show_actor = _normalize_claude_name(str(_ev.get("actor", "") or ""))
+                        _show_q1 = _normalize_claude_name(str(_ev.get("q1_snippet", "") or ""))
+                        _show_q2 = _normalize_claude_name(str(_ev.get("q2_snippet", "") or ""))
+                        _show_quote_1 = _normalize_claude_name(str(_ev.get("quote_1", "") or ""))
+                        _show_quote_2 = _normalize_claude_name(str(_ev.get("quote_2", "") or ""))
                         _showcase_lines.extend(
                             [
-                                f"## Event {_idx_show}: {_ev['title']}",
+                                f"## Event {_idx_show}: {_show_title}",
                                 "",
                                 f"**final_url**: {_ev['final_url']}",
                                 "",
-                                f"**actor**: {_ev.get('actor', '')}",
+                                f"**actor**: {_show_actor}",
                                 "",
                                 "**Q1**:",
-                                f"> {_ev['q1_snippet']}",
+                                f"> {_show_q1}",
                                 "",
                                 "**Q2**:",
-                                f"> {_ev['q2_snippet']}",
+                                f"> {_show_q2}",
                                 "",
                                 "**quote_1**:",
-                                f"> {_ev['quote_1']}",
+                                f"> {_show_quote_1}",
                                 "",
                                 "**quote_2**:",
-                                f"> {_ev['quote_2']}",
+                                f"> {_show_quote_2}",
                                 "",
                                 f"**DoD**: {_ev['dod']}",
                                 "",
