@@ -935,22 +935,28 @@ if (Test-Path $execDelivMetaPath) {
 # AI_PURITY_HARD GATE
 Write-Host ""
 Write-Host "[AI Purity Gate] AI_PURITY_HARD..." -ForegroundColor Yellow
-$aiPurityRaw = & $py -c @"
-import json, sys
-from pathlib import Path
-p = Path('outputs/ai_purity_hard.meta.json')
-if not p.exists():
-    print('SKIP: ai_purity_hard.meta.json not found')
-    sys.exit(0)
-d = json.loads(p.read_text('utf-8'))
-g = d.get('gate_result', 'FAIL')
-print(f"{g} selected={d.get('selected',0)} ai_true={d.get('ai_true',0)} watchlist_excluded={d.get('watchlist_excluded',0)}")
-sys.exit(0 if g == 'PASS' else 1)
-"@ 2>&1
-$aiPurityExit = $LASTEXITCODE
-Write-Host ("  AI_PURITY_HARD : {0}  {1}" -f $(if ($aiPurityExit -eq 0) { "PASS" } else { "FAIL" }), $aiPurityRaw) `
-    -ForegroundColor $(if ($aiPurityExit -eq 0) { "Green" } else { "Red" })
-if ($aiPurityExit -ne 0) { exit 1 }
+$aiPurityPath = Join-Path $PSScriptRoot "..\outputs\ai_purity_hard.meta.json"
+if (Test-Path $aiPurityPath) {
+    try {
+        $aiPurity = Get-Content $aiPurityPath -Raw | ConvertFrom-Json
+        $aiGate   = if ($aiPurity.PSObject.Properties['gate_result']) { [string]$aiPurity.gate_result } else { 'FAIL' }
+        $aiSel    = if ($aiPurity.PSObject.Properties['selected']) { [int]$aiPurity.selected } else { 0 }
+        $aiTrue   = if ($aiPurity.PSObject.Properties['ai_true']) { [int]$aiPurity.ai_true } else { 0 }
+        $aiWatch  = if ($aiPurity.PSObject.Properties['watchlist_excluded']) { [int]$aiPurity.watchlist_excluded } else { 0 }
+        $aiLine   = ("{0} selected={1} ai_true={2} watchlist_excluded={3}" -f $aiGate, $aiSel, $aiTrue, $aiWatch)
+        if ($aiGate -eq 'PASS') {
+            Write-Host ("  AI_PURITY_HARD : PASS  {0}" -f $aiLine) -ForegroundColor Green
+        } else {
+            Write-Host ("  AI_PURITY_HARD : FAIL  {0}" -f $aiLine) -ForegroundColor Red
+            exit 1
+        }
+    } catch {
+        Write-Host ("  AI_PURITY_HARD parse error: {0}" -f $_) -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "  AI_PURITY_HARD : SKIP  ai_purity_hard.meta.json not found" -ForegroundColor Yellow
+}
 
 # NO_BOILERPLATE_Q1Q2_HARD GATE
 Write-Host ""
@@ -1437,4 +1443,3 @@ foreach ($_spec in $_artSpecs) {
 }
 
 Write-Host "=======================================" -ForegroundColor Cyan
-
