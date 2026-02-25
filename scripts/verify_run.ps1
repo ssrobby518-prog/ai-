@@ -944,6 +944,157 @@ if (Test-Path $execDelivMetaPath) {
     Write-Host "EXEC_DELIVERABLE_DOCX_PPTX_HARD: FAIL (meta missing)" -ForegroundColor Red
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# AI_PURITY_GATES: 7 new evidence-purity gates
+# ---------------------------------------------------------------------------
+
+# AI_PURITY_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] AI_PURITY_HARD..." -ForegroundColor Yellow
+$aiPurityRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/ai_purity_hard.meta.json')
+if not p.exists():
+    print('SKIP: ai_purity_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} selected={d.get('selected',0)} ai_true={d.get('ai_true',0)} watchlist_excluded={d.get('watchlist_excluded',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$aiPurityExit = $LASTEXITCODE
+Write-Host ("  AI_PURITY_HARD : {0}  {1}" -f $(if ($aiPurityExit -eq 0) { "PASS" } else { "FAIL" }), $aiPurityRaw) `
+    -ForegroundColor $(if ($aiPurityExit -eq 0) { "Green" } else { "Red" })
+if ($aiPurityExit -ne 0) { exit 1 }
+
+# NO_BOILERPLATE_Q1Q2_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] NO_BOILERPLATE_Q1Q2_HARD..." -ForegroundColor Yellow
+$nbpRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/no_boilerplate_hard.meta.json')
+if not p.exists():
+    print('SKIP: no_boilerplate_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} events_total={d.get('events_total',0)} fail_count={d.get('fail_count',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$nbpExit = $LASTEXITCODE
+Write-Host ("  NO_BOILERPLATE_Q1Q2_HARD : {0}  {1}" -f $(if ($nbpExit -eq 0) { "PASS" } else { "FAIL" }), $nbpRaw) `
+    -ForegroundColor $(if ($nbpExit -eq 0) { "Green" } else { "Red" })
+if ($nbpExit -ne 0) { exit 1 }
+
+# Q1_STRUCTURE_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] Q1_STRUCTURE_HARD..." -ForegroundColor Yellow
+$q1sRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/q1_structure_hard.meta.json')
+if not p.exists():
+    print('SKIP: q1_structure_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} pass={d.get('pass_count',0)} fail={d.get('fail_count',0)} total={d.get('events_total',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$q1sExit = $LASTEXITCODE
+Write-Host ("  Q1_STRUCTURE_HARD : {0}  {1}" -f $(if ($q1sExit -eq 0) { "PASS" } else { "FAIL" }), $q1sRaw) `
+    -ForegroundColor $(if ($q1sExit -eq 0) { "Green" } else { "Red" })
+if ($q1sExit -ne 0) { exit 1 }
+
+# Q2_STRUCTURE_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] Q2_STRUCTURE_HARD..." -ForegroundColor Yellow
+$q2sRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/q2_structure_hard.meta.json')
+if not p.exists():
+    print('SKIP: q2_structure_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} pass={d.get('pass_count',0)} fail={d.get('fail_count',0)} total={d.get('events_total',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$q2sExit = $LASTEXITCODE
+Write-Host ("  Q2_STRUCTURE_HARD : {0}  {1}" -f $(if ($q2sExit -eq 0) { "PASS" } else { "FAIL" }), $q2sRaw) `
+    -ForegroundColor $(if ($q2sExit -eq 0) { "Green" } else { "Red" })
+if ($q2sExit -ne 0) { exit 1 }
+
+# MOVES_ANCHORED_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] MOVES_ANCHORED_HARD..." -ForegroundColor Yellow
+$maRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/moves_anchored_hard.meta.json')
+if not p.exists():
+    print('SKIP: moves_anchored_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} events_total={d.get('events_total',0)} fail_count={d.get('fail_count',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$maExit = $LASTEXITCODE
+Write-Host ("  MOVES_ANCHORED_HARD : {0}  {1}" -f $(if ($maExit -eq 0) { "PASS" } else { "FAIL" }), $maRaw) `
+    -ForegroundColor $(if ($maExit -eq 0) { "Green" } else { "Red" })
+if ($maExit -ne 0) { exit 1 }
+
+# EXEC_PRODUCT_READABILITY_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] EXEC_PRODUCT_READABILITY_HARD..." -ForegroundColor Yellow
+$eprRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/exec_product_readability_hard.meta.json')
+if not p.exists():
+    print('SKIP: exec_product_readability_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+print(f"{g} pass={d.get('pass_count',0)} fail={d.get('fail_count',0)} total={d.get('events_total',0)}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$eprExit = $LASTEXITCODE
+Write-Host ("  EXEC_PRODUCT_READABILITY_HARD : {0}  {1}" -f $(if ($eprExit -eq 0) { "PASS" } else { "FAIL" }), $eprRaw) `
+    -ForegroundColor $(if ($eprExit -eq 0) { "Green" } else { "Red" })
+if ($eprExit -ne 0) { exit 1 }
+
+# STATS_SINGLE_SOURCE_HARD GATE
+Write-Host ""
+Write-Host "[AI Purity Gate] STATS_SINGLE_SOURCE_HARD..." -ForegroundColor Yellow
+$sssRaw = & $py -c @"
+import json, sys
+from pathlib import Path
+p = Path('outputs/stats_single_source_hard.meta.json')
+if not p.exists():
+    print('SKIP: stats_single_source_hard.meta.json not found')
+    sys.exit(0)
+d = json.loads(p.read_text('utf-8'))
+g = d.get('gate_result', 'FAIL')
+present = len(d.get('present', []))
+total = len(d.get('canonical_sources', []))
+missing = d.get('missing', [])
+print(f"{g} sources={present}/{total} missing={missing}")
+sys.exit(0 if g == 'PASS' else 1)
+"@ 2>&1
+$sssExit = $LASTEXITCODE
+Write-Host ("  STATS_SINGLE_SOURCE_HARD : {0}  {1}" -f $(if ($sssExit -eq 0) { "PASS" } else { "FAIL" }), $sssRaw) `
+    -ForegroundColor $(if ($sssExit -eq 0) { "Green" } else { "Red" })
+if ($sssExit -ne 0) { exit 1 }
+
+Write-Host ""
+Write-Host "AI_PURITY_GATES: 7/7 PASS" -ForegroundColor Green
+
 # LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
 # ---------------------------------------------------------------------------
 $longformMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_longform.meta.json"

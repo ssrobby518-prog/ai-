@@ -20,22 +20,22 @@ from utils.zh_narrative_validator import (
 # ---------------------------------------------------------------------------
 
 def _make_q1zh(actor: str, window: str) -> str:
-    """Minimal valid q1_zh template (matches _build_q1_zh_narrative pattern)."""
+    """Minimal valid q1_zh template (v2 evidence-driven, no banned phrases)."""
     return (
-        f"{actor}最新公告顯示相關技術或產品有具體進展，"
-        f"原文直述：{LQ}{window}{RQ}，"
-        f"確認上述訊息有原文出處支撐，"
-        f"可供決策者直接核對查閱。"
+        f"{actor}公布新進展，"
+        f"原文記載：{LQ}{window}{RQ}，"
+        f"此訊息來源可直接核實，供決策者查閱評估。"
+        f"市場動態持續關注中，後續影響值得評估。"
     )
 
 
 def _make_q2zh(actor: str, window: str) -> str:
-    """Minimal valid q2_zh template (matches _build_q2_zh_narrative pattern)."""
+    """Minimal valid q2_zh template (v2 evidence-driven, no banned phrases)."""
     return (
-        f"此次{actor}相關發布的後續應用影響，"
-        f"原文已提供具體文字依據：{LQ}{window}{RQ}，"
-        f"決策者可依此原始資料評估具體場景的適用性，"
-        f"並核查影響範圍，避免基於推測作出判斷。"
+        f"此次{actor}進展對AI領域具體影響，"
+        f"原文顯示：{LQ}{window}{RQ}，"
+        f"可據此布局評估，相關業者可直接核對查閱。"
+        f"後續技術指標值得持續追蹤。"
     )
 
 
@@ -136,3 +136,104 @@ def test_normalised_window_mismatch_fail() -> None:
     ok, reasons = validate_zh_card_fields(q1_zh, q2_zh_broken, qw1, qw2, q1, q2)
     assert not ok, "Should detect that the stored window no longer matches 「…」 in q2_zh"
     assert "Q2_ZH_NO_WINDOW" in reasons
+
+
+# ---------------------------------------------------------------------------
+# Test: new D2 banned phrases trigger STYLE_SANITY
+# ---------------------------------------------------------------------------
+
+def test_new_banned_phrase_zuixin_gonggao() -> None:
+    """最新公告顯示 must be caught by the extended _STYLE_SANITY_RE."""
+    q1 = "OpenAI launched a new flagship model"
+    q2 = "The result: faster generation with 5x improvement"
+    qw1 = "launched a new flagship"
+    qw2 = "faster generation with 5x"
+
+    # Build q1_zh that contains the old banned template phrase
+    q1_zh_bad = (
+        f"OpenAI最新公告顯示相關技術或產品有具體進展，"
+        f"原文直述：{LQ}{qw1}{RQ}，"
+        f"確認上述訊息有原文出處支撐，可供決策者直接核對查閱。"
+    )
+    q2_zh = _make_q2zh("OpenAI", qw2)
+
+    ok, reasons = validate_zh_card_fields(q1_zh_bad, q2_zh, qw1, qw2, q1, q2)
+    assert not ok, "最新公告顯示 should trigger STYLE_SANITY fail"
+    assert "STYLE_SANITY" in reasons
+
+
+def test_new_banned_phrase_queren_chuyuan() -> None:
+    """確認.*原文出處 must be caught by the extended _STYLE_SANITY_RE."""
+    q1 = "Anthropic released Claude 3.7 with extended context"
+    q2 = "Claude 3.7 supports 200k token context windows"
+    qw1 = "released Claude 3.7 with"
+    qw2 = "supports 200k token context"
+
+    q1_zh_bad = (
+        f"Anthropic發布新模型，"
+        f"原文直述：{LQ}{qw1}{RQ}，"
+        f"確認原文出處已核實，可供決策者查閱。"
+    )
+    q2_zh = _make_q2zh("Anthropic", qw2)
+
+    ok, reasons = validate_zh_card_fields(q1_zh_bad, q2_zh, qw1, qw2, q1, q2)
+    assert not ok, "確認.*原文出處 should trigger STYLE_SANITY fail"
+    assert "STYLE_SANITY" in reasons
+
+
+def test_new_banned_phrase_yuanwen_yiti_yiju() -> None:
+    """原文已提供.*依據 must be caught by the extended _STYLE_SANITY_RE."""
+    q1 = "Google announced Gemini 2.0 Flash improvements"
+    q2 = "Gemini 2.0 brings 2x throughput gains"
+    qw1 = "announced Gemini 2.0 Flash"
+    qw2 = "brings 2x throughput gains"
+
+    q1_zh = _make_q1zh("Google", qw1)
+    q2_zh_bad = (
+        f"此次Google相關發布的後續應用影響，"
+        f"原文已提供具體文字依據：{LQ}{qw2}{RQ}，"
+        f"決策者可依此原始資料評估具體場景的適用性，"
+        f"並核查影響範圍。"
+    )
+
+    ok, reasons = validate_zh_card_fields(q1_zh, q2_zh_bad, qw1, qw2, q1, q2)
+    assert not ok, "原文已提供.*依據 should trigger STYLE_SANITY fail"
+    assert "STYLE_SANITY" in reasons
+
+
+def test_new_banned_phrase_bimian_tuice() -> None:
+    """避免基於推測 must be caught by the extended _STYLE_SANITY_RE."""
+    q1 = "Microsoft Azure added new AI inference endpoints"
+    q2 = "The endpoints cut inference latency by 40%"
+    qw1 = "Azure added new AI inference"
+    qw2 = "cut inference latency by 40%"
+
+    q1_zh = _make_q1zh("Microsoft", qw1)
+    q2_zh_bad = (
+        f"此次Microsoft進展對市場影響，"
+        f"原文顯示：{LQ}{qw2}{RQ}，"
+        f"決策者應避免基於推測作出判斷。"
+    )
+
+    ok, reasons = validate_zh_card_fields(q1_zh, q2_zh_bad, qw1, qw2, q1, q2)
+    assert not ok, "避免基於推測 should trigger STYLE_SANITY fail"
+    assert "STYLE_SANITY" in reasons
+
+
+def test_clean_v2_template_passes() -> None:
+    """The new evidence-driven v2 fallback templates must not trigger any style ban.
+    Uses _make_q1zh/_make_q2zh to ensure enough CJK chars (40+) while verifying
+    the v2 template phrases are not banned.
+    """
+    q1 = "NVIDIA released H200 GPU with 141GB HBM3e memory"
+    q2 = "H200 delivers 2x memory bandwidth vs H100"
+    qw1 = "H200 GPU with 141GB HBM3e"
+    qw2 = "2x memory bandwidth vs H100"
+
+    # Use the v2-style templates (no banned phrases) via helper functions
+    q1_zh = _make_q1zh("NVIDIA", qw1)
+    q2_zh = _make_q2zh("NVIDIA", qw2)
+
+    ok, reasons = validate_zh_card_fields(q1_zh, q2_zh, qw1, qw2, q1, q2)
+    assert ok, f"V2 fallback template should pass all style checks but got: {reasons}"
+    assert reasons == []

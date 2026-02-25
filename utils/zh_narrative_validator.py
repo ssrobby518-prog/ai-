@@ -73,7 +73,11 @@ _STYLE_SANITY_RE = re.compile(
     r"\u5f15\u767c.*(?:\u8a0e\u8ad6|\u95dc\u6ce8|\u71b1\u8b70)"
     r"|\u5177\u6709.*(?:\u5be6\u8cea|\u91cd\u5927).*(?:\u5f71\u97ff|\u610f\u7fa9)"
     r"|(?:\u5404\u65b9|\u696d\u754c).*(?:\u8457\u624b|\u6b63).*(?:\u8a55\u4f30|\u8ffd\u8e64).*(?:\u5f8c\u7e8c|\u5f71\u97ff|\u52d5\u5411)"
-    r"|\u6599\u5c07\u5f71\u97ff.*(?:\u683c\u5c40|\u8d70\u5411|\u5e02\u5834)",
+    r"|\u6599\u5c07\u5f71\u97ff.*(?:\u683c\u5c40|\u8d70\u5411|\u5e02\u5834)"
+    r"|\u6700\u65b0\u516c\u544a\u984c\u793a"            # 最新公告顯示 — old Q1_zh template phrase
+    r"|\u78ba\u8a8d.*\u539f\u6587\u51fa\u8655"          # 確認.*原文出處
+    r"|\u539f\u6587\u5df2\u63d0\u4f9b.*\u4f9d\u64da"   # 原文已提供.*依據 — old Q2_zh template phrase
+    r"|\u907f\u514d\u57fa\u65bc\u63a8\u6e2c",           # 避免基於推測
     re.IGNORECASE,
 )
 
