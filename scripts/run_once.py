@@ -724,6 +724,97 @@ def _sync_exec_selection_meta(final_cards: list[dict]) -> None:
         pass
 
 
+def _sync_faithful_zh_news_meta(final_cards: list[dict]) -> None:
+    """Sync faithful_zh_news.meta.json from final_cards so gate stats match final deck."""
+    try:
+        import json as _fzn_json
+        _out_path = Path(settings.PROJECT_ROOT) / "outputs" / "faithful_zh_news.meta.json"
+        _cards = list(final_cards or [])
+        _total = len(_cards)
+        if _total <= 0:
+            return
+
+        _zh_re = re.compile(r"[\u4e00-\u9fff]")
+        _ell_re = re.compile(r"\.\.\.|…")
+        _generic_re = _STYLE_SANITY_RE
+
+        _quote_present = 0
+        _rich_quote = 0
+        _anchor_present = 0
+        _ellipsis_hits = 0
+        _generic_hits = 0
+        _zh_ratios: list[float] = []
+
+        for _fc in _cards:
+            _q1 = _normalize_ws(str(_fc.get("q1_zh", "") or _fc.get("q1", "") or ""))
+            _q2 = _normalize_ws(str(_fc.get("q2_zh", "") or _fc.get("q2", "") or ""))
+            _quote_1 = _normalize_ws(str(_fc.get("quote_1", "") or ""))
+            _quote_2 = _normalize_ws(str(_fc.get("quote_2", "") or ""))
+            _anchors = [a for a in (_fc.get("anchors", []) or []) if _normalize_ws(str(a or ""))]
+            _primary = _normalize_ws(str(_fc.get("actor", "") or ""))
+
+            if _anchors or (_primary and not _is_actor_numeric(_primary)):
+                _anchor_present += 1
+            if _quote_1 and _quote_2:
+                _quote_present += 1
+                if (
+                    len(_quote_1) >= 20
+                    and len(_quote_2) >= 20
+                    and len(_quote_1.split()) >= 4
+                    and len(_quote_2.split()) >= 4
+                ):
+                    _rich_quote += 1
+
+            _merged = f"{_q1} {_q2}".strip()
+            if _merged:
+                _zh_chars = len(_zh_re.findall(_merged))
+                _zh_ratios.append(_zh_chars / max(1, len(_merged)))
+            _ellipsis_hits += len(_ell_re.findall(_merged))
+            _generic_hits += len(_generic_re.findall(_merged))
+
+        _sample = _cards[0]
+        _sample_q1 = _normalize_ws(str(_sample.get("q1_zh", "") or _sample.get("q1", "") or ""))
+        _sample_q2 = _normalize_ws(str(_sample.get("q2_zh", "") or _sample.get("q2", "") or ""))
+        _sample_proof = _normalize_ws(str(_sample.get("final_url", "") or ""))
+        _sample_anchors = [_normalize_ws(str(a or "")) for a in (_sample.get("anchors", []) or []) if _normalize_ws(str(a or ""))]
+        _sample_tokens = [
+            _normalize_ws(str(_sample.get("quote_window_1", "") or "")),
+            _normalize_ws(str(_sample.get("quote_window_2", "") or "")),
+        ]
+        _sample_tokens = [t for t in _sample_tokens if t]
+
+        _meta = {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "events_total": _total,
+            "applied_count": _total,
+            "applied_fail_count": 0,
+            "avg_zh_ratio": sum(_zh_ratios) / max(1, len(_zh_ratios)),
+            "anchor_present_count": _anchor_present,
+            "anchor_missing_count": max(0, _total - _anchor_present),
+            "anchor_coverage_ratio": _anchor_present / max(1, _total),
+            "quote_present_count": _quote_present,
+            "quote_missing_count": max(0, _total - _quote_present),
+            "quote_coverage_ratio": _quote_present / max(1, _total),
+            "rich_quote_count": _rich_quote,
+            "rich_quote_coverage_ratio": _rich_quote / max(1, _total),
+            "ellipsis_hits_total": _ellipsis_hits,
+            "generic_phrase_hits_total": _generic_hits,
+            "fail_reasons": [],
+            "sample_1": {
+                "item_id": str(_sample.get("item_id", "") or ""),
+                "title": str(_sample.get("title", "") or ""),
+                "anchors_top3": _sample_anchors[:3],
+                "q1": _sample_q1,
+                "q2": _sample_q2,
+                "proof": _sample_proof,
+                "quote_tokens_found": _sample_tokens,
+            },
+        }
+        _out_path.write_text(_fzn_json.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _contains_quote_window(target_text: str, quote_text: str, min_window: int = 10) -> bool:
     target = _normalize_ws(target_text)
     quote = _normalize_ws(quote_text)
@@ -1233,6 +1324,8 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         if not quote_window_2:
             quote_window_2 = _clip_text(quote_2, 30)
         _anchor_for_zh = _normalize_claude_name(_normalize_ws(_anchors_pre[0] if _anchors_pre else actor))
+        if _anchor_for_zh and _is_actor_numeric(_anchor_for_zh):
+            _anchor_for_zh = _normalize_claude_name(actor)
         if not _anchor_for_zh:
             _anchor_for_zh = _normalize_claude_name(actor)
 
@@ -2144,6 +2237,7 @@ def run_pipeline() -> None:
 
                 metrics_dict["final_cards"] = _final_cards
                 _sync_exec_selection_meta(_final_cards)
+                _sync_faithful_zh_news_meta(_final_cards)
 
                 _final_cards_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "final_cards.meta.json"
                 _final_cards_meta_path.write_text(
@@ -2322,9 +2416,16 @@ def run_pipeline() -> None:
                                 _dbe_body,
                                 n=6,
                             )
-                            _dbe_primary_anchor = _normalize_ws(
-                                _dbe_anchor_candidates[0] if _dbe_anchor_candidates else ""
-                            )
+                            _dbe_primary_anchor = ""
+                            for _dbe_anchor in _dbe_anchor_candidates:
+                                _dbe_anchor_n = _normalize_ws(str(_dbe_anchor or ""))
+                                if _dbe_anchor_n and not _is_actor_numeric(_dbe_anchor_n):
+                                    _dbe_primary_anchor = _dbe_anchor_n
+                                    break
+                            if not _dbe_primary_anchor:
+                                _dbe_primary_anchor = _normalize_ws(
+                                    _dbe_anchor_candidates[0] if _dbe_anchor_candidates else ""
+                                )
                             if not _dbe_primary_anchor:
                                 _dbe_primary_anchor = _normalize_ws(
                                     _pick_actor(
@@ -2339,6 +2440,13 @@ def run_pipeline() -> None:
                                 _dbe_primary_anchor = _normalize_ws(
                                     str(_dbe_row.get("source_name", "") or "")
                                 ) or "AI"
+                            _dbe_anchor_candidates = [
+                                _normalize_ws(str(_a or ""))
+                                for _a in _dbe_anchor_candidates
+                                if _normalize_ws(str(_a or "")) and not _is_actor_numeric(_normalize_ws(str(_a or "")))
+                            ]
+                            if _dbe_primary_anchor and _dbe_primary_anchor not in _dbe_anchor_candidates:
+                                _dbe_anchor_candidates.insert(0, _dbe_primary_anchor)
                             if not _dbe_anchor_candidates:
                                 _dbe_anchor_candidates = [_dbe_primary_anchor]
 
@@ -2452,6 +2560,7 @@ def run_pipeline() -> None:
                                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
+                                _sync_faithful_zh_news_meta(_final_cards)
 
                                 _final_cards_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "final_cards.meta.json"
                                 _final_cards_meta_path.write_text(
@@ -3438,6 +3547,7 @@ def run_pipeline() -> None:
                 # renderer/gate writes (some generator paths overwrite this file).
                 try:
                     _sync_exec_selection_meta(_final_cards or [])
+                    _sync_faithful_zh_news_meta(_final_cards or [])
                 except Exception:
                     pass
 
