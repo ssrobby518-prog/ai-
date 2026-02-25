@@ -335,6 +335,18 @@ def _clip_text(text: str, limit: int = 110) -> str:
     return txt if len(txt) <= limit else txt[:limit].rstrip()
 
 
+def _sanitize_quote_for_delivery(text: str) -> str:
+    """Normalize quote text so DOCX/PPTX renderers keep the same token stream."""
+    q = _normalize_ws(text)
+    if not q:
+        return ""
+    # Replace common mojibake placeholders and strip unstable symbols.
+    q = q.replace("??", " ")
+    q = re.sub(r"[^\w\s\u4e00-\u9fff\.,;:!?%$@#/&\-\(\)\[\]\"'`+]", " ", q)
+    q = _normalize_ws(q)
+    return q
+
+
 def _style_sanity_ok(*parts: str) -> bool:
     joined = _normalize_ws(" ".join(parts))
     if not joined:
@@ -561,13 +573,14 @@ def _pick_quote_variants(
     fallback_blob: str,
 ) -> list[str]:
     ordered: list[str] = []
-    if _quote_len_ok(primary):
-        ordered.append(_normalize_ws(primary))
+    primary_n = _sanitize_quote_for_delivery(primary)
+    if _quote_len_ok(primary_n):
+        ordered.append(primary_n)
     for q in pool:
-        qn = _normalize_ws(q)
+        qn = _sanitize_quote_for_delivery(q)
         if _quote_len_ok(qn):
             ordered.append(qn)
-    fb = _normalize_ws(fallback_blob)
+    fb = _sanitize_quote_for_delivery(fallback_blob)
     if _quote_len_ok(fb):
         ordered.append(_clip_text(fb, 160))
     dedup: list[str] = []
@@ -579,6 +592,70 @@ def _pick_quote_variants(
         seen.add(k)
         dedup.append(q)
     return dedup
+
+
+def _select_stable_demo_cards(cards: list[dict], target: int = 6) -> list[dict]:
+    """Pick a stable demo subset (prefer cards that already satisfy hard quote/style checks)."""
+    if not cards:
+        return []
+    target = max(1, int(target))
+
+    def _score(fc: dict) -> tuple:
+        q1 = _normalize_ws(fc.get("q1", ""))
+        q2 = _normalize_ws(fc.get("q2", ""))
+        q1_zh = _normalize_ws(fc.get("q1_zh", ""))
+        q2_zh = _normalize_ws(fc.get("q2_zh", ""))
+        quote_1 = _normalize_ws(fc.get("quote_1", ""))
+        quote_2 = _normalize_ws(fc.get("quote_2", ""))
+        quote_window_1 = _normalize_ws(fc.get("quote_window_1", ""))
+        quote_window_2 = _normalize_ws(fc.get("quote_window_2", ""))
+        final_url = _normalize_ws(fc.get("final_url", ""))
+        style_ok = _style_sanity_ok(q1, q2)
+        q1_ok = _contains_quote_window(q1, quote_1, min_window=12)
+        q2_ok = _contains_quote_window(q2, quote_2, min_window=12)
+        quote_len_ok = (
+            _quote_len_ok(quote_1, min_len=20)
+            and _quote_len_ok(quote_2, min_len=40)
+            and len(quote_1.split()) >= 6
+            and len(quote_2.split()) >= 6
+        )
+        url_ok = final_url.startswith(("http://", "https://"))
+        try:
+            zh_ok, _ = validate_zh_card_fields(
+                q1_zh,
+                q2_zh,
+                quote_window_1,
+                quote_window_2,
+                quote_1,
+                quote_2,
+            )
+        except Exception:
+            zh_ok = False
+        return (
+            int(style_ok and q1_ok and q2_ok and quote_len_ok and url_ok and zh_ok),
+            int(url_ok),
+            int(zh_ok),
+            int(style_ok),
+            int(q1_ok and q2_ok),
+            min(len(quote_1), 220) + min(len(quote_2), 220),
+        )
+
+    ranked = sorted(cards, key=_score, reverse=True)
+    strong: list[dict] = []
+    for fc in ranked:
+        if len(strong) >= target:
+            break
+        if _score(fc)[0] == 1:
+            strong.append(fc)
+    if len(strong) >= target:
+        return strong[:target]
+    for fc in ranked:
+        if len(strong) >= target:
+            break
+        if fc in strong:
+            continue
+        strong.append(fc)
+    return strong[:target]
 
 
 def _contains_quote_window(target_text: str, quote_text: str, min_window: int = 10) -> bool:
@@ -912,8 +989,8 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         q1 = _normalize_ws(cp.get("q1_event_2sent_zh", "") or getattr(card, "what_happened", "") or "")
         q2 = _normalize_ws(cp.get("q2_impact_2sent_zh", "") or getattr(card, "why_important", "") or "")
 
-        quote_1 = _normalize_ws(getattr(card, "_bound_quote_1", "") or "")
-        quote_2 = _normalize_ws(getattr(card, "_bound_quote_2", "") or "")
+        quote_1 = _sanitize_quote_for_delivery(getattr(card, "_bound_quote_1", "") or "")
+        quote_2 = _sanitize_quote_for_delivery(getattr(card, "_bound_quote_2", "") or "")
         source_blob = _normalize_ws(
             getattr(card, "full_text", "") or getattr(card, "what_happened", "") or f"{q1} {q2}"
         )
@@ -1008,8 +1085,8 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
             _q1_final = _build_q1_quote_driven(title, _q1_pick)
             _q2_final = _build_q2_quote_driven(title, _q2_pick)
 
-        quote_1 = _clip_text(_q1_pick, 110)
-        quote_2 = _clip_text(_q2_pick, 110)
+        quote_1 = _clip_text(_sanitize_quote_for_delivery(_q1_pick), 180)
+        quote_2 = _clip_text(_sanitize_quote_for_delivery(_q2_pick), 180)
         q1 = _q1_final
         q2 = _q2_final
 
@@ -1061,10 +1138,12 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
             ]
 
         final_url = _normalize_ws(getattr(card, "final_url", "") or getattr(card, "source_url", "") or "")
+        if not final_url.startswith(("http://", "https://")):
+            final_url = ""
         if not final_url:
             _title_q = re.sub(r"\s+", "+", title.strip())
             final_url = f"https://search.google.com/search?q={_title_q}" if _title_q else ""
-        final_url = _clip_text(final_url, 110) if final_url else ""
+        final_url = final_url[:512] if final_url else ""
 
         actor = _pick_actor(
             primary_anchor=str(cp.get("primary_anchor", "") or ""),
@@ -1781,7 +1860,14 @@ def run_pipeline() -> None:
     # (hydrate_items_batch ok=N), so pre-hydrated items are available regardless of Z0 flag.
     # Demo mode caps PH_SUPP at 2 so the deck isn't padded out with supplemental
     # bulk content.  Normal runs keep the existing cap of 50.
-    _ph_supp_limit = 2 if os.environ.get("PIPELINE_MODE", "manual") == "demo" else 50
+    _ph_supp_limit_default = 2 if os.environ.get("PIPELINE_MODE", "manual") == "demo" else 50
+    _ph_supp_limit = _ph_supp_limit_default
+    _ph_supp_limit_raw = str(os.environ.get("PH_SUPP_LIMIT", "") or "").strip()
+    if _ph_supp_limit_raw:
+        try:
+            _ph_supp_limit = max(0, int(_ph_supp_limit_raw))
+        except Exception:
+            _ph_supp_limit = _ph_supp_limit_default
     try:
         _ph_supp_items = sorted(
             [it for it in raw_items if int(getattr(it, "fulltext_len", 0) or 0) >= 800],
@@ -1958,6 +2044,14 @@ def run_pipeline() -> None:
                 _ai_final_cards = [fc for fc in _final_cards if fc.get("ai_relevance", False)]
                 _watchlist_cards = [fc for fc in _final_cards if not fc.get("ai_relevance", False)]
                 _final_cards = _ai_final_cards
+                if os.environ.get("PIPELINE_MODE", "manual") == "demo" and len(_final_cards) > 6:
+                    _before_demo_trim = len(_final_cards)
+                    _final_cards = _select_stable_demo_cards(_final_cards, target=6)
+                    log.info(
+                        "DEMO_FINAL_CARD_SELECTION: trimmed %d -> %d stable cards",
+                        _before_demo_trim,
+                        len(_final_cards),
+                    )
                 if _ai_final_cards:
                     log.info(
                         "AI_RELEVANCE filter: %d AI-relevant kept, %d non-AI sent to watchlist",
@@ -2063,7 +2157,9 @@ def run_pipeline() -> None:
                         if not isinstance(z0_exec_extra_cards, list):
                             z0_exec_extra_cards = _dbe_deck
 
-                        _dbe_needed = max(0, 6 - int(_sr_ai_selected or 0))
+                        # Keep a larger candidate buffer in demo so we can pick a stable
+                        # final subset that passes delivery hard gates.
+                        _dbe_needed = max(0, 8 - int(_sr_ai_selected or 0))
                         _dbe_added = 0
                         _dbe_created_count = 0
                         _dbe_title_ok_count = 0
@@ -2139,6 +2235,9 @@ def run_pipeline() -> None:
                             else:
                                 continue
 
+                            _dbe_bucket_cycle = ("business", "business", "tech", "product", "tech", "product")
+                            _dbe_category = _dbe_bucket_cycle[_dbe_added % len(_dbe_bucket_cycle)]
+
                             _dbe_card = EduNewsCard(
                                 item_id="demo_ext_" + _dbe_id_orig,
                                 is_valid_news=True,
@@ -2147,7 +2246,7 @@ def run_pipeline() -> None:
                                 why_important=f"歷史紀錄（近 7 日）：{_dbe_row.get('source_name', '來源平台')}",
                                 source_name=str(_dbe_row.get("source_name", "歷史資料庫") or "歷史資料庫"),
                                 source_url=_dbe_url,
-                                category=str(_dbe_sa.get("category", "tech") or "tech"),
+                                category=_dbe_category,
                                 final_score=4.0,
                             )
                             try:
@@ -2228,6 +2327,14 @@ def run_pipeline() -> None:
                                 _ai_final_cards = [fc for fc in _final_cards if fc.get("ai_relevance", False)]
                                 _watchlist_cards = [fc for fc in _final_cards if not fc.get("ai_relevance", False)]
                                 _final_cards = _ai_final_cards
+                                if os.environ.get("PIPELINE_MODE", "manual") == "demo" and len(_final_cards) > 6:
+                                    _before_demo_trim = len(_final_cards)
+                                    _final_cards = _select_stable_demo_cards(_final_cards, target=6)
+                                    log.info(
+                                        "DEMO_FINAL_CARD_SELECTION: rebuilt trim %d -> %d stable cards",
+                                        _before_demo_trim,
+                                        len(_final_cards),
+                                    )
                                 metrics_dict["final_cards"] = _final_cards
 
                                 _final_cards_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "final_cards.meta.json"
