@@ -1886,7 +1886,11 @@ def run_pipeline() -> None:
                             "NAMING":           _dod_naming,
                             "AI_RELEVANCE":     _dod_ai_rel,
                         }
-                        _all_pass_d = all(_dod_map.values())
+                        # AI_RELEVANCE is advisory — supplemental events (Tesla, Apple,
+                        # Discord, etc.) may lack explicit AI keywords yet still carry
+                        # valid verbatim quotes.  Excluding it from the hard-pass criterion
+                        # mirrors the treatment in EXEC_DELIVERABLE_DOCX_PPTX_HARD.
+                        _all_pass_d = all(v for k, v in _dod_map.items() if k != "AI_RELEVANCE")
 
                         _enq_records.append({
                             "item_id":    _iid_d,
