@@ -2315,6 +2315,33 @@ def run_pipeline() -> None:
                             else:
                                 continue
 
+                            _dbe_anchor_candidates = extract_event_anchors(
+                                _dbe_title_plain,
+                                _dbe_bq1,
+                                _dbe_bq2,
+                                _dbe_body,
+                                n=6,
+                            )
+                            _dbe_primary_anchor = _normalize_ws(
+                                _dbe_anchor_candidates[0] if _dbe_anchor_candidates else ""
+                            )
+                            if not _dbe_primary_anchor:
+                                _dbe_primary_anchor = _normalize_ws(
+                                    _pick_actor(
+                                        primary_anchor="",
+                                        source_name=str(_dbe_row.get("source_name", "") or ""),
+                                        title=_dbe_title_plain,
+                                        quote_1=_dbe_bq1,
+                                        quote_2=_dbe_bq2,
+                                    )
+                                )
+                            if not _dbe_primary_anchor:
+                                _dbe_primary_anchor = _normalize_ws(
+                                    str(_dbe_row.get("source_name", "") or "")
+                                ) or "AI"
+                            if not _dbe_anchor_candidates:
+                                _dbe_anchor_candidates = [_dbe_primary_anchor]
+
                             _dbe_bucket_cycle = ("business", "business", "tech", "product", "tech", "product")
                             _dbe_category = _dbe_bucket_cycle[_dbe_added % len(_dbe_bucket_cycle)]
 
@@ -2345,6 +2372,9 @@ def run_pipeline() -> None:
                                 setattr(_dbe_card, "quote_2", _dbe_bq2)
                                 setattr(_dbe_card, "quote_window_1", _dbe_qw1)
                                 setattr(_dbe_card, "quote_window_2", _dbe_qw2)
+                                setattr(_dbe_card, "primary_anchor", _dbe_primary_anchor)
+                                setattr(_dbe_card, "anchors", list(_dbe_anchor_candidates))
+                                setattr(_dbe_card, "anchors_top3", list(_dbe_anchor_candidates[:3]))
                             except Exception:
                                 pass
 
@@ -2359,6 +2389,9 @@ def run_pipeline() -> None:
                                 _cp_dbe["q2_impact_2sent_zh"] = (
                                     "影響判讀可由原文驗證：「" + _dbe_bq2[:200] + "」。"
                                 ).strip()
+                                _cp_dbe["primary_anchor"] = _dbe_primary_anchor
+                                _cp_dbe["anchors"] = list(_dbe_anchor_candidates)
+                                _cp_dbe["anchors_top3"] = list(_dbe_anchor_candidates[:3])
                             except Exception:
                                 pass
 
