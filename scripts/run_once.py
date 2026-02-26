@@ -2277,11 +2277,13 @@ def run_pipeline() -> None:
                     if _deck_count_sr >= 6:
                         _sr_showcase_ready = True
                         _sr_demo_supplement = True
-                        # S5 fix: ai_selected_events must reflect actual deck count for DoD
-                        _sr_ai_selected = _deck_count_sr
+                        # S5 fix: do NOT inflate _sr_ai_selected with deck count here.
+                        # _sr_ai_selected must reflect _final_cards (actual selected events).
+                        # DEMO_EXTENDED_POOL block below will rebuild _final_cards and update
+                        # showcase_ready.meta.json with the authoritative ai_selected_events.
                         log.info(
-                            "SHOWCASE_READY: demo supplement — deck_events=%d covers threshold; ai_selected_events updated to %d",
-                            _deck_count_sr, _sr_ai_selected,
+                            "SHOWCASE_READY: demo deck_events=%d >= 6 — will run DEMO_EXTENDED_POOL to build final_cards",
+                            _deck_count_sr,
                         )
                 _sr_out_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
                 _sr_out_path.write_text(
@@ -2315,7 +2317,12 @@ def run_pipeline() -> None:
                     if _dbe_sr_path.exists():
                         _dbe_sr_data = _dbe_json.loads(_dbe_sr_path.read_text(encoding="utf-8"))
                         _dbe_ready = bool(_dbe_sr_data.get("showcase_ready", False))
-                    if not _dbe_ready:
+                    # S5 fix: also run supplement when _final_cards is insufficient, even if
+                    # showcase_ready was set True by the deck-count shortcut above.
+                    # Deck count != final_cards count; we must rebuild with demo_ext to get
+                    # actual selected events that pass all delivery gates.
+                    _dbe_final_cards_now = len(_final_cards) if isinstance(_final_cards, list) else 0
+                    if not _dbe_ready or _dbe_final_cards_now < 6:
                         from core.storage import load_passed_results as _dbe_load_pr
                         from utils.topic_router import is_relevant_ai as _dbe_is_relevant_ai
 
@@ -2333,7 +2340,9 @@ def run_pipeline() -> None:
 
                         # Keep a larger candidate buffer in demo so we can pick a stable
                         # final subset that passes delivery hard gates.
-                        _dbe_needed = max(0, 10 - int(_sr_ai_selected or 0))
+                        # S5 fix: base on actual _final_cards count, not the (possibly inflated)
+                        # _sr_ai_selected which may reflect deck_count from the shortcut above.
+                        _dbe_needed = max(0, 10 - _dbe_final_cards_now)
                         _dbe_added = 0
                         _dbe_created_count = 0
                         _dbe_title_ok_count = 0

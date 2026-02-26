@@ -1,4 +1,4 @@
-﻿# FILE: scripts\run_pipeline.ps1
+# FILE: scripts\run_pipeline.ps1
 # Desktop-button entry point ??ALWAYS produces a visible output file.
 #
 # Success path : updates outputs\executive_report.pptx/.docx ??AutoOpen pptx
@@ -18,6 +18,11 @@ $ErrorActionPreference = 'Continue'   # don't stop on errors ??we handle them ex
 $RepoRoot   = Split-Path -Parent $PSScriptRoot
 $OutputsDir = Join-Path $RepoRoot "outputs"
 $LogFile    = Join-Path $OutputsDir "desktop_button.last_run.log"
+$DocxPath   = Join-Path $OutputsDir "executive_report.docx"
+$PptxPath   = Join-Path $OutputsDir "executive_report.pptx"
+$NotReadyPath = Join-Path $OutputsDir "NOT_READY.md"
+$NotReadyDocxPath = Join-Path $OutputsDir "NOT_READY_report.docx"
+$NotReadyPptxPath = Join-Path $OutputsDir "NOT_READY_report.pptx"
 
 if (-not (Test-Path $OutputsDir)) { New-Item -ItemType Directory -Path $OutputsDir | Out-Null }
 
@@ -37,6 +42,30 @@ $StartISO   = $StartObj.ToString("o")
 "@ | Out-File $LogFile -Encoding UTF8
 
 Write-Host "=== AI Intel Scraper ??run_id=$RunId ===" -ForegroundColor Cyan
+
+# Snapshot canonical executive artifacts before run so FAIL can never overwrite delivery files.
+$ExecSnapshot = @{}
+foreach ($Name in @("executive_report.docx", "executive_report.pptx")) {
+    $Path = Join-Path $OutputsDir $Name
+    $Bak  = Join-Path $OutputsDir (".pre_fail_guard_{0}.bak" -f $Name)
+    if (Test-Path $Bak) { Remove-Item $Bak -Force -ErrorAction SilentlyContinue }
+
+    if (Test-Path $Path) {
+        $Item = Get-Item $Path
+        Copy-Item $Path $Bak -Force
+        $ExecSnapshot[$Name] = [ordered]@{
+            exists         = $true
+            backup         = $Bak
+            last_write_utc = $Item.LastWriteTimeUtc
+        }
+    } else {
+        $ExecSnapshot[$Name] = [ordered]@{
+            exists         = $false
+            backup         = $Bak
+            last_write_utc = $null
+        }
+    }
+}
 
 # ?? Locate Python ?????????????????????????????????????????????????????????????
 $py = "python"
@@ -61,10 +90,6 @@ $FinishISO  = $FinishObj.ToString("o")
 "pipeline exit_code=$ExitCode  finished_at=$FinishISO" | Add-Content $LogFile -Encoding UTF8
 
 # ?? Evaluate success ??????????????????????????????????????????????????????????
-$NotReadyPath = Join-Path $OutputsDir "NOT_READY.md"
-$DocxPath     = Join-Path $OutputsDir "executive_report.docx"
-$PptxPath     = Join-Path $OutputsDir "executive_report.pptx"
-
 $NotReadyExists = Test-Path $NotReadyPath
 $DocxUpdated    = (Test-Path $DocxPath) -and ((Get-Item $DocxPath).LastWriteTime -gt $StartObj)
 $PptxUpdated    = (Test-Path $PptxPath) -and ((Get-Item $PptxPath).LastWriteTime -gt $StartObj)
@@ -87,6 +112,32 @@ $IsSuccess = ($ExitCode -eq 0) -and (-not $NotReadyExists) -and $DocxUpdated -an
 
 "success_eval: IsSuccess=$IsSuccess NotReadyExists=$NotReadyExists DocxUpdated=$DocxUpdated PptxUpdated=$PptxUpdated ShowcaseReady=$ShowcaseReady AiSelectedEvents=$AiSelectedEvents ExitCode=$ExitCode" |
     Add-Content $LogFile -Encoding UTF8
+
+# Hard fail-guard: when run is FAIL, never leave updated canonical executive artifacts behind.
+if (-not $IsSuccess) {
+    foreach ($Name in @("executive_report.docx", "executive_report.pptx")) {
+        $Path = Join-Path $OutputsDir $Name
+        $Snap = $ExecSnapshot[$Name]
+        if ($null -eq $Snap) { continue }
+
+        if ([bool]$Snap.exists) {
+            if (Test-Path $Snap.backup) {
+                Copy-Item $Snap.backup $Path -Force
+                if ($Snap.last_write_utc) {
+                    try {
+                        (Get-Item $Path).LastWriteTimeUtc = [datetime]$Snap.last_write_utc
+                    } catch {}
+                }
+            }
+        } else {
+            if (Test-Path $Path) {
+                Remove-Item $Path -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    "fail_guard: canonical executive_report artifacts restored to pre-run state" |
+        Add-Content $LogFile -Encoding UTF8
+}
 
 # ?? Determine fail reason (human-readable one-liner) ?????????????????????????
 $FailReason = ""
@@ -129,16 +180,27 @@ if (-not $IsSuccess) {
 }
 
 # ?? Collect produced files for summary ???????????????????????????????????????
-$CheckFiles   = @(
-    "executive_report.docx",
-    "executive_report.pptx",
-    "NOT_READY_report.docx",
-    "NOT_READY_report.pptx"
-)
-$ProducedList = $CheckFiles |
-    Where-Object { Test-Path (Join-Path $OutputsDir $_) } |
-    ForEach-Object { "outputs\$_" }
+$ProducedList = @()
+if ($IsSuccess) {
+    foreach ($Name in @("executive_report.docx", "executive_report.pptx")) {
+        if (Test-Path (Join-Path $OutputsDir $Name)) {
+            $ProducedList += "outputs\$Name"
+        }
+    }
+} else {
+    foreach ($Name in @("NOT_READY_report.docx", "NOT_READY_report.pptx")) {
+        if (Test-Path (Join-Path $OutputsDir $Name)) {
+            $ProducedList += "outputs\$Name"
+        }
+    }
+}
 $ProducedStr  = if ($ProducedList) { $ProducedList -join ", " } else { "(none)" }
+
+# cleanup temporary backups
+foreach ($Name in @("executive_report.docx", "executive_report.pptx")) {
+    $Bak = Join-Path $OutputsDir (".pre_fail_guard_{0}.bak" -f $Name)
+    if (Test-Path $Bak) { Remove-Item $Bak -Force -ErrorAction SilentlyContinue }
+}
 
 # ?? Write LAST_RUN_SUMMARY.txt (always, human-readable) ??????????????????????
 Write-Host "[3/3] Writing LAST_RUN_SUMMARY.txt..." -ForegroundColor Yellow

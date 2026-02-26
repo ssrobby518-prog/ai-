@@ -4016,6 +4016,21 @@ def get_event_cards_for_deck(
         _final_sel = int(sel_meta.get("final_selected_events", 0))
         _strict_ok = int(sel_meta.get("strict_fulltext_ok", 0))
         if _final_sel < 6 or _strict_ok < 4:
+            import os as _os_ps
+            _is_demo_ps = _os_ps.environ.get("PIPELINE_MODE", "manual") == "demo"
+            if _is_demo_ps:
+                # In demo mode: POOL_SUFFICIENCY is downgraded to WARN — DEMO_EXTENDED_POOL
+                # in run_once.py will inject historical cards and rebuild final_cards.
+                # SHOWCASE_READY_HARD remains the authoritative gate for the demo deck.
+                import logging as _lg_ps
+                _lg_ps.getLogger("ai_intel").warning(
+                    "POOL_SUFFICIENCY_FAIL suppressed in demo mode "
+                    "(final_selected=%d strict_fulltext_ok=%d); "
+                    "DEMO_EXTENDED_POOL will supplement",
+                    _final_sel, _strict_ok,
+                )
+                # Return selected even if partial — DEMO_EXTENDED_POOL will merge and reselect
+                return selected if selected else event_cards
             raise RuntimeError(
                 f"POOL_SUFFICIENCY_FAIL: final_selected={_final_sel} strict_fulltext_ok={_strict_ok} "
                 f"(need >=6 events AND >=4 with fulltext_len>=800)"
