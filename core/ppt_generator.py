@@ -1,4 +1,4 @@
-"""PPTX CEO Motion Slides — Dark Theme 簡報生成器。
+﻿"""PPTX CEO Motion Slides — Dark Theme 簡報生成器。
 
 深色背景、黃色高亮、白色內文。
 每則新聞兩頁：Page 1 WHAT HAPPENED + Page 2 WHY IT MATTERS (Q&A)。
@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Cm, Pt
 
@@ -337,6 +338,31 @@ def _brief_add_field(slide, top_cm: float, label: str, lines: list[str], bullet_
         p.line_spacing = 1.15
 
 
+def _brief_remove_all_picture_shapes(slide) -> int:
+    removed = 0
+    for shape in list(slide.shapes):
+        is_pic = False
+        try:
+            is_pic = shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+        except Exception:
+            is_pic = False
+        if not is_pic:
+            try:
+                _ = shape.image
+                is_pic = True
+            except Exception:
+                is_pic = False
+        if not is_pic:
+            continue
+        try:
+            elm = shape._element
+            elm.getparent().remove(elm)
+            removed += 1
+        except Exception:
+            continue
+    return removed
+
+
 def _generate_brief_ppt_only(
     cards: list[EduNewsCard],
     output_path: Path | None = None,
@@ -390,15 +416,6 @@ def _generate_brief_ppt_only(
             slide, Cm(1.2), Cm(0.5), Cm(24.5), Cm(1.4),
             title, font_size=20, bold=True, color=HIGHLIGHT_YELLOW,
         )
-        if idx == 1:
-            try:
-                # Keep one tiny non-top-right image to satisfy media guard.
-                marker = get_news_image(title or "AI Brief Marker", category)
-                if marker and marker.exists():
-                    slide.shapes.add_picture(str(marker), Cm(0.3), Cm(18.0), Cm(0.6), Cm(0.6))
-            except Exception:
-                pass
-
         _brief_add_field(slide, 2.0, "標題", [title], bullet_prefix=False)
         _what_lines = [safe_text(str(x), 260) for x in (p.get("what_happened_bullets", []) or what.replace("\r", "\n").split("\n")) if str(x).strip()]
         _key_lines = [safe_text(str(x), 260) for x in (p.get("key_details_bullets", []) or key.replace("\r", "\n").split("\n")) if str(x).strip()]
@@ -408,6 +425,9 @@ def _generate_brief_ppt_only(
         _brief_add_field(slide, 10.7, "為何重要", _why_lines if _why_lines else [safe_text(why, 260)], bullet_prefix=True)
         _brief_add_field(slide, 14.0, "證據", [f"quote_1：{quote_1}", f"quote_2：{quote_2}"], bullet_prefix=False)
         _brief_add_field(slide, 16.3, "來源", [f"final_url：{final_url}", f"published_at：{published_at}"], bullet_prefix=False)
+
+    for slide in prs.slides:
+        _brief_remove_all_picture_shapes(slide)
 
     prs.save(str(output_path))
 
@@ -2621,3 +2641,4 @@ def generate_not_ready_report_pptx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
     return output_path
+
