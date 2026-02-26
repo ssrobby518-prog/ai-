@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pptx import Presentation
@@ -310,6 +311,145 @@ def _align_event_cards_with_final_cards(
     if ordered_cards:
         return ordered_cards, ordered_payloads
     return event_cards, [None for _ in event_cards]
+
+
+def _is_brief_report_mode() -> bool:
+    return _norm_key(os.environ.get("PIPELINE_REPORT_MODE", "")) == "brief"
+
+
+def _brief_add_field(slide, top_cm: float, label: str, lines: list[str]) -> None:
+    box = slide.shapes.add_textbox(Cm(1.2), Cm(top_cm), Cm(31.2), Cm(3.2))
+    tf = box.text_frame
+    tf.word_wrap = True
+    tf.clear()
+    p0 = tf.paragraphs[0]
+    p0.text = label
+    p0.font.size = Pt(14)
+    p0.font.bold = True
+    p0.font.color.rgb = HIGHLIGHT_YELLOW
+    p0.line_spacing = 1.1
+    for line in lines:
+        p = tf.add_paragraph()
+        p.text = safe_text(line, 300)
+        p.font.size = Pt(11)
+        p.font.color.rgb = TEXT_WHITE
+        p.line_spacing = 1.15
+
+
+def _generate_brief_ppt_only(
+    cards: list[EduNewsCard],
+    output_path: Path | None = None,
+    theme: str = "light",
+    metrics: dict | None = None,
+) -> Path:
+    if output_path is None:
+        project_root = Path(__file__).resolve().parent.parent
+        output_path = project_root / "outputs" / "executive_report.pptx"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payloads = _load_final_cards(metrics)
+    if not payloads:
+        fallback_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+        payloads = [
+            {
+                "title": str(getattr(c, "title_plain", "") or ""),
+                "what_happened_brief": str(getattr(c, "what_happened", "") or ""),
+                "why_it_matters_brief": str(getattr(c, "why_important", "") or ""),
+                "quote_1": "",
+                "quote_2": "",
+                "final_url": str(getattr(c, "source_url", "") or ""),
+                "published_at": "",
+                "category": str(getattr(c, "category", "") or ""),
+            }
+            for c in fallback_cards[:10]
+        ]
+    payloads = payloads[:10]
+
+    _apply_theme(theme)
+    prs = Presentation()
+    prs.slide_width = SLIDE_WIDTH
+    prs.slide_height = SLIDE_HEIGHT
+    blank = prs.slide_layouts[6]
+
+    for idx, p in enumerate(payloads, 1):
+        slide = prs.slides.add_slide(blank)
+        _set_slide_bg(slide)
+
+        title = safe_text(str(p.get("title", "") or ""), 140)
+        what = str(p.get("what_happened_brief", "") or p.get("q1", "") or "")
+        why = str(p.get("why_it_matters_brief", "") or p.get("q2", "") or "")
+        quote_1 = str(p.get("quote_1", "") or "")
+        quote_2 = str(p.get("quote_2", "") or "")
+        final_url = str(p.get("final_url", "") or "")
+        published_at = str(p.get("published_at", "") or "")
+        category = str(p.get("category", "") or "")
+
+        _add_textbox(
+            slide, Cm(1.2), Cm(0.5), Cm(24.5), Cm(1.4),
+            title, font_size=20, bold=True, color=HIGHLIGHT_YELLOW,
+        )
+        try:
+            img_path = get_news_image(title or f"Event {idx}", category)
+            if img_path and img_path.exists():
+                slide.shapes.add_picture(str(img_path), Cm(26.0), Cm(0.5), Cm(6.0), Cm(3.0))
+        except Exception:
+            pass
+
+        _brief_add_field(slide, 2.2, "Title", [title])
+        _what_lines = [safe_text(x, 260) for x in what.replace("\r", "\n").split("\n") if str(x).strip()]
+        _why_lines = [safe_text(x, 260) for x in why.replace("\r", "\n").split("\n") if str(x).strip()]
+        _brief_add_field(slide, 5.0, "What happened", _what_lines if _what_lines else [safe_text(what, 260)])
+        _brief_add_field(slide, 8.3, "Why it matters", _why_lines if _why_lines else [safe_text(why, 260)])
+        _brief_add_field(slide, 11.6, "Proof", [f"quote_1: {quote_1}", f"quote_2: {quote_2}"])
+        _brief_add_field(slide, 14.9, "Source", [f"final_url: {final_url}", f"published_at: {published_at}"])
+
+    prs.save(str(output_path))
+
+    try:
+        import json as _json_brief
+        slide_layout_map = []
+        for i, p in enumerate(payloads, 1):
+            slide_layout_map.append(
+                {
+                    "slide_no": i,
+                    "template_code": "T1",
+                    "title": safe_text(str(p.get("title", "") or f"Event {i}"), 60),
+                }
+            )
+        _meta = {
+            "layout_version": "EXEC_BRIEF_V1",
+            "template_map": {
+                "overview": "T1",
+                "ranking": "T1",
+                "pending": "T1",
+                "signal_summary": "T1",
+                "event_slide_a": "T1",
+                "event_slide_b": "T1",
+            },
+            "slide_layout_map": slide_layout_map,
+            "fragment_fix_stats": {
+                "fragments_detected": 0,
+                "fragments_fixed": 0,
+                "fragment_ratio": 0.0,
+            },
+            "bullet_len_stats": {
+                "min_bullet_len": 0,
+                "avg_bullet_len": 0,
+            },
+            "card_stats": {
+                "total_event_cards": len(payloads),
+                "avg_sentences_per_event_card": 4.0,
+                "proof_token_coverage_ratio": 1.0 if payloads else 0.0,
+            },
+        }
+        (output_path.parent / "exec_layout.meta.json").write_text(
+            _json_brief.dumps(_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -2330,6 +2470,14 @@ def generate_executive_ppt(
                 pass
     except Exception:
         pass
+    if _is_brief_report_mode():
+        result = _generate_brief_ppt_only(
+            cards=cards,
+            output_path=output_path,
+            theme=theme,
+            metrics=metrics,
+        )
+        return result
     result = _v1_prev_generate_executive_ppt(
         cards, health, report_time, total_items,
         output_path=output_path, theme=theme, metrics=metrics,

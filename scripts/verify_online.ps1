@@ -872,6 +872,45 @@ if (Test-Path $execDelivMetaOnlinePath) {
 }
 
 # ---------------------------------------------------------------------------
+# BRIEF hard gates (brief mode only; SKIP when meta absent)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF HARD GATES:"
+$briefGateMetas = @(
+    @{ Label = "BRIEF_MIN_EVENTS_HARD";      File = "brief_min_events_hard.meta.json" },
+    @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
+    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" }
+)
+foreach ($bg in $briefGateMetas) {
+    $bgPath = Join-Path $repoRoot ("outputs\" + $bg.File)
+    if (-not (Test-Path $bgPath)) {
+        Write-Output ("  {0}: SKIP ({1} not found)" -f $bg.Label, $bg.File)
+        continue
+    }
+    try {
+        $bgMeta = Get-Content $bgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $bgGate = if ($bgMeta.PSObject.Properties['gate_result']) { [string]$bgMeta.gate_result } else { "FAIL" }
+        if ($bg.Label -eq "BRIEF_MIN_EVENTS_HARD") {
+            $bgMin = if ($bgMeta.PSObject.Properties['required_min']) { [int]$bgMeta.required_min } else { 5 }
+            $bgMax = if ($bgMeta.PSObject.Properties['required_max']) { [int]$bgMeta.required_max } else { 10 }
+            $bgAct = if ($bgMeta.PSObject.Properties['actual']) { [int]$bgMeta.actual } else { 0 }
+            Write-Output ("  {0}: {1} (required=[{2},{3}] actual={4})" -f $bg.Label, $bgGate, $bgMin, $bgMax, $bgAct)
+        } else {
+            $bgTotal = if ($bgMeta.PSObject.Properties['events_total']) { [int]$bgMeta.events_total } else { 0 }
+            $bgFail  = if ($bgMeta.PSObject.Properties['fail_count']) { [int]$bgMeta.fail_count } else { 0 }
+            Write-Output ("  {0}: {1} (events_total={2} fail_count={3})" -f $bg.Label, $bgGate, $bgTotal, $bgFail)
+        }
+        if ($bgGate -eq "FAIL") {
+            Write-Output ("  => {0}: FAIL" -f $bg.Label)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_)
+        exit 1
+    }
+}
+
+# ---------------------------------------------------------------------------
 # EXEC_NEWS_QUALITY_HARD GATE (online run)
 #   Reads outputs/exec_news_quality.meta.json written by run_once.py.
 #   PASS: gate_result=PASS; SKIP: meta absent; FAIL: gate_result=FAIL (exit 1)

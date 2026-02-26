@@ -6,10 +6,12 @@
 # Both paths   : write outputs\LAST_RUN_SUMMARY.txt + outputs\desktop_button.last_run.log
 #
 # Params:
-#   -Mode     manual|demo|daily  (default: manual; demo = guaranteed 6-12 AI events for presentations)
-#   -AutoOpen true|false         (default: true;   pass false for headless/scheduled runs)
+#   -Mode       manual|demo|daily  (default: manual; demo = guaranteed 6-12 AI events for presentations)
+#   -ReportMode brief|legacy       (default: brief)
+#   -AutoOpen   true|false         (default: true;   pass false for headless/scheduled runs)
 param(
     [string]$Mode     = "manual",
+    [string]$ReportMode = "brief",
     [string]$AutoOpen = "true"
 )
 $ErrorActionPreference = 'Continue'   # don't stop on errors ??we handle them explicitly
@@ -37,6 +39,7 @@ $StartISO   = $StartObj.ToString("o")
  AI Intel Pipeline
  run_id     = $RunId
  mode       = $Mode
+ report_mode= $ReportMode
  started_at = $StartISO
 ========================================
 "@ | Out-File $LogFile -Encoding UTF8
@@ -74,16 +77,18 @@ $py = "python"
 $env:PIPELINE_RUN_ID       = $RunId
 $env:PIPELINE_TRIGGERED_BY = "run_pipeline.ps1"
 $env:PIPELINE_MODE         = $Mode
+$env:PIPELINE_REPORT_MODE  = $ReportMode
 
 # ?? Run pipeline ??tee stdout+stderr to log AND console ??????????????????????
 Set-Location $RepoRoot
 Write-Host "[1/3] Running pipeline (stdout+stderr ??log)..." -ForegroundColor Yellow
-& $py "$RepoRoot\scripts\run_once.py" 2>&1 | Tee-Object -FilePath $LogFile -Append
+& $py "$RepoRoot\scripts\run_once.py" --report-mode "$ReportMode" 2>&1 | Tee-Object -FilePath $LogFile -Append
 $ExitCode = $LASTEXITCODE
 
 $env:PIPELINE_RUN_ID       = $null
 $env:PIPELINE_TRIGGERED_BY = $null
 $env:PIPELINE_MODE         = $null
+$env:PIPELINE_REPORT_MODE  = $null
 
 $FinishObj  = Get-Date
 $FinishISO  = $FinishObj.ToString("o")
@@ -94,17 +99,19 @@ $NotReadyExists = Test-Path $NotReadyPath
 $DocxUpdated    = (Test-Path $DocxPath) -and ((Get-Item $DocxPath).LastWriteTime -gt $StartObj)
 $PptxUpdated    = (Test-Path $PptxPath) -and ((Get-Item $PptxPath).LastWriteTime -gt $StartObj)
 
-# DoD-1: OK requires showcase_ready=true (ai_selected_events >= 6) in showcase_ready.meta.json
+# DoD-1: OK requires showcase_ready=true (ai_selected_events >= threshold) in showcase_ready.meta.json
 $ShowcaseMetaPath = Join-Path $OutputsDir "showcase_ready.meta.json"
 $ShowcaseReady    = $false
 $AiSelectedEvents = 0
 $SelectedEvents   = 0
+$ShowcaseThreshold = 6
 if (Test-Path $ShowcaseMetaPath) {
     try {
         $srMeta = Get-Content $ShowcaseMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $ShowcaseReady    = [bool]($srMeta.PSObject.Properties["showcase_ready"] -and $srMeta.showcase_ready)
         $AiSelectedEvents = if ($srMeta.PSObject.Properties["ai_selected_events"]) { [int]$srMeta.ai_selected_events } else { 0 }
         $SelectedEvents   = if ($srMeta.PSObject.Properties["selected_events"])    { [int]$srMeta.selected_events }    else { $AiSelectedEvents }
+        $ShowcaseThreshold = if ($srMeta.PSObject.Properties["threshold"]) { [int]$srMeta.threshold } else { 6 }
     } catch { $ShowcaseReady = $false }
 }
 
@@ -151,7 +158,7 @@ if (-not $IsSuccess) {
         } catch { $FailReason = "NOT_READY.md exists (read error)" }
     }
     if (-not $FailReason -and -not $ShowcaseReady) {
-        $FailReason = "SHOWCASE_READY_HARD FAIL -- ai_selected_events=$AiSelectedEvents < 6 (deck has no presentable content)"
+        $FailReason = "SHOWCASE_READY_HARD FAIL -- ai_selected_events=$AiSelectedEvents < $ShowcaseThreshold (deck has no presentable content)"
     }
     if (-not $FailReason) {
         if ($ExitCode -ne 0) {
@@ -211,6 +218,7 @@ run_id              = $RunId
 started_at          = $StartISO
 finished_at         = $FinishISO
 mode                = $Mode
+report_mode         = $ReportMode
 status              = $StatusStr
 selected_events     = $SelectedEvents
 ai_selected_events  = $AiSelectedEvents

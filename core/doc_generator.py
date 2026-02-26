@@ -10,6 +10,7 @@ Callout box（▌重點提示框）+ Divider 分隔線 + Notion 風格簡潔表�
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from docx import Document
@@ -230,6 +231,81 @@ def _align_event_cards_with_final_cards(
     if ordered_cards:
         return ordered_cards, ordered_payloads
     return event_cards, [None for _ in event_cards]
+
+
+def _is_brief_report_mode() -> bool:
+    return _norm_key(os.environ.get("PIPELINE_REPORT_MODE", "")) == "brief"
+
+
+def _generate_brief_docx_only(
+    cards: list[EduNewsCard],
+    output_path: Path,
+    metrics: dict | None = None,
+) -> Path:
+    final_payloads = _load_final_cards(metrics)
+    payloads = final_payloads[:10] if final_payloads else []
+    if not payloads:
+        fallback_cards = get_event_cards_for_deck(cards, metrics=metrics or {}, min_events=0)
+        for c in fallback_cards[:10]:
+            payloads.append(
+                {
+                    "title": str(getattr(c, "title_plain", "") or ""),
+                    "what_happened_brief": str(getattr(c, "what_happened", "") or ""),
+                    "why_it_matters_brief": str(getattr(c, "why_important", "") or ""),
+                    "quote_1": "",
+                    "quote_2": "",
+                    "final_url": str(getattr(c, "source_url", "") or ""),
+                    "published_at": "",
+                    "category": str(getattr(c, "category", "") or ""),
+                }
+            )
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Calibri"
+    style.font.size = Pt(11)
+
+    for idx, p in enumerate(payloads, 1):
+        if idx > 1:
+            doc.add_page_break()
+
+        title = sanitize(str(p.get("title", "") or ""))
+        what = sanitize(str(p.get("what_happened_brief", "") or p.get("q1", "") or ""))
+        why = sanitize(str(p.get("why_it_matters_brief", "") or p.get("q2", "") or ""))
+        quote_1 = sanitize(str(p.get("quote_1", "") or ""))
+        quote_2 = sanitize(str(p.get("quote_2", "") or ""))
+        final_url = sanitize(str(p.get("final_url", "") or ""))
+        published_at = sanitize(str(p.get("published_at", "") or ""))
+        category = str(p.get("category", "") or "")
+
+        try:
+            img_path = get_news_image(title or f"Event {idx}", category)
+            if img_path.exists():
+                doc.add_picture(str(img_path), width=Cm(12))
+                doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception:
+            pass
+
+        _add_heading(doc, "Title", level=2)
+        doc.add_paragraph(title)
+
+        _add_heading(doc, "What happened", level=2)
+        doc.add_paragraph(what)
+
+        _add_heading(doc, "Why it matters", level=2)
+        doc.add_paragraph(why)
+
+        _add_heading(doc, "Proof", level=2)
+        doc.add_paragraph(f"quote_1: {quote_1}")
+        doc.add_paragraph(f"quote_2: {quote_2}")
+
+        _add_heading(doc, "Source", level=2)
+        doc.add_paragraph(f"final_url: {final_url}")
+        doc.add_paragraph(f"published_at: {published_at}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(output_path))
+    return output_path
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +916,10 @@ def generate_executive_docx(
         project_root = Path(__file__).resolve().parent.parent
         output_path = project_root / "outputs" / "executive_report.docx"
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if _is_brief_report_mode():
+        out = _generate_brief_docx_only(cards, output_path=output_path, metrics=metrics)
+        log.info("Executive DOCX (brief) generated: %s", out)
+        return out
 
     doc = Document()
     style = doc.styles["Normal"]

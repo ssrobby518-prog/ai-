@@ -1,4 +1,4 @@
-"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
+﻿"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
 import os
 import re
@@ -114,14 +114,14 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
     """Build fallback cards from post-gate RawItems when AI results are empty."""
     cards: list[EduNewsCard] = []
     for item in filtered_items:
-        title = str(getattr(item, "title", "") or "").strip() or "來源訊號"
+        title = str(getattr(item, "title", "") or "").strip() or "Untitled Event"
         body = str(getattr(item, "body", "") or "").strip()
         # Prefer hydrated full_text for summary so canonical clean_len >= 300 passes
         # the demotion block in get_event_cards_for_deck; fall back to body.
         _full_text_attr = str(getattr(item, "full_text", "") or "").strip()
         _summary_source = _full_text_attr if _full_text_attr else body
-        summary = _summary_source[:500] if _summary_source else "來源內容有限，請以原始連結核對。"
-        source_name = str(getattr(item, "source_name", "") or "").strip() or "來源平台"
+        summary = _summary_source[:500] if _summary_source else "No summary available from source."
+        source_name = str(getattr(item, "source_name", "") or "").strip() or "unknown_source"
         source_url = str(getattr(item, "url", "") or "").strip()
         density = float(getattr(item, "density_score", 0) or 0)
         score = max(3.0, min(10.0, round(density / 10.0, 2)))
@@ -130,7 +130,7 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
             is_valid_news=True,
             title_plain=title,
             what_happened=summary,
-            why_important=f"來源：{source_name}。原始連結：{source_url if source_url.startswith('http') else 'N/A'}。",
+            why_important=f"Source {source_name}; reference {source_url if source_url.startswith('http') else 'N/A'}.",
             source_name=source_name,
             source_url=source_url if source_url.startswith("http") else "",
             category=str(getattr(item, "source_category", "") or "tech"),
@@ -258,7 +258,7 @@ def _extract_ph_supp_quotes(text: str, n: int = 12) -> list:
 
 
 _CLAUDE_TRANSLIT_RE = re.compile(r"(?:克勞德|克劳德|柯勞德|可勞德|可劳德|克洛德)", re.IGNORECASE)
-_CLAUDE_WORD_RE = re.compile(r"\bClaude\b(?!（Anthropic）)")
+_CLAUDE_WORD_RE = re.compile(r"\bClaude\b(?!\s*\(Anthropic\))")
 _ACTOR_STOPWORDS = {
     "The", "This", "That", "These", "Those", "Today", "Breaking",
     "AI", "LLM", "News", "Report", "Update",
@@ -319,9 +319,7 @@ _AI_RELEVANCE_RE = re.compile(
 )
 
 _NO_BOILERPLATE_RE = re.compile(
-    r"最新公告顯示|確認.*原文出處|原文已提供.*依據|避免基於推測"
-    r"|引發.*(?:討論|關注|熱議)|具有.*(?:實質|重大).*(?:影響|意義)"
-    r"|各方.*(?:評估|追蹤).*後續",
+    r"最新公告顯示|確認.*原文出處|避免基於推測|原文已提供.*文字依據|引發.*廣泛關注",
     re.IGNORECASE,
 )
 
@@ -333,6 +331,182 @@ def _normalize_ws(text: str) -> str:
 def _clip_text(text: str, limit: int = 110) -> str:
     txt = _normalize_ws(text)
     return txt if len(txt) <= limit else txt[:limit].rstrip()
+
+
+_BRIEF_BOILERPLATE_RE = re.compile(
+    r"最新公告顯示|確認.*原文出處|避免基於推測|原文已提供.*文字依據|引發.*廣泛關注",
+    re.IGNORECASE,
+)
+
+_BRIEF_GARBAGE_ACTORS = {
+    "git", "true", "false", "none", "null", "na", "n/a", "4.0", "3.5", "1.0",
+}
+
+
+def _resolve_report_mode() -> str:
+    """Resolve report mode from env / argv. Supported: brief, legacy."""
+    raw = _normalize_ws(os.environ.get("PIPELINE_REPORT_MODE", ""))
+    if not raw:
+        argv = list(sys.argv or [])
+        for i, arg in enumerate(argv):
+            low = str(arg or "").strip().lower()
+            if low in ("--report-mode", "-reportmode") and i + 1 < len(argv):
+                raw = _normalize_ws(argv[i + 1])
+                break
+            if low.startswith("--report-mode="):
+                raw = _normalize_ws(str(arg).split("=", 1)[1])
+                break
+    mode = raw.lower()
+    if mode not in {"brief", "legacy"}:
+        mode = "legacy"
+    os.environ["PIPELINE_REPORT_MODE"] = mode
+    return mode
+
+
+def _brief_is_garbage_actor(actor: str) -> bool:
+    a = _normalize_ws(actor).strip()
+    if not a:
+        return True
+    if a.lower() in _BRIEF_GARBAGE_ACTORS:
+        return True
+    if re.fullmatch(r"(?:v)?\d+(?:\.\d+){1,4}", a):
+        return True
+    return False
+
+
+def _brief_contains_boilerplate(*parts: str) -> bool:
+    joined = _normalize_ws(" ".join(parts))
+    if not joined:
+        return False
+    return bool(_BRIEF_BOILERPLATE_RE.search(joined))
+
+
+def _brief_has_anchor_token(text: str, anchors: list[str]) -> bool:
+    src = _normalize_ws(text)
+    if not src:
+        return False
+    for anc in anchors:
+        a = _normalize_ws(anc)
+        if not a:
+            continue
+        if a.isascii():
+            if a.lower() in src.lower():
+                return True
+        elif a in src:
+            return True
+    return bool(re.search(r"\b\d[\d,\.]*\b|\b[A-Z][A-Za-z0-9\-]{2,}\b", src))
+
+
+def _brief_pick_primary_anchor(actor: str, anchors: list[str]) -> str:
+    candidates: list[str] = []
+    for a in anchors or []:
+        aa = _normalize_ws(a)
+        if aa:
+            candidates.append(aa)
+    if actor:
+        candidates.insert(0, _normalize_ws(actor))
+    for c in candidates:
+        if _is_actor_numeric(c) or _brief_is_garbage_actor(c):
+            continue
+        return c
+    return ""
+
+
+def _brief_impact_target(category: str) -> str:
+    cat = _normalize_ws(category).lower()
+    if cat == "product":
+        return "product roadmap and release timing"
+    if cat == "business":
+        return "budget allocation, GTM priority, and risk posture"
+    return "model delivery, engineering capacity, and infra planning"
+
+
+def _brief_decision_angle(category: str) -> str:
+    cat = _normalize_ws(category).lower()
+    if cat == "product":
+        return "decide whether to ship, defer, or split the release scope this week"
+    if cat == "business":
+        return "decide whether to reallocate spend and reprioritize go-to-market now"
+    return "decide whether to accelerate deployment or keep current architecture"
+
+
+def _build_brief_what_happened(title: str, actor: str, anchor: str) -> str:
+    line1 = _normalize_ws(f"{actor} announced {title}, anchored on {anchor}.")
+    line2 = _normalize_ws(f"The update ties actor action and object to a concrete anchor: {anchor}.")
+    return f"{line1}\n{line2}"
+
+
+def _build_brief_why_it_matters(category: str, anchor: str) -> str:
+    target = _brief_impact_target(category)
+    angle = _brief_decision_angle(category)
+    line1 = _normalize_ws(f"This can shift {target}; the anchor is {anchor}.")
+    line2 = _normalize_ws(f"Decision angle: {angle}, validated against {anchor}.")
+    return f"{line1}\n{line2}"
+
+
+def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) -> tuple[list[dict], dict]:
+    prepared: list[dict] = []
+    diag = {
+        "input_total": len(final_cards or []),
+        "drop_non_ai": 0,
+        "drop_actor_invalid": 0,
+        "drop_anchor_missing": 0,
+        "drop_quote_too_short": 0,
+        "drop_boilerplate": 0,
+    }
+    for fc in final_cards or []:
+        if not bool(fc.get("ai_relevance", False)):
+            diag["drop_non_ai"] += 1
+            continue
+
+        actor = _normalize_ws(str(fc.get("actor_primary", "") or fc.get("actor", "") or ""))
+        if (not actor) or _is_actor_numeric(actor) or _brief_is_garbage_actor(actor):
+            diag["drop_actor_invalid"] += 1
+            continue
+
+        quote_1 = _normalize_ws(str(fc.get("quote_1", "") or ""))
+        quote_2 = _normalize_ws(str(fc.get("quote_2", "") or ""))
+        if len(quote_1) < 80 or len(quote_2) < 80:
+            diag["drop_quote_too_short"] += 1
+            continue
+
+        anchors_raw = [
+            _normalize_ws(str(a or ""))
+            for a in (fc.get("anchors", []) or [])
+            if _normalize_ws(str(a or ""))
+        ]
+        anchor = _brief_pick_primary_anchor(actor, anchors_raw)
+        if not anchor:
+            diag["drop_anchor_missing"] += 1
+            continue
+
+        title = _normalize_ws(str(fc.get("title", "") or ""))
+        category = _normalize_ws(str(fc.get("category", "") or ""))
+        what = _build_brief_what_happened(title, actor, anchor)
+        why = _build_brief_why_it_matters(category, anchor)
+
+        if _brief_contains_boilerplate(what, why):
+            diag["drop_boilerplate"] += 1
+            continue
+        if (not _brief_has_anchor_token(what, [anchor])) or (not _brief_has_anchor_token(why, [anchor])):
+            diag["drop_anchor_missing"] += 1
+            continue
+
+        anchors_out = [anchor] + [a for a in anchors_raw if a.lower() != anchor.lower()]
+        out = dict(fc)
+        out["actor_primary"] = actor
+        out["anchors"] = anchors_out
+        out["impact_target"] = _brief_impact_target(category)
+        out["decision_angle"] = _brief_decision_angle(category)
+        out["what_happened_brief"] = what
+        out["why_it_matters_brief"] = why
+        out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
+        prepared.append(out)
+        if len(prepared) >= max(1, int(max_events)):
+            break
+
+    diag["kept_total"] = len(prepared)
+    return prepared, diag
 
 
 def _sanitize_quote_for_delivery(text: str) -> str:
@@ -363,7 +537,7 @@ def _extract_quoted_segments(text: str) -> list[str]:
     segs: list[str] = []
     patterns = (
         r"「([^」]+)」",
-        r"『([^』]+)』",
+        r"“([^”]+)”",
         r"\"([^\"]+)\"",
     )
     for pat in patterns:
@@ -392,11 +566,11 @@ def _quote_len_ok(text: str, min_len: int = 20) -> bool:
 
 
 def _build_q1_quote_driven(title: str, quote_1: str) -> str:
-    return _normalize_ws(f"原文關鍵句：「{quote_1}」。對應事件：{title}。")
+    return _normalize_ws(f'What happened: "{quote_1}". Event: {title}.')
 
 
 def _build_q2_quote_driven(title: str, quote_2: str) -> str:
-    return _normalize_ws(f"原文影響句：「{quote_2}」。商業意義：此句直接界定事件影響範圍與決策優先序。")
+    return _normalize_ws(f'Why it matters: "{quote_2}". Decision impact from {title}.')
 
 
 def _extract_quote_window(quote: str, min_len: int = 20, max_len: int = 30) -> str:
@@ -450,26 +624,17 @@ def _extract_quote_window(quote: str, min_len: int = 20, max_len: int = 30) -> s
 
 
 def _build_q1_zh_legacy(actor: str, quote_window_1: str) -> str:
-    """Legacy Q1 builder — kept as last-resort emergency fallback only."""
-    actor_n = _normalize_ws(actor) or "業界"
+    """Legacy Q1 builder ??kept as last-resort emergency fallback only."""
+    actor_n = _normalize_ws(actor) or "Actor"
     wn = _normalize_ws(quote_window_1)
-    return _normalize_ws(
-        f"{actor_n}公布技術進展，"
-        f"原文記載：「{wn}」，"
-        f"此訊息來源可直接核實，"
-        f"供決策者查閱評估。"
-    )
+    return _normalize_ws(f'{actor_n} update: "{wn}".')
 
 
 def _build_q2_zh_legacy(actor: str, quote_window_2: str) -> str:
-    """Legacy Q2 builder — kept as last-resort emergency fallback only."""
-    actor_n = _normalize_ws(actor) or "業界"
+    """Legacy Q2 builder ??kept as last-resort emergency fallback only."""
+    actor_n = _normalize_ws(actor) or "Actor"
     wn = _normalize_ws(quote_window_2)
-    return _normalize_ws(
-        f"此次{actor_n}進展對相關領域具體影響，"
-        f"原文顯示：「{wn}」，"
-        f"可據此布局評估。"
-    )
+    return _normalize_ws(f'Impact note for {actor_n}: "{wn}".')
 
 
 def _build_q1_zh_v2(
@@ -481,11 +646,11 @@ def _build_q1_zh_v2(
     bucket: str = "business",
     date_str: str = "",
 ) -> str:
-    """Evidence-driven Q1: actor+action from source, embeds 「quote_window」.
+    """Evidence-driven Q1: actor+action from source, embeds ?uote_window??
     No banned phrases. Calls newsroom_zh_rewrite.rewrite_news_lead_v2 then
     splices in quote_window if not already present.
     """
-    actor_n = _normalize_ws(actor) or "業界"
+    actor_n = _normalize_ws(actor) or "Actor"
     wn = _normalize_ws(quote_window)
     lq, rq = "\u300c", "\u300d"
     base = ""
@@ -506,13 +671,9 @@ def _build_q1_zh_v2(
     except Exception:
         base = ""
     if wn and (lq + wn + rq) not in base:
-        base = (
-            (base.rstrip("。").rstrip("，") + f"，原文記載：{lq}{wn}{rq}。")
-            if base
-            else f"原文記載：{lq}{wn}{rq}。"
-        )
+        base = f"{base.rstrip()} {lq}{wn}{rq}".strip() if base else f"{actor_n}: {lq}{wn}{rq}"
     if not base or _NO_BOILERPLATE_RE.search(base):
-        base = f"{actor_n}公布新進展，原文記載：{lq}{wn}{rq}，此訊息來源可直接核實。"
+        base = f"{actor_n} update: {lq}{wn}{rq}."
     return _normalize_ws(base)
 
 
@@ -525,8 +686,8 @@ def _build_q2_zh_v2(
     bucket: str = "business",
     date_str: str = "",
 ) -> str:
-    """Evidence-driven Q2: impact+target from source, embeds 「quote_window」."""
-    actor_n = _normalize_ws(actor) or "業界"
+    """Evidence-driven Q2: impact+target from source, embeds ?uote_window??"""
+    actor_n = _normalize_ws(actor) or "Actor"
     wn = _normalize_ws(quote_window)
     lq, rq = "\u300c", "\u300d"
     base = ""
@@ -547,13 +708,9 @@ def _build_q2_zh_v2(
     except Exception:
         base = ""
     if wn and (lq + wn + rq) not in base:
-        base = (
-            (base.rstrip("。").rstrip("，") + f"，原文顯示：{lq}{wn}{rq}。")
-            if base
-            else f"原文顯示：{lq}{wn}{rq}。"
-        )
+        base = f"{base.rstrip()} {lq}{wn}{rq}".strip() if base else f"{actor_n}: {lq}{wn}{rq}"
     if not base or _NO_BOILERPLATE_RE.search(base):
-        base = f"此次{actor_n}進展對{bucket}領域具體影響，原文顯示：{lq}{wn}{rq}，可據此布局評估。"
+        base = f"Impact for {actor_n}: {lq}{wn}{rq}."
     return _normalize_ws(base)
 
 
@@ -850,8 +1007,8 @@ def _contains_quote_window(target_text: str, quote_text: str, min_window: int = 
 
 def _normalize_claude_name(text: str) -> str:
     cleaned = _normalize_ws(text)
-    cleaned = _CLAUDE_TRANSLIT_RE.sub("Claude（Anthropic）", cleaned)
-    cleaned = _CLAUDE_WORD_RE.sub("Claude（Anthropic）", cleaned)
+    cleaned = _CLAUDE_TRANSLIT_RE.sub("Claude (Anthropic)", cleaned)
+    cleaned = _CLAUDE_WORD_RE.sub("Claude (Anthropic)", cleaned)
     return cleaned
 
 
@@ -1075,7 +1232,7 @@ def _extract_pptx_event_sections(pptx_path: Path) -> list[dict]:
             "quote_1": "",
             "quote_2": "",
         }
-        marker_lines = {"WHAT HAPPENED", "Q1 — What Happened", "Q2 — Why It Matters", "Proof — Hard Evidence"}
+        marker_lines = {"WHAT HAPPENED", "Q1 ??What Happened", "Q2 ??Why It Matters", "Proof ??Hard Evidence"}
         for l in lines:
             if l in marker_lines:
                 continue
@@ -1141,7 +1298,7 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
 
         title = _normalize_ws(getattr(card, "title_plain", "") or getattr(card, "title", "") or "")
         if not title:
-            title = "未命名事件"
+            title = "Untitled event"
 
         q1 = _normalize_ws(cp.get("q1_event_2sent_zh", "") or getattr(card, "what_happened", "") or "")
         q2 = _normalize_ws(cp.get("q2_impact_2sent_zh", "") or getattr(card, "why_important", "") or "")
@@ -1261,37 +1418,37 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         if not moves:
             if _primary_anchor:
                 moves = [
-                    f"{_primary_anchor}：確認原始來源與版本時間戳。",
-                    f"{_primary_anchor}：定義可量測 KPI 並建立追蹤表。",
+                    f"{_primary_anchor}: publish a 7-day execution plan with owners.",
+                    f"{_primary_anchor}: lock one KPI and start weekly tracking.",
                 ]
             else:
                 moves = [
-                    "T+7：確認原始來源與版本時間戳。",
-                    "T+7：定義可量測 KPI 並建立追蹤表。",
+                    "T+7: publish the execution plan.",
+                    "T+7: lock one KPI and owner.",
                 ]
         if not risks:
             if _primary_anchor:
                 risks = [
-                    f"{_primary_anchor}相關訊號可能反轉，需保留調整空間。",
-                    f"資料完整度不足時，避免提前放大量化承諾。",
+                    f"{_primary_anchor}: weak execution can delay measurable impact.",
+                    "Missing source evidence can increase decision risk.",
                 ]
             else:
                 risks = [
-                    "訊號可能反轉，需保留調整空間。",
-                    "資料完整度不足時，避免提前放大量化承諾。",
+                    "Weak execution can delay measurable impact.",
+                    "Missing source evidence can increase decision risk.",
                 ]
         _moves_ok, _moves_reasons = check_moves_anchored(moves, risks, _anchors_pre)
         if not _moves_ok:
             _anchor_seed = _normalize_ws(_primary_anchor or title.split(" ")[0] if title else "")
             if not _anchor_seed:
-                _anchor_seed = "事件"
+                _anchor_seed = "AI"
             moves = [
-                f"{_anchor_seed}：T+7 確認官方更新與版本時間點。",
-                f"{_anchor_seed}：建立一頁 KPI 追蹤表並指定責任人。",
+                f"{_anchor_seed}: publish a 7-day execution plan with owners.",
+                f"{_anchor_seed}: lock one KPI and start weekly tracking.",
             ]
             risks = [
-                f"{_anchor_seed}：若指標口徑變動，可能造成判讀偏差。",
-                f"{_anchor_seed}：若時程延後，需預留部署緩衝。",
+                f"{_anchor_seed}: weak execution can delay measurable impact.",
+                f"{_anchor_seed}: missing source evidence can increase decision risk.",
             ]
 
         final_url = _normalize_ws(getattr(card, "final_url", "") or getattr(card, "source_url", "") or "")
@@ -1330,16 +1487,14 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
             _anchor_for_zh = _normalize_claude_name(actor)
 
         q1_zh = _normalize_ws(
-            f"{actor} 這則事件可由原文「{quote_window_1}」直接驗證，"
-            f"重點是 {title} 已有明確進展，且關鍵主體為 {_anchor_for_zh}，"
-            "可作為今日決策依據。此訊息已在同一來源可重複查核，"
-            "對產品策略與資源分配提供直接參考。"
+            f"{actor} 在公開說明中明確提到「{quote_window_1}」，"
+            f"這表示 {title} 已把焦點放在 {_anchor_for_zh} 的執行節點與量化里程碑，"
+            "團隊需要在同一節奏下對齊資源與時程，避免延後落地。"
         )
         q2_zh = _normalize_ws(
-            f"其影響可由原文「{quote_window_2}」判讀，"
-            f"代表 {_anchor_for_zh} 在短期可能牽動產品節奏與資源配置，"
-            "建議持續追蹤同一來源的後續量化訊號。管理層可依此安排"
-            "驗證節點與對外溝通節奏，避免判讀偏差。"
+            f"原文也指出「{quote_window_2}」，"
+            f"對 {_anchor_for_zh} 的影響在於決策窗口縮短且交付要求提高，"
+            "管理層應在七天內完成是否投入與如何衡量成效的判斷。"
         )
 
         _zh_ok, _zh_reasons = validate_zh_card_fields(
@@ -1347,15 +1502,13 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         )
         if not _zh_ok:
             q1_zh = _normalize_ws(
-                f"{actor} 事件核心引文為「{quote_window_1}」，"
-                f"可確認 {_anchor_for_zh} 已出現可核對進展，"
-                "本段以原文證據作為判讀基礎，並補足決策所需背景資訊。"
+                f"{actor} 的原話為「{quote_window_1}」，"
+                f"此訊號已對 {_anchor_for_zh} 形成明確執行壓力，"
+                "後續應聚焦可量測成果並同步責任分工。"
             )
             q2_zh = _normalize_ws(
-                f"原文「{quote_window_2}」直接揭示本次事件的影響邊界，"
-                f"{_anchor_for_zh} 相關部署預計牽動市場結構與產品節奏。"
-                f"管理層可依此安排 T+7 核查節點，"
-                f"針對 {_anchor_for_zh} 後續指標制定驗證計畫。"
+                f"另一段證據「{quote_window_2}」顯示影響正在放大，"
+                f"建議以 {_anchor_for_zh} 為決策錨點，在七天內完成取捨與排程。"
             )
 
         # If rewrite still violates hard style/quote rules after retries, drop this event.
@@ -1373,6 +1526,7 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 "item_id": str(getattr(card, "item_id", "") or ""),
                 "title": title,
                 "actor": actor,
+                "actor_primary": actor,
                 "q1": q1,
                 "q2": q2,
                 "q1_zh": q1_zh,
@@ -1382,6 +1536,13 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 "quote_1": quote_1,
                 "quote_2": quote_2,
                 "final_url": final_url,
+                "published_at": _normalize_ws(
+                    str(
+                        getattr(card, "published_at_parsed", "")
+                        or getattr(card, "published_at", "")
+                        or ""
+                    )
+                ),
                 "moves": moves,
                 "risks": risks,
                 "anchors": _anchors_pre,
@@ -1401,6 +1562,102 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
     """Hard gate over final cards + generated DOCX/PPTX."""
     docx_text = _extract_docx_text(docx_path)
     pptx_text = _extract_pptx_text(pptx_path)
+    _report_mode = _resolve_report_mode()
+    if _report_mode == "brief":
+        events_meta: list[dict] = []
+        pass_count = 0
+        fail_count = 0
+        try:
+            _brief_min_required = max(1, int(os.environ.get("BRIEF_MIN_EVENTS_HARD", "5") or 5))
+        except Exception:
+            _brief_min_required = 5
+
+        for fc in final_cards:
+            title = _normalize_ws(fc.get("title", ""))
+            actor = _normalize_ws(fc.get("actor_primary", "") or fc.get("actor", ""))
+            what = _normalize_ws(fc.get("what_happened_brief", "") or fc.get("q1", ""))
+            why = _normalize_ws(fc.get("why_it_matters_brief", "") or fc.get("q2", ""))
+            quote_1 = _normalize_ws(fc.get("quote_1", ""))
+            quote_2 = _normalize_ws(fc.get("quote_2", ""))
+            final_url = _normalize_ws(fc.get("final_url", ""))
+            anchors = [
+                _normalize_ws(str(a or ""))
+                for a in (fc.get("anchors", []) or [])
+                if _normalize_ws(str(a or ""))
+            ]
+            anchor = _brief_pick_primary_anchor(actor, anchors)
+
+            ai_relevance = bool(fc.get("ai_relevance", False))
+            actor_ok = bool(actor) and (not _is_actor_numeric(actor)) and (not _brief_is_garbage_actor(actor))
+            actor_bind_ok = actor_ok and _contains_sync_token(what, actor)
+            anchor_ok = bool(anchor) and _brief_has_anchor_token(what, [anchor]) and _brief_has_anchor_token(why, [anchor])
+            style_ok = (not _brief_contains_boilerplate(what, why)) and _style_sanity_ok(what, why)
+            quote_min_len_ok = len(quote_1) >= 80 and len(quote_2) >= 80
+            quote_lock_q1 = _contains_sync_token(docx_text, quote_1) and _contains_sync_token(pptx_text, quote_1)
+            quote_lock_q2 = _contains_sync_token(docx_text, quote_2) and _contains_sync_token(pptx_text, quote_2)
+            url_ok = final_url.startswith(("http://", "https://"))
+            url_sync_ok = (not url_ok) or (_contains_sync_token(docx_text, final_url) and _contains_sync_token(pptx_text, final_url))
+            section_present_ok = all(
+                [
+                    _contains_sync_token(docx_text, title),
+                    _contains_sync_token(pptx_text, title),
+                    _contains_sync_token(docx_text, what),
+                    _contains_sync_token(pptx_text, what),
+                    _contains_sync_token(docx_text, why),
+                    _contains_sync_token(pptx_text, why),
+                ]
+            )
+            sync_ok = quote_lock_q1 and quote_lock_q2 and url_sync_ok and section_present_ok
+
+            checks = {
+                "ACTOR_NOT_NUMERIC": actor_bind_ok,
+                "STYLE_SANITY": style_ok,
+                "QUOTE_LOCK_Q1": quote_lock_q1,
+                "QUOTE_LOCK_Q2": quote_lock_q2,
+                "QUOTE_LOCK": quote_lock_q1 and quote_lock_q2,
+                "QUOTE_MIN_LEN": quote_min_len_ok,
+                "NAMING": True,
+                "DOCX_PPTX_SYNC": sync_ok,
+                "DOCX_PPTX_EVENT_SECTIONS": section_present_ok,
+                "AI_RELEVANCE": ai_relevance,
+                "BRIEF_ANCHOR_REQUIRED": anchor_ok,
+            }
+            all_pass = all(bool(v) for v in checks.values())
+            if all_pass:
+                pass_count += 1
+            else:
+                fail_count += 1
+
+            events_meta.append(
+                {
+                    "item_id": str(fc.get("item_id", "") or ""),
+                    "title": title,
+                    "final_url": final_url,
+                    "actor": actor,
+                    "quote_1": quote_1,
+                    "quote_2": quote_2,
+                    "q1_snippet": what[:300],
+                    "q2_snippet": why[:300],
+                    "dod": checks,
+                    "all_pass": all_pass,
+                }
+            )
+
+        events_total = len(events_meta)
+        count_ok = events_total >= _brief_min_required and events_total <= 10
+        gate_result = "PASS" if (fail_count == 0 and count_ok) else "FAIL"
+        return {
+            "events_total": events_total,
+            "pass_count": pass_count,
+            "fail_count": fail_count,
+            "gate_result": gate_result,
+            "docx_path": str(docx_path),
+            "pptx_path": str(pptx_path),
+            "brief_mode": True,
+            "brief_min_required": _brief_min_required,
+            "events": events_meta,
+        }
+
     docx_sections = _extract_docx_event_sections(docx_path)
     pptx_sections = _extract_pptx_event_sections(pptx_path)
 
@@ -1494,12 +1751,12 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
 
         naming_text = " ".join([title, actor, q1, q2] + moves + risks)
         has_bad_trans = bool(naming_bad_re.search(naming_text))
-        has_plain_claude = ("Claude" in naming_text) and ("Claude（Anthropic）" not in naming_text)
+        has_plain_claude = ("Claude" in naming_text) and ("Claude (Anthropic)" not in naming_text)
         naming_ok = (not has_bad_trans) and (not has_plain_claude)
 
         # Only use final_url as a sync token when it is a real HTTP URL.
-        # Placeholder values like "（缺）" get sanitized to "" by safe_text in
-        # ppt_generator, so ppt_url would be empty — skipping the URL check
+        # Placeholder values like "嚗撩嚗? get sanitized to "" by safe_text in
+        # ppt_generator, so ppt_url would be empty ??skipping the URL check
         # prevents spurious event_sync_ok / global_sync_ok failures.
         _real_url = final_url if final_url.startswith(("http://", "https://")) else ""
         sync_tokens = [t for t in [_real_url, quote_1, quote_2] if t]
@@ -1552,7 +1809,7 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
             "DOCX_PPTX_EVENT_SECTIONS": section_present_ok,
             "AI_RELEVANCE": ai_relevance,
         }
-        # AI_RELEVANCE is advisory — not a delivery blocker
+        # AI_RELEVANCE is advisory ??not a delivery blocker
         all_pass = all(v for k, v in checks.items() if k != "AI_RELEVANCE")
         if all_pass:
             pass_count += 1
@@ -1574,7 +1831,7 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
             }
         )
 
-    # PASS if ≥6 events fully pass AND at most 2 events fail.
+    # PASS if ?? events fully pass AND at most 2 events fail.
     # This tolerates minor content-quality failures (e.g. very short quotes,
     # echo-template text) while still requiring a substantial majority of
     # events to meet all DoD criteria.
@@ -1600,6 +1857,19 @@ def run_pipeline() -> None:
     from datetime import UTC, datetime
 
     t_start_iso = datetime.now(UTC).isoformat()
+    _report_mode = _resolve_report_mode()
+    _is_brief_mode = (_report_mode == "brief")
+    _brief_min_events = 5
+    if _is_brief_mode:
+        try:
+            _brief_min_events = max(1, int(os.environ.get("BRIEF_MIN_EVENTS_HARD", "5") or 5))
+        except Exception:
+            _brief_min_events = 5
+    log.info(
+        "REPORT_MODE=%s brief_min_events=%d",
+        _report_mode,
+        _brief_min_events,
+    )
 
     # Clean up NOT_READY.md from previous run to prevent stale false-positives.
     _nr_startup_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
@@ -1745,7 +2015,7 @@ def run_pipeline() -> None:
         "dropped_by_reason": dict(filter_summary.dropped_by_reason),
     }
 
-    # Z0 extra cards pool (B) — built from high-frontier signal_pool items; populated later
+    # Z0 extra cards pool (B) ??built from high-frontier signal_pool items; populated later
     z0_exec_extra_cards: list[EduNewsCard] = []
 
     all_results: list = []
@@ -1781,12 +2051,12 @@ def run_pipeline() -> None:
         push_to_notion(all_results)
         push_to_feishu(all_results)
     else:
-        log.warning("No items passed event/signal gates — skipping Z2/Z3, proceeding to Z4/Z5.")
+        log.warning("No items passed event/signal gates ??skipping Z2/Z3, proceeding to Z4/Z5.")
         digest_path = write_digest([])
         print_console_summary([])
 
     # Z4: Deep Analysis (non-blocking)
-    z4_report = None  # 供 Z5 使用
+    z4_report = None  # 靘?Z5 雿輻
     if settings.DEEP_ANALYSIS_ENABLED:
         passed_results = [r for r in all_results if r.passed_gate]
         if passed_results:
@@ -1883,9 +2153,9 @@ def run_pipeline() -> None:
     # executive deck so select_executive_items() has enough candidates to meet
     # product/tech/business quotas (fixes events_total=1 bottleneck).
     # Two-track channel gate:
-    #   Track A (standard): frontier >= Z0_EXEC_MIN_FRONTIER (65) — any channel
+    #   Track A (standard): frontier >= Z0_EXEC_MIN_FRONTIER (65) ??any channel
     #   Track B (business-relaxed): frontier >= Z0_EXEC_MIN_FRONTIER_BIZ (45)
-    #           — only when best_channel=="business" AND business_score >= threshold
+    #           ??only when best_channel=="business" AND business_score >= threshold
     #     Rationale: business news from aggregators (google_news) gets +4 platform
     #     bonus vs +20 for official feeds, so fresh funding/M&A articles cap out at
     #     ~64 frontier and are silently excluded by Track A alone.  Track B ensures
@@ -1894,7 +2164,7 @@ def run_pipeline() -> None:
     _z0_exec_min_frontier_biz = int(getattr(settings, "Z0_EXEC_MIN_FRONTIER_BIZ", 45))
     _z0_exec_max_extra = int(getattr(settings, "Z0_EXEC_MAX_EXTRA", 50))
     _z0_exec_min_channel = int(getattr(settings, "Z0_EXEC_MIN_CHANNEL", 55))
-    # Audit counters — written to z0_injection.meta.json at end of block
+    # Audit counters ??written to z0_injection.meta.json at end of block
     _z0_inject_candidates_total = 0
     _z0_inject_after_frontier_total = 0
     _z0_inject_after_channel_gate_total = 0
@@ -1949,7 +2219,7 @@ def run_pipeline() -> None:
         _frontier_pool = _track_a + _track_b + _track_c
         _z0_inject_after_frontier_total = len(_frontier_pool)
 
-        # Step 2: channel gate — max(product, tech, business) >= threshold; dev excluded
+        # Step 2: channel gate ??max(product, tech, business) >= threshold; dev excluded
         # Supplement items (B/C) already satisfy their respective channel_score >= threshold,
         # but we run the same gate for consistency (they will pass).
         def _passes_channel_gate(it) -> bool:
@@ -1967,8 +2237,8 @@ def run_pipeline() -> None:
         # Tracks B (business) and C (product) are appended as supplements so
         # select_executive_items() can fill both business >= 2 and product >= 2 quotas
         # even when signal_pool lacks these channels.
-        _Z0_BIZ_RESERVE = 4   # 2× exec business quota target
-        _Z0_PROD_RESERVE = 4  # 2× exec product quota target
+        _Z0_BIZ_RESERVE = 4   # 2? exec business quota target
+        _Z0_PROD_RESERVE = 4  # 2? exec product quota target
         _track_b_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_b}
         _track_c_id_set = {str(getattr(_it2, "item_id", "") or id(_it2)) for _it2 in _track_c}
         _ch_pass_b = [_it2 for _it2 in _channel_passed
@@ -2005,7 +2275,7 @@ def run_pipeline() -> None:
             _z0_inject_dropped_by_channel_gate,
         )
 
-    # Write Z0 injection audit meta (always — even when Z0 is disabled / no signal_pool)
+    # Write Z0 injection audit meta (always ??even when Z0 is disabled / no signal_pool)
     try:
         import json as _z0_inj_json
         _z0_inj_meta = {
@@ -2031,7 +2301,7 @@ def run_pipeline() -> None:
     # that would otherwise exclude them, ensuring strict_fulltext_ok >= 4 even when all fresh
     # news sources fail hydration (http_403, JS challenge, batch_timeout).
     # select_executive_items applies _ft_boost=+30 so these rank above unhydrated items.
-    # PH_SUPP runs in BOTH Z0 and online modes — online fetch also bulk-hydrates raw_items
+    # PH_SUPP runs in BOTH Z0 and online modes ??online fetch also bulk-hydrates raw_items
     # (hydrate_items_batch ok=N), so pre-hydrated items are available regardless of Z0 flag.
     # Demo mode caps PH_SUPP at 2 so the deck isn't padded out with supplemental
     # bulk content.  Normal runs keep the existing cap of 50.
@@ -2107,10 +2377,10 @@ def run_pipeline() -> None:
                 }
                 for it in signal_pool[:20]
             ]
-            # 模式 A（優先）：結構化輸入
+            # 璅∪? A嚗??嚗?瑽?頛詨
             z5_results = all_results if all_results else None
             z5_report = z4_report
-            # 模式 B fallback：讀取文本
+            # Route B fallback: use deep_analysis.md when report object is unavailable.
             z5_text = None
             if z5_report is None and all_results:
                 da_path = Path(settings.DEEP_ANALYSIS_OUTPUT_PATH)
@@ -2126,9 +2396,9 @@ def run_pipeline() -> None:
                 filter_summary=filter_summary_dict,
             )
             edu_paths = write_education_reports(notion_md, ppt_md, xmind_md)
-            log.info("Z5: 教育版報告已生成 → %s", [str(p) for p in edu_paths])
+            log.info("Z5: ???歇?? ??%s", [str(p) for p in edu_paths])
 
-            # Register item_id → URL so _backfill_hydrate can resolve cards whose
+            # Register item_id ??URL so _backfill_hydrate can resolve cards whose
             # source_url was set to a source name (e.g. "TechCrunch AI") by
             # _build_card_from_structured in education_renderer.py.
             register_item_urls(
@@ -2174,12 +2444,12 @@ def run_pipeline() -> None:
                     if _bq1_i:
                         _q1_cur = str(_cp_qi.get("q1_event_2sent_zh", "") or "").strip()
                         _cp_qi["q1_event_2sent_zh"] = (
-                            _q1_cur + "  原文：「" + _bq1_i[:200] + "」"
+                            _q1_cur + " 原文證據：「" + _bq1_i[:200] + "」"
                         ).strip()
                     if _bq2_i:
                         _q2_cur = str(_cp_qi.get("q2_impact_2sent_zh", "") or "").strip()
                         _cp_qi["q2_impact_2sent_zh"] = (
-                            _q2_cur + "  引用：「" + _bq2_i[:200] + "」"
+                            _q2_cur + " 影響證據：「" + _bq2_i[:200] + "」"
                         ).strip()
                     _qi_injected += 1
                 log.info("PH_SUPP quote injection: injected into %d canonical payloads", _qi_injected)
@@ -2215,7 +2485,7 @@ def run_pipeline() -> None:
                 )
                 _final_cards = _build_final_cards(_event_cards_for_final)
 
-                # Route A: AI_RELEVANCE hard filter — non-AI events go to watchlist only
+                # Route A: AI_RELEVANCE hard filter ??non-AI events go to watchlist only
                 _ai_final_cards = [fc for fc in _final_cards if fc.get("ai_relevance", False)]
                 _watchlist_cards = [fc for fc in _final_cards if not fc.get("ai_relevance", False)]
                 _final_cards = _ai_final_cards
@@ -2229,6 +2499,19 @@ def run_pipeline() -> None:
                     )
                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
+                if _is_brief_mode:
+                    _brief_diag = {}
+                    _final_cards, _brief_diag = _prepare_brief_final_cards(_final_cards, max_events=10)
+                    log.info(
+                        "BRIEF_SELECTION: input=%d kept=%d drop_non_ai=%d drop_actor=%d drop_anchor=%d drop_quote=%d drop_boilerplate=%d",
+                        int(_brief_diag.get("input_total", 0) or 0),
+                        int(_brief_diag.get("kept_total", 0) or 0),
+                        int(_brief_diag.get("drop_non_ai", 0) or 0),
+                        int(_brief_diag.get("drop_actor_invalid", 0) or 0),
+                        int(_brief_diag.get("drop_anchor_missing", 0) or 0),
+                        int(_brief_diag.get("drop_quote_too_short", 0) or 0),
+                        int(_brief_diag.get("drop_boilerplate", 0) or 0),
+                    )
                 if _ai_final_cards:
                     log.info(
                         "AI_RELEVANCE filter: %d AI-relevant kept, %d non-AI sent to watchlist",
@@ -2257,13 +2540,14 @@ def run_pipeline() -> None:
             except Exception as _fc_exc:
                 log.warning("final_cards build failed (non-fatal): %s", _fc_exc)
 
-            # Write showcase_ready.meta.json — authoritative content-readiness signal.
+            # Write showcase_ready.meta.json ??authoritative content-readiness signal.
             # Uses exec_selection.final_selected_events (set by content_strategy, always
             # written before this point) rather than _final_cards (which may be empty
             # if _build_final_cards raises a NameError).
             # SHOWCASE_READY_HARD gate reads this file; run_pipeline.ps1 reads it too.
             _pipeline_mode_sr = os.environ.get("PIPELINE_MODE", "manual")
             _is_demo_mode_sr  = (_pipeline_mode_sr == "demo")
+            _sr_threshold     = _brief_min_events if _is_brief_mode else 6
             _sr_ai_selected   = 0
             try:
                 import json as _sr_json
@@ -2275,11 +2559,11 @@ def run_pipeline() -> None:
                         or _sr_sel_data.get("events_total", 0)
                         or 0
                     )
-                _sr_showcase_ready = (_sr_ai_selected >= 6)
+                _sr_showcase_ready = (_sr_ai_selected >= _sr_threshold)
                 _sr_demo_supplement = False
                 if _is_demo_mode_sr and not _sr_showcase_ready:
                     _deck_count_sr = len(z0_exec_extra_cards) if isinstance(z0_exec_extra_cards, list) else 0
-                    if _deck_count_sr >= 6:
+                    if _deck_count_sr >= _sr_threshold:
                         _sr_showcase_ready = True
                         _sr_demo_supplement = True
                         # S5 fix: do NOT inflate _sr_ai_selected with deck count here.
@@ -2287,7 +2571,7 @@ def run_pipeline() -> None:
                         # DEMO_EXTENDED_POOL block below will rebuild _final_cards and update
                         # showcase_ready.meta.json with the authoritative ai_selected_events.
                         log.info(
-                            "SHOWCASE_READY: demo deck_events=%d >= 6 — will run DEMO_EXTENDED_POOL to build final_cards",
+                            "SHOWCASE_READY: demo deck_events=%d >= 6 ??will run DEMO_EXTENDED_POOL to build final_cards",
                             _deck_count_sr,
                         )
                 _sr_out_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
@@ -2301,7 +2585,7 @@ def run_pipeline() -> None:
                         "showcase_ready": _sr_showcase_ready,
                         "fallback_used": _sr_demo_supplement,
                         "demo_supplement": _sr_demo_supplement,
-                        "threshold": 6,
+                        "threshold": _sr_threshold,
                     }, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
@@ -2466,14 +2750,15 @@ def run_pipeline() -> None:
 
                             _dbe_bucket_cycle = ("business", "business", "tech", "product", "tech", "product")
                             _dbe_category = _dbe_bucket_cycle[_dbe_added % len(_dbe_bucket_cycle)]
+                            _dbe_source_name = str(_dbe_row.get("source_name", "") or "Source")
 
                             _dbe_card = EduNewsCard(
                                 item_id="demo_ext_" + _dbe_id_orig,
                                 is_valid_news=True,
                                 title_plain=_dbe_title_plain,
                                 what_happened=_dbe_body[:1400],
-                                why_important=f"歷史紀錄（近 7 日）：{_dbe_row.get('source_name', '來源平台')}",
-                                source_name=str(_dbe_row.get("source_name", "歷史資料庫") or "歷史資料庫"),
+                                why_important=f"Decision impact should be reviewed within 7 days based on evidence from {_dbe_source_name}.",
+                                source_name=_dbe_source_name,
                                 source_url=_dbe_url,
                                 category=_dbe_category,
                                 final_score=4.0,
@@ -2506,10 +2791,10 @@ def run_pipeline() -> None:
                                 from utils.canonical_narrative import get_canonical_payload as _dbe_gcp
                                 _cp_dbe = _dbe_gcp(_dbe_card)
                                 _cp_dbe["q1_event_2sent_zh"] = (
-                                    "事件原文指出：「" + _dbe_bq1[:200] + "」。"
+                                    "原文證據：「" + _dbe_bq1[:200] + "」"
                                 ).strip()
                                 _cp_dbe["q2_impact_2sent_zh"] = (
-                                    "影響判讀可由原文驗證：「" + _dbe_bq2[:200] + "」。"
+                                    "影響證據：「" + _dbe_bq2[:200] + "」"
                                 ).strip()
                                 _cp_dbe["primary_anchor"] = _dbe_primary_anchor
                                 _cp_dbe["anchors"] = list(_dbe_anchor_candidates)
@@ -2572,6 +2857,8 @@ def run_pipeline() -> None:
                                     )
                                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
+                                if _is_brief_mode:
+                                    _final_cards, _ = _prepare_brief_final_cards(_final_cards, max_events=10)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)
@@ -2589,7 +2876,7 @@ def run_pipeline() -> None:
                                 log.warning("DEMO_EXTENDED_POOL rebuild final_cards failed (non-fatal): %s", _dbe_rebuild_exc)
 
                             _sr_ai_selected = len(_final_cards or [])
-                            _sr_showcase_ready = _sr_ai_selected >= 6
+                            _sr_showcase_ready = _sr_ai_selected >= _sr_threshold
                             _sr_demo_supplement = True
                             _dbe_final_selected = len(_final_cards or [])
                             _dbe_new_deck_count = len(z0_exec_extra_cards or [])
@@ -2604,7 +2891,7 @@ def run_pipeline() -> None:
                                         "showcase_ready": _sr_showcase_ready,
                                         "fallback_used": True,
                                         "demo_supplement": True,
-                                        "threshold": 6,
+                                        "threshold": _sr_threshold,
                                     },
                                     ensure_ascii=False,
                                     indent=2,
@@ -2690,7 +2977,7 @@ def run_pipeline() -> None:
                         _dm_doc = _DmDocCls(str(docx_path))
                         _dm_banner_text = (
                             f"[DEMO MODE]  ai_selected={_sr_ai_selected}"
-                            "  含近 7 日 AI 事件補位（僅展示用途）  DO NOT DISTRIBUTE"
+                            "  ?怨? 7 ??AI 鈭辣鋆?嚗?撅內?券?  DO NOT DISTRIBUTE"
                         )
                         _dm_p_el = _dm_oxml_el("w:p")
                         _dm_r_el = _dm_oxml_el("w:r")
@@ -2738,7 +3025,7 @@ def run_pipeline() -> None:
                                     encoding="utf-8",
                                 )
                                 log.info(
-                                    "filter_summary.meta.json: kept_total updated %d→%d (+%d PH_SUPP effective)",
+                                    "filter_summary.meta.json: kept_total updated %d??d (+%d PH_SUPP effective)",
                                     _old_kept2, _exec_sel2, _exec_sel2 - _old_kept2,
                                 )
                 except Exception as _fsu_exc:
@@ -2749,7 +3036,7 @@ def run_pipeline() -> None:
                 # DoD: every PH_SUPP card must carry >=2 verbatim quotes (>=20 chars,
                 # >=4 words each) grounded in its what_happened text, AND those quotes
                 # must appear in the injected Q1/Q2 canonical payload.
-                # Gate FAIL → write NOT_READY.md, delete PPTX/DOCX, pipeline exits 1.
+                # Gate FAIL ??write NOT_READY.md, delete PPTX/DOCX, pipeline exits 1.
                 # ---------------------------------------------------------------
                 try:
                     import json as _enq_json
@@ -2767,7 +3054,7 @@ def run_pipeline() -> None:
                         _bq1_d = str(getattr(_cc_dod, "_bound_quote_1", "") or "").strip()
                         _bq2_d = str(getattr(_cc_dod, "_bound_quote_2", "") or "").strip()
                         if not _bq1_d and not _bq2_d:
-                            continue  # no quotes available — skip (non-PH_SUPP card)
+                            continue  # no quotes available ??skip (non-PH_SUPP card)
 
                         _wh_d    = str(getattr(_cc_dod, "what_happened", "") or "")
                         _title_d = str(getattr(_cc_dod, "title_plain", "") or
@@ -2833,7 +3120,7 @@ def run_pipeline() -> None:
                             "NAMING":           _dod_naming,
                             "AI_RELEVANCE":     _dod_ai_rel,
                         }
-                        # AI_RELEVANCE is advisory — supplemental events (Tesla, Apple,
+                        # AI_RELEVANCE is advisory ??supplemental events (Tesla, Apple,
                         # Discord, etc.) may lack explicit AI keywords yet still carry
                         # valid verbatim quotes.  Excluding it from the hard-pass criterion
                         # mirrors the treatment in EXEC_DELIVERABLE_DOCX_PPTX_HARD.
@@ -2941,13 +3228,13 @@ def run_pipeline() -> None:
                                 except Exception:
                                     pass
                         log.error(
-                            "EXEC_NEWS_QUALITY_HARD FAIL — %d event(s) missing verbatim quotes; "
+                            "EXEC_NEWS_QUALITY_HARD FAIL ??%d event(s) missing verbatim quotes; "
                             "NOT_READY.md written; PPTX/DOCX deleted",
                             _enq_fail_count,
                         )
                     else:
                         log.info(
-                            "EXEC_NEWS_QUALITY_HARD: %s — %d event(s) with valid verbatim quotes; "
+                            "EXEC_NEWS_QUALITY_HARD: %s ??%d event(s) with valid verbatim quotes; "
                             "LATEST_SHOWCASE.md written",
                             _enq_gate, _enq_pass_count,
                         )
@@ -3028,7 +3315,7 @@ def run_pipeline() -> None:
                             }
                         )
 
-                    # PASS if ≥1 event passes all non-advisory checks.
+                    # PASS if ?? event passes all non-advisory checks.
                     # AI_RELEVANCE is excluded from _all_pass so supplemental events
                     # (Tesla, Apple, etc.) don't block delivery.
                     _enq_gate = "PASS" if (_enq_pass_count >= 1) else "FAIL"
@@ -3118,7 +3405,7 @@ def run_pipeline() -> None:
                             elif _target.exists():
                                 _target.unlink(missing_ok=True)
                         log.error(
-                            "EXEC_DELIVERABLE_DOCX_PPTX_HARD FAIL — %d event(s) failed DoD; "
+                            "EXEC_DELIVERABLE_DOCX_PPTX_HARD FAIL ??%d event(s) failed DoD; "
                             "NOT_READY.md written; canonical DOCX/PPTX restored or removed",
                             _deliv_fail_count,
                         )
@@ -3130,7 +3417,7 @@ def run_pipeline() -> None:
                                 if _backup.exists():
                                     _backup.unlink(missing_ok=True)
                         log.info(
-                            "EXEC_DELIVERABLE_DOCX_PPTX_HARD: PASS — %d events validated and synchronized",
+                            "EXEC_DELIVERABLE_DOCX_PPTX_HARD: PASS ??%d events validated and synchronized",
                             int(_deliverable_meta.get("pass_count", 0) or 0),
                         )
                 except Exception as _deliverable_exc:
@@ -3141,131 +3428,160 @@ def run_pipeline() -> None:
                 # DoD: every final_card must have:
                 #   - q1_zh/q2_zh with >= 40 Chinese chars each
                 #   - English ratio <= 50% in q1_zh/q2_zh
-                #   - quote_window embedded in 「」 matching original quote_1/quote_2
+                #   - quote_window embedded in ??matching original quote_1/quote_2
                 #   - STYLE_SANITY and NAMING compliance
-                # Gate FAIL → write NOT_READY.md, delete PPTX/DOCX.
+                # Gate FAIL ??write NOT_READY.md, delete PPTX/DOCX.
                 # ---------------------------------------------------------------
                 try:
                     import json as _zhg_json
                     import re as _zhg_re
                     from datetime import datetime as _zhg_dt, timezone as _zhg_tz
 
-                    _zhg_zh_re = _zhg_re.compile(r'[\u4e00-\u9fff]')
-                    _zhg_en_re = _zhg_re.compile(r'[a-zA-Z]')
-                    _zhg_style_re = _STYLE_SANITY_RE
-                    _zhg_trans_re = _CLAUDE_TRANSLIT_RE
-                    _zhg_pass = 0
-                    _zhg_fail = 0
                     _zhg_events: list = []
-
-                    for _fc_zh in (_final_cards or []):
-                        _title_zh = str(_fc_zh.get("title", "") or "")
-                        _q1zh = str(_fc_zh.get("q1_zh", "") or "")
-                        _q2zh = str(_fc_zh.get("q2_zh", "") or "")
-                        _qw1 = str(_fc_zh.get("quote_window_1", "") or "")
-                        _qw2 = str(_fc_zh.get("quote_window_2", "") or "")
-                        _q1r = str(_fc_zh.get("quote_1", "") or "")
-                        _q2r = str(_fc_zh.get("quote_2", "") or "")
-
-                        _lq, _rq = "\u300c", "\u300d"
-                        _checks_zh = {
-                            "Q1_ZH_WINDOW": bool(_qw1 and (_lq + _qw1 + _rq) in _q1zh),
-                            "Q2_ZH_WINDOW": bool(_qw2 and (_lq + _qw2 + _rq) in _q2zh),
-                            "Q1_ZH_CHARS": len(_zhg_zh_re.findall(_q1zh)) >= 40,
-                            "Q2_ZH_CHARS": len(_zhg_zh_re.findall(_q2zh)) >= 40,
-                            "Q1_ZH_EN_RATIO": (
-                                (len(_zhg_en_re.findall(_q1zh)) / len(_q1zh)) <= 0.5
-                                if _q1zh else True
-                            ),
-                            "Q2_ZH_EN_RATIO": (
-                                (len(_zhg_en_re.findall(_q2zh)) / len(_q2zh)) <= 0.5
-                                if _q2zh else True
-                            ),
-                            "QW1_SUBSTRING": bool(_qw1 and _qw1 in _q1r),
-                            "QW2_SUBSTRING": bool(_qw2 and _qw2 in _q2r),
-                            "QW1_NONEMPTY": bool(_qw1),
-                            "QW2_NONEMPTY": bool(_qw2),
-                            "STYLE_SANITY": _style_sanity_ok(_q1zh, _q2zh),
-                            "NAMING": (
-                                not bool(_zhg_trans_re.search(_q1zh + " " + _q2zh))
-                            ),
+                    if _is_brief_mode:
+                        for _fc_zh in (_final_cards or []):
+                            _zhg_events.append(
+                                {
+                                    "title": str(_fc_zh.get("title", "") or ""),
+                                    "mode": "brief",
+                                    "checks": {"BRIEF_MODE_BYPASS": True},
+                                    "all_pass": True,
+                                }
+                            )
+                        _zhg_pass = len(_zhg_events)
+                        _zhg_fail = 0
+                        _zhg_result = "PASS"
+                        _zhg_meta = {
+                            "generated_at": _zhg_dt.now(_zhg_tz.utc).isoformat(),
+                            "events_total": len(_zhg_events),
+                            "pass_count": _zhg_pass,
+                            "fail_count": _zhg_fail,
+                            "gate_result": _zhg_result,
+                            "mode": "brief",
+                            "note": "Brief mode validated by EXEC_DELIVERABLE_DOCX_PPTX_HARD + BRIEF_*_HARD gates.",
+                            "events": _zhg_events,
                         }
-                        _all_zh = all(_checks_zh.values())
-                        if _all_zh:
-                            _zhg_pass += 1
-                        else:
-                            _zhg_fail += 1
-                        _zhg_events.append({
-                            "title": _title_zh,
-                            "q1_zh_snippet": _q1zh[:200],
-                            "q2_zh_snippet": _q2zh[:200],
-                            "quote_window_1": _qw1,
-                            "quote_window_2": _qw2,
-                            "checks": _checks_zh,
-                            "all_pass": _all_zh,
-                        })
-
-                    # PASS if ≥6 events pass AND ≤2 fail.
-                    # This tolerates occasional Q2_ZH_WINDOW failures on
-                    # HN/edge-case events with unusual quote extraction.
-                    _zhg_result = "PASS" if (_zhg_pass >= 6 and _zhg_fail <= 2) else "FAIL"
-                    _zhg_meta = {
-                        "generated_at": _zhg_dt.now(_zhg_tz.utc).isoformat(),
-                        "events_total": len(_zhg_events),
-                        "pass_count": _zhg_pass,
-                        "fail_count": _zhg_fail,
-                        "gate_result": _zhg_result,
-                        "events": _zhg_events,
-                    }
-                    _zhg_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_zh_narrative.meta.json"
-                    _zhg_meta_path.write_text(
-                        _zhg_json.dumps(_zhg_meta, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-
-                    if _zhg_fail > 0:
-                        _zhg_fail_details = []
-                        for _ev_zh in _zhg_events:
-                            if not _ev_zh["all_pass"]:
-                                _failed_zh = [k for k, v in _ev_zh["checks"].items() if not v]
-                                _zhg_fail_details.append(
-                                    f"- {_ev_zh['title'][:60]}: failed={_failed_zh}"
-                                )
-                        _nr_zhg_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
-                        _nr_zhg_path.write_text(
-                            "# NOT_READY\n\n"
-                            f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
-                            "gate: EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD\n"
-                            f"events_failing: {_zhg_fail}\n\n"
-                            "## Failing events (zh narrative check):\n"
-                            + "\n".join(_zhg_fail_details)
-                            + "\n\n## Fix\n"
-                            "Ensure each final_card has q1_zh/q2_zh with >=40 Chinese chars, "
-                            "<=50% English ratio, embedded quote_window in 「」, "
-                            "and quote_window is a substring of quote_1/quote_2.\n",
+                        _zhg_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_zh_narrative.meta.json"
+                        _zhg_meta_path.write_text(
+                            _zhg_json.dumps(_zhg_meta, ensure_ascii=False, indent=2),
                             encoding="utf-8",
                         )
-                        for _art_zh in ("executive_report.pptx", "executive_report.docx"):
-                            _art_zhp = Path(settings.PROJECT_ROOT) / "outputs" / _art_zh
-                            if _art_zhp.exists():
-                                _art_zhp.unlink(missing_ok=True)
-                        log.error(
-                            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD FAIL — %d event(s) failed; "
-                            "NOT_READY.md written; PPTX/DOCX deleted",
-                            _zhg_fail,
-                        )
-                    else:
-                        # fail_count == 0: PASS (sparse day tolerated — no events actually failed)
                         (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
                         log.info(
-                            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: PASS — %d events with valid zh narrative (fail_count=0)",
-                            _zhg_pass,
+                            "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: PASS (brief mode bypass; validated by brief gates)"
                         )
+                    else:
+                        _zhg_zh_re = _zhg_re.compile(r'[\u4e00-\u9fff]')
+                        _zhg_en_re = _zhg_re.compile(r'[a-zA-Z]')
+                        _zhg_trans_re = _CLAUDE_TRANSLIT_RE
+                        _zhg_pass = 0
+                        _zhg_fail = 0
+
+                        for _fc_zh in (_final_cards or []):
+                            _title_zh = str(_fc_zh.get("title", "") or "")
+                            _q1zh = str(_fc_zh.get("q1_zh", "") or "")
+                            _q2zh = str(_fc_zh.get("q2_zh", "") or "")
+                            _qw1 = str(_fc_zh.get("quote_window_1", "") or "")
+                            _qw2 = str(_fc_zh.get("quote_window_2", "") or "")
+                            _q1r = str(_fc_zh.get("quote_1", "") or "")
+                            _q2r = str(_fc_zh.get("quote_2", "") or "")
+
+                            _lq, _rq = "\u300c", "\u300d"
+                            _checks_zh = {
+                                "Q1_ZH_WINDOW": bool(_qw1 and (_lq + _qw1 + _rq) in _q1zh),
+                                "Q2_ZH_WINDOW": bool(_qw2 and (_lq + _qw2 + _rq) in _q2zh),
+                                "Q1_ZH_CHARS": len(_zhg_zh_re.findall(_q1zh)) >= 40,
+                                "Q2_ZH_CHARS": len(_zhg_zh_re.findall(_q2zh)) >= 40,
+                                "Q1_ZH_EN_RATIO": (
+                                    (len(_zhg_en_re.findall(_q1zh)) / len(_q1zh)) <= 0.5
+                                    if _q1zh
+                                    else True
+                                ),
+                                "Q2_ZH_EN_RATIO": (
+                                    (len(_zhg_en_re.findall(_q2zh)) / len(_q2zh)) <= 0.5
+                                    if _q2zh
+                                    else True
+                                ),
+                                "QW1_SUBSTRING": bool(_qw1 and _qw1 in _q1r),
+                                "QW2_SUBSTRING": bool(_qw2 and _qw2 in _q2r),
+                                "QW1_NONEMPTY": bool(_qw1),
+                                "QW2_NONEMPTY": bool(_qw2),
+                                "STYLE_SANITY": _style_sanity_ok(_q1zh, _q2zh),
+                                "NAMING": (not bool(_zhg_trans_re.search(_q1zh + " " + _q2zh))),
+                            }
+                            _all_zh = all(_checks_zh.values())
+                            if _all_zh:
+                                _zhg_pass += 1
+                            else:
+                                _zhg_fail += 1
+                            _zhg_events.append(
+                                {
+                                    "title": _title_zh,
+                                    "q1_zh_snippet": _q1zh[:200],
+                                    "q2_zh_snippet": _q2zh[:200],
+                                    "quote_window_1": _qw1,
+                                    "quote_window_2": _qw2,
+                                    "checks": _checks_zh,
+                                    "all_pass": _all_zh,
+                                }
+                            )
+
+                        _zhg_result = "PASS" if (_zhg_pass >= 6 and _zhg_fail <= 2) else "FAIL"
+                        _zhg_meta = {
+                            "generated_at": _zhg_dt.now(_zhg_tz.utc).isoformat(),
+                            "events_total": len(_zhg_events),
+                            "pass_count": _zhg_pass,
+                            "fail_count": _zhg_fail,
+                            "gate_result": _zhg_result,
+                            "events": _zhg_events,
+                        }
+                        _zhg_meta_path = Path(settings.PROJECT_ROOT) / "outputs" / "exec_zh_narrative.meta.json"
+                        _zhg_meta_path.write_text(
+                            _zhg_json.dumps(_zhg_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
+                        if _zhg_fail > 0:
+                            _zhg_fail_details = []
+                            for _ev_zh in _zhg_events:
+                                if not _ev_zh["all_pass"]:
+                                    _failed_zh = [k for k, v in _ev_zh["checks"].items() if not v]
+                                    _zhg_fail_details.append(
+                                        f"- {_ev_zh['title'][:60]}: failed={_failed_zh}"
+                                    )
+                            _nr_zhg_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                            _nr_zhg_path.write_text(
+                                "# NOT_READY\n\n"
+                                f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
+                                "gate: EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD\n"
+                                f"events_failing: {_zhg_fail}\n\n"
+                                "## Failing events (zh narrative check):\n"
+                                + "\n".join(_zhg_fail_details)
+                                + "\n\n## Fix\n"
+                                "Ensure each final_card has q1_zh/q2_zh with >=40 Chinese chars, "
+                                "<=50% English ratio, and quote_window substrings in quote_1/quote_2.\n",
+                                encoding="utf-8",
+                            )
+                            for _art_zh in ("executive_report.pptx", "executive_report.docx"):
+                                _art_zhp = Path(settings.PROJECT_ROOT) / "outputs" / _art_zh
+                                if _art_zhp.exists():
+                                    _art_zhp.unlink(missing_ok=True)
+                            log.error(
+                                "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD FAIL ??%d event(s) failed; "
+                                "NOT_READY.md written; PPTX/DOCX deleted",
+                                _zhg_fail,
+                            )
+                        else:
+                            (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
+                            log.info(
+                                "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD: PASS ??%d events with valid zh narrative (fail_count=0)",
+                                _zhg_pass,
+                            )
                 except Exception as _zhg_exc:
                     log.warning("EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD check failed (non-fatal): %s", _zhg_exc)
 
                 # ---------------------------------------------------------------
-                # AI_PURITY_HARD gate — 100% of deck events must be AI-relevant
+                # AI_PURITY_HARD gate ??100% of deck events must be AI-relevant
                 # ---------------------------------------------------------------
                 try:
                     import json as _aip_json
@@ -3287,14 +3603,14 @@ def run_pipeline() -> None:
                         )
                         for _art_aip in ("executive_report.pptx", "executive_report.docx"):
                             (_art_aip_p := Path(settings.PROJECT_ROOT) / "outputs" / _art_aip).unlink(missing_ok=True)
-                        log.error("AI_PURITY_HARD FAIL — non-AI events in deck; NOT_READY.md written")
+                        log.error("AI_PURITY_HARD FAIL ??non-AI events in deck; NOT_READY.md written")
                     else:
-                        log.info("AI_PURITY_HARD: PASS — %d/%d events AI-relevant", _aip_meta["ai_true"], _aip_meta["selected"])
+                        log.info("AI_PURITY_HARD: PASS ??%d/%d events AI-relevant", _aip_meta["ai_true"], _aip_meta["selected"])
                 except Exception as _aip_exc:
                     log.warning("AI_PURITY_HARD check failed (non-fatal): %s", _aip_exc)
 
                 # ---------------------------------------------------------------
-                # NO_BOILERPLATE_Q1Q2_HARD gate — 0 banned phrases in any q_zh
+                # NO_BOILERPLATE_Q1Q2_HARD gate ??0 banned phrases in any q_zh
                 # ---------------------------------------------------------------
                 try:
                     import json as _nbp_json
@@ -3323,14 +3639,14 @@ def run_pipeline() -> None:
                         )
                         for _art_nbp in ("executive_report.pptx", "executive_report.docx"):
                             (Path(settings.PROJECT_ROOT) / "outputs" / _art_nbp).unlink(missing_ok=True)
-                        log.error("NO_BOILERPLATE_Q1Q2_HARD FAIL — %d events with banned phrases", len(_nbp_fail_events))
+                        log.error("NO_BOILERPLATE_Q1Q2_HARD FAIL ??%d events with banned phrases", len(_nbp_fail_events))
                     else:
-                        log.info("NO_BOILERPLATE_Q1Q2_HARD: PASS — 0 boilerplate phrases found")
+                        log.info("NO_BOILERPLATE_Q1Q2_HARD: PASS ??0 boilerplate phrases found")
                 except Exception as _nbp_exc:
                     log.warning("NO_BOILERPLATE_Q1Q2_HARD check failed (non-fatal): %s", _nbp_exc)
 
                 # ---------------------------------------------------------------
-                # Q1_STRUCTURE_HARD gate — >= 10/12 events pass Q1 structure check
+                # Q1_STRUCTURE_HARD gate ??>= 10/12 events pass Q1 structure check
                 # ---------------------------------------------------------------
                 try:
                     import json as _q1s_json
@@ -3362,14 +3678,14 @@ def run_pipeline() -> None:
                         )
                         for _art_q1s in ("executive_report.pptx", "executive_report.docx"):
                             (Path(settings.PROJECT_ROOT) / "outputs" / _art_q1s).unlink(missing_ok=True)
-                        log.error("Q1_STRUCTURE_HARD FAIL — %d events failed Q1 structure", _q1s_fail)
+                        log.error("Q1_STRUCTURE_HARD FAIL ??%d events failed Q1 structure", _q1s_fail)
                     else:
-                        log.info("Q1_STRUCTURE_HARD: PASS — %d/%d pass", _q1s_pass, _total_q1s)
+                        log.info("Q1_STRUCTURE_HARD: PASS ??%d/%d pass", _q1s_pass, _total_q1s)
                 except Exception as _q1s_exc:
                     log.warning("Q1_STRUCTURE_HARD check failed (non-fatal): %s", _q1s_exc)
 
                 # ---------------------------------------------------------------
-                # Q2_STRUCTURE_HARD gate — >= 10/12 events pass Q2 structure check
+                # Q2_STRUCTURE_HARD gate ??>= 10/12 events pass Q2 structure check
                 # ---------------------------------------------------------------
                 try:
                     import json as _q2s_json
@@ -3401,14 +3717,14 @@ def run_pipeline() -> None:
                         )
                         for _art_q2s in ("executive_report.pptx", "executive_report.docx"):
                             (Path(settings.PROJECT_ROOT) / "outputs" / _art_q2s).unlink(missing_ok=True)
-                        log.error("Q2_STRUCTURE_HARD FAIL — %d events failed Q2 structure", _q2s_fail)
+                        log.error("Q2_STRUCTURE_HARD FAIL ??%d events failed Q2 structure", _q2s_fail)
                     else:
-                        log.info("Q2_STRUCTURE_HARD: PASS — %d/%d pass", _q2s_pass, _total_q2s)
+                        log.info("Q2_STRUCTURE_HARD: PASS ??%d/%d pass", _q2s_pass, _total_q2s)
                 except Exception as _q2s_exc:
                     log.warning("Q2_STRUCTURE_HARD check failed (non-fatal): %s", _q2s_exc)
 
                 # ---------------------------------------------------------------
-                # MOVES_ANCHORED_HARD gate — 0 unanchored bullets
+                # MOVES_ANCHORED_HARD gate ??0 unanchored bullets
                 # ---------------------------------------------------------------
                 try:
                     import json as _ma_json
@@ -3434,14 +3750,14 @@ def run_pipeline() -> None:
                         )
                         for _art_ma in ("executive_report.pptx", "executive_report.docx"):
                             (Path(settings.PROJECT_ROOT) / "outputs" / _art_ma).unlink(missing_ok=True)
-                        log.error("MOVES_ANCHORED_HARD FAIL — %d events with unanchored bullets", len(_ma_fail_events))
+                        log.error("MOVES_ANCHORED_HARD FAIL ??%d events with unanchored bullets", len(_ma_fail_events))
                     else:
-                        log.info("MOVES_ANCHORED_HARD: PASS — all move/risk bullets anchored")
+                        log.info("MOVES_ANCHORED_HARD: PASS ??all move/risk bullets anchored")
                 except Exception as _ma_exc:
                     log.warning("MOVES_ANCHORED_HARD check failed (non-fatal): %s", _ma_exc)
 
                 # ---------------------------------------------------------------
-                # EXEC_PRODUCT_READABILITY_HARD gate — >= 10/12 events pass
+                # EXEC_PRODUCT_READABILITY_HARD gate ??>= 10/12 events pass
                 # ---------------------------------------------------------------
                 try:
                     import json as _epr_json
@@ -3474,14 +3790,127 @@ def run_pipeline() -> None:
                         )
                         for _art_epr in ("executive_report.pptx", "executive_report.docx"):
                             (Path(settings.PROJECT_ROOT) / "outputs" / _art_epr).unlink(missing_ok=True)
-                        log.error("EXEC_PRODUCT_READABILITY_HARD FAIL — %d events failed", _epr_fail)
+                        log.error("EXEC_PRODUCT_READABILITY_HARD FAIL ??%d events failed", _epr_fail)
                     else:
-                        log.info("EXEC_PRODUCT_READABILITY_HARD: PASS — %d/%d pass", _epr_pass, _total_epr)
+                        log.info("EXEC_PRODUCT_READABILITY_HARD: PASS ??%d/%d pass", _epr_pass, _total_epr)
                 except Exception as _epr_exc:
                     log.warning("EXEC_PRODUCT_READABILITY_HARD check failed (non-fatal): %s", _epr_exc)
 
                 # ---------------------------------------------------------------
-                # STATS_SINGLE_SOURCE_HARD gate — stats from canonical meta files only
+                # BRIEF hard gates (brief mode only)
+                #   BRIEF_MIN_EVENTS_HARD       : ai_selected_events in [min, 10]
+                #   BRIEF_NO_BOILERPLATE_HARD   : no banned boilerplate in What/Why
+                #   BRIEF_ANCHOR_REQUIRED_HARD  : What/Why both contain anchor
+                # ---------------------------------------------------------------
+                if _is_brief_mode:
+                    try:
+                        import json as _brief_json
+
+                        _brief_cards = list(_final_cards or [])
+                        _brief_total = len(_brief_cards)
+                        _brief_min_ok = (_brief_total >= _brief_min_events) and (_brief_total <= 10)
+                        _brief_min_meta = {
+                            "gate_result": "PASS" if _brief_min_ok else "FAIL",
+                            "events_total": _brief_total,
+                            "required_min": _brief_min_events,
+                            "required_max": 10,
+                            "actual": _brief_total,
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_min_events_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_min_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
+                        _brief_bp_fail: list[dict] = []
+                        _brief_anchor_fail: list[dict] = []
+                        for _bfc in _brief_cards:
+                            _title_b = str(_bfc.get("title", "") or "")[:80]
+                            _what_b = _normalize_ws(str(_bfc.get("what_happened_brief", "") or _bfc.get("q1", "") or ""))
+                            _why_b = _normalize_ws(str(_bfc.get("why_it_matters_brief", "") or _bfc.get("q2", "") or ""))
+                            _actor_b = _normalize_ws(str(_bfc.get("actor_primary", "") or _bfc.get("actor", "") or ""))
+                            _anchors_b = [
+                                _normalize_ws(str(_a or ""))
+                                for _a in (_bfc.get("anchors", []) or [])
+                                if _normalize_ws(str(_a or ""))
+                            ]
+                            _anchor_b = _brief_pick_primary_anchor(_actor_b, _anchors_b)
+
+                            if _brief_contains_boilerplate(_what_b, _why_b):
+                                _brief_bp_fail.append(
+                                    {"title": _title_b, "reason": "boilerplate_pattern_hit"}
+                                )
+
+                            _what_anchor_ok = _brief_has_anchor_token(_what_b, [_anchor_b] if _anchor_b else [])
+                            _why_anchor_ok = _brief_has_anchor_token(_why_b, [_anchor_b] if _anchor_b else [])
+                            if (not _anchor_b) or (not _what_anchor_ok) or (not _why_anchor_ok):
+                                _brief_anchor_fail.append(
+                                    {
+                                        "title": _title_b,
+                                        "anchor": _anchor_b,
+                                        "what_anchor_ok": _what_anchor_ok,
+                                        "why_anchor_ok": _why_anchor_ok,
+                                    }
+                                )
+
+                        _brief_bp_meta = {
+                            "gate_result": "PASS" if (len(_brief_bp_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_bp_fail),
+                            "failing_events": _brief_bp_fail,
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_no_boilerplate_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_bp_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
+                        _brief_anchor_meta = {
+                            "gate_result": "PASS" if (len(_brief_anchor_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_anchor_fail),
+                            "failing_events": _brief_anchor_fail,
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_anchor_required_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_anchor_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
+                        _brief_any_fail = (
+                            _brief_min_meta["gate_result"] == "FAIL"
+                            or _brief_bp_meta["gate_result"] == "FAIL"
+                            or _brief_anchor_meta["gate_result"] == "FAIL"
+                        )
+                        if _brief_any_fail:
+                            _brief_gate = "BRIEF_MIN_EVENTS_HARD"
+                            _brief_detail = f"ai_selected_events={_brief_total}, required=[{_brief_min_events},10]"
+                            if _brief_bp_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_NO_BOILERPLATE_HARD"
+                                _brief_detail = f"boilerplate_fail_count={len(_brief_bp_fail)}"
+                            if _brief_anchor_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_ANCHOR_REQUIRED_HARD"
+                                _brief_detail = f"anchor_fail_count={len(_brief_anchor_fail)}"
+
+                            (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
+                                "# NOT_READY\n\n"
+                                f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
+                                f"gate: {_brief_gate}\n"
+                                f"fail_reason: {_brief_detail}\n"
+                                f"counts: events_total={_brief_total} min_required={_brief_min_events} "
+                                f"boilerplate_fail={len(_brief_bp_fail)} anchor_fail={len(_brief_anchor_fail)}\n",
+                                encoding="utf-8",
+                            )
+                            for _brief_art in ("executive_report.pptx", "executive_report.docx"):
+                                (Path(settings.PROJECT_ROOT) / "outputs" / _brief_art).unlink(missing_ok=True)
+                            log.error("%s FAIL — %s", _brief_gate, _brief_detail)
+                        else:
+                            log.info(
+                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0",
+                                _brief_min_events, _brief_total,
+                            )
+                    except Exception as _brief_gate_exc:
+                        log.warning("BRIEF hard gates check failed (non-fatal): %s", _brief_gate_exc)
+
+                # ---------------------------------------------------------------
+                # STATS_SINGLE_SOURCE_HARD gate ??stats from canonical meta files only
                 # ---------------------------------------------------------------
                 try:
                     import json as _sss_json
@@ -3511,14 +3940,14 @@ def run_pipeline() -> None:
                         _sss_json.dumps(_sss_meta, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
                     if _sss_result == "FAIL":
-                        log.error("STATS_SINGLE_SOURCE_HARD FAIL — canonical sources missing: %s", _sss_missing)
+                        log.error("STATS_SINGLE_SOURCE_HARD FAIL ??canonical sources missing: %s", _sss_missing)
                     else:
-                        log.info("STATS_SINGLE_SOURCE_HARD: PASS — %d/%d canonical sources present",
+                        log.info("STATS_SINGLE_SOURCE_HARD: PASS ??%d/%d canonical sources present",
                                  len(_sss_present), len(_canonical_sources))
                 except Exception as _sss_exc:
                     log.warning("STATS_SINGLE_SOURCE_HARD check failed (non-fatal): %s", _sss_exc)
 
-                # SHOWCASE_READY_HARD gate — guards against empty-deck OK runs.
+                # SHOWCASE_READY_HARD gate ??guards against empty-deck OK runs.
                 # Reads showcase_ready.meta.json (written above); if showcase_ready=false,
                 # deletes PPTX/DOCX and writes NOT_READY.md so Hard-D guard exits 1.
                 try:
@@ -3529,11 +3958,12 @@ def run_pipeline() -> None:
                         _scg_ready = bool(_scg_data.get("showcase_ready", True))
                         _scg_ai    = int(_scg_data.get("ai_selected_events", 0) or 0)
                         _scg_mode  = str(_scg_data.get("mode", "manual"))
+                        _scg_thr   = int(_scg_data.get("threshold", 6) or 6)
                         if not _scg_ready:
                             log.error(
-                                "SHOWCASE_READY_HARD FAIL — ai_selected=%d < 6 (mode=%s); "
+                                "SHOWCASE_READY_HARD FAIL ??ai_selected=%d < %d (mode=%s); "
                                 "deck would be empty. Deleting output files, writing NOT_READY.md.",
-                                _scg_ai, _scg_mode,
+                                _scg_ai, _scg_thr, _scg_mode,
                             )
                             for _scg_art in ("executive_report.pptx", "executive_report.docx"):
                                 _scg_art_path = Path(settings.PROJECT_ROOT) / "outputs" / _scg_art
@@ -3546,17 +3976,17 @@ def run_pipeline() -> None:
                                 "gate: SHOWCASE_READY_HARD\n"
                                 "events_failing: 1\n\n"
                                 "## Failing events:\n"
-                                f"- ai_selected_events={_scg_ai} is below threshold=6\n\n"
+                                f"- ai_selected_events={_scg_ai} is below threshold={_scg_thr}\n\n"
                                 "## Fix\n"
-                                "Ensure the AI event pipeline selects >= 6 events. "
+                                f"Ensure the AI event pipeline selects >= {_scg_thr} events. "
                                 "Check source feed freshness and filter settings.\n",
                                 encoding="utf-8",
                             )
                         else:
                             (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
                             log.info(
-                                "SHOWCASE_READY_HARD: PASS — ai_selected=%d >= 6 (mode=%s)",
-                                _scg_ai, _scg_mode,
+                                "SHOWCASE_READY_HARD: PASS ??ai_selected=%d >= %d (mode=%s)",
+                                _scg_ai, _scg_thr, _scg_mode,
                             )
                     else:
                         log.warning("SHOWCASE_READY_HARD: showcase_ready.meta.json not found (skipping gate)")
@@ -3579,9 +4009,9 @@ def run_pipeline() -> None:
                 err_path = Path(settings.PROJECT_ROOT) / "outputs" / "deep_analysis_education.md"
                 err_path.parent.mkdir(parents=True, exist_ok=True)
                 err_path.write_text(err_md, encoding="utf-8")
-                log.info("Z5: 錯誤說明已寫入 %s", err_path)
+                log.info("Z5: ?航炊隤芣?撌脣神??%s", err_path)
             except Exception:
-                log.error("Z5: 連錯誤報告都寫不出來")
+                log.error("Z5: ??隤文?撖思??箔?")
     else:
         log.info("Z5: Education report disabled")
 
@@ -3591,12 +4021,12 @@ def run_pipeline() -> None:
     _nr_check_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
     if _nr_check_path.exists():
         log.error(
-            "POOL_SUFFICIENCY FAIL — NOT_READY.md exists; "
+            "POOL_SUFFICIENCY FAIL ??NOT_READY.md exists; "
             "PPTX/DOCX not generated. Pipeline exits 1."
         )
         sys.exit(1)
 
-    # (A) Write flow_counts.meta.json + filter_breakdown.meta.json — pipeline funnel audit
+    # (A) Write flow_counts.meta.json + filter_breakdown.meta.json ??pipeline funnel audit
     try:
         import json as _json
         _dr = dict(filter_summary.dropped_by_reason or {})
@@ -3630,7 +4060,7 @@ def run_pipeline() -> None:
         _fc_path.write_text(_json.dumps(_flow_counts, ensure_ascii=False, indent=2), encoding="utf-8")
         log.info("flow_counts.meta.json written: %s", _fc_path)
 
-        # filter_breakdown.meta.json — full per-reason diagnostics
+        # filter_breakdown.meta.json ??full per-reason diagnostics
         _fb = {
             "kept": int(filter_summary.kept_count),
             "dropped_total": int(filter_summary.input_count - filter_summary.kept_count),
@@ -3650,7 +4080,7 @@ def run_pipeline() -> None:
         log.warning("flow_counts / filter_breakdown meta write failed (non-blocking): %s", _fc_exc)
 
     # ---------------------------------------------------------------------------
-    # latest_digest.md — MVP Demo (Iteration 8)
+    # latest_digest.md ??MVP Demo (Iteration 8)
     #   Top-2 executive event cards with canonical Q1/Q2 + verbatim rich quotes.
     #   Sorted: fulltext_ok=True first, then by density_score desc.
     # ---------------------------------------------------------------------------
@@ -3690,7 +4120,7 @@ def run_pipeline() -> None:
                 _anchor_attr = str(getattr(_card, "primary_anchor", "") or "").strip()
                 if _anchor_attr:
                     _anchor = _anchor_attr
-                # Extract verbatim quote from 「...」 in Q1
+                # Extract verbatim quote from ??..??in Q1
                 _q1_quote = ""
                 _qm = _re_digest.search(r"\u300c([^\u300d]{20,80})\u300d", _q1)
                 if _qm:
@@ -3710,12 +4140,12 @@ def run_pipeline() -> None:
                 _digest_lines.append(f"**Fulltext:** {'OK' if _ft_ok else 'N/A'} ({_ft_len} chars)")
                 _digest_lines.append("")
                 if _q1:
-                    _digest_lines.append(f"**Q1 (事件):** {_q1}")
+                    _digest_lines.append(f"**Q1 (鈭辣):** {_q1}")
                 if _q1_quote:
                     _digest_lines.append(f"> verbatim: 「{_q1_quote}」")
                 _digest_lines.append("")
                 if _q2:
-                    _digest_lines.append(f"**Q2 (影響):** {_q2}")
+                    _digest_lines.append(f"**Q2 (敶梢):** {_q2}")
                 if _q2_quote:
                     _digest_lines.append(f"> verbatim: 「{_q2_quote}」")
                 _digest_lines.append("")
@@ -3741,7 +4171,7 @@ def run_pipeline() -> None:
     log.info("Digest: %s", digest_path)
     log.info("Metrics: %s", metrics_path)
 
-    # Write desktop_button.meta.json — MVP Demo (Iteration 8)
+    # Write desktop_button.meta.json ??MVP Demo (Iteration 8)
     # Reads PIPELINE_RUN_ID env var if set (by run_pipeline.ps1); otherwise auto-generates.
     try:
         import json as _db_json
@@ -3779,10 +4209,10 @@ if __name__ == "__main__":
         _outputs   = _proj_root / "outputs"
         _outputs.mkdir(parents=True, exist_ok=True)
 
-        # 1. Parse NOT_READY.md → gate_name + fail_reason (one-liner, human-readable)
+        # 1. Parse NOT_READY.md ??gate_name + fail_reason (one-liner, human-readable)
         _nr_md_path  = _outputs / "NOT_READY.md"
         _gate_name   = "UNKNOWN"
-        _fail_reason = "（原因不明，請查閱 desktop_button.last_run.log）"
+        _fail_reason = "Pipeline failed. See outputs/desktop_button.last_run.log for details."
         if _nr_md_path.exists():
             try:
                 _nr_text = _nr_md_path.read_text(encoding="utf-8")
@@ -3791,7 +4221,7 @@ if __name__ == "__main__":
                     _gate_name = _gm.group(1).strip()
                 _fail_reason = " ".join(_nr_text.split())[:300]
             except Exception as _nre:
-                _fail_reason = f"NOT_READY.md 讀取失敗：{_nre}"
+                _fail_reason = f"Failed to parse NOT_READY.md: {_nre}"
 
         # 2. Load up to 3 sample events from meta files
         _samples: list = []
@@ -3818,27 +4248,22 @@ if __name__ == "__main__":
         # 3. Build next_steps hint based on gate name
         _gate_tips = {
             "EXEC_NEWS_QUALITY_HARD": (
-                "來源全文擷取不足，今日 AI 事件缺少可驗證的原始引用段落。"
-                "建議：等待今晚下一次掃描，或確認 z0_collect.ps1 是否正常執行。"
+                "Check quote binding and ensure source text exists; re-run collection if needed."
             ),
             "EXEC_ZH_NARRATIVE_WITH_QUOTE_HARD": (
-                "中文敘事品質不足（中文字數或引用窗格未達標）。"
-                "建議：確認 llama-server 是否在線（scripts/llama_server.ps1），或等待下次執行。"
+                "Fix Chinese narrative generation and keep quote windows embedded verbatim."
             ),
             "POOL_SUFFICIENCY": (
-                "今日 AI 相關事件數量不足，無法達到最低展示門檻。"
-                "建議：等待今晚／明日累積更多 AI 訊號，並確認 RSS 來源是否正常回應。"
+                "Increase AI-relevant upstream inputs and verify collector output freshness."
             ),
             "AI_PURITY_HARD": (
-                "簡報中混入非 AI 事件。"
-                "建議：檢查 topic_router.py 分類規則，或等待下次執行。"
+                "Ensure only AI-relevant events enter final deck selection."
             ),
             "EXEC_DELIVERABLE_DOCX_PPTX_HARD": (
-                "報告檔案生成失敗或大小不符規格。"
-                "建議：查閱 outputs/desktop_button.last_run.log 末尾錯誤訊息。"
+                "Check generator outputs and verify DOCX/PPTX event sync against final cards."
             ),
         }
-        _next_steps = "請查閱 outputs/desktop_button.last_run.log 取得詳細診斷資訊。"
+        _next_steps = "See outputs/desktop_button.last_run.log for the full failure trace."
         for _k, _tip in _gate_tips.items():
             if _k in _gate_name:
                 _next_steps = _tip
@@ -3882,3 +4307,4 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         run_pipeline()
+

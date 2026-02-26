@@ -106,16 +106,18 @@ if (Test-Path $vrScPath) {
         $vrScDeckEv     = if ($vrSc.PSObject.Properties["deck_events"])           { [int]$vrSc.deck_events }           else { 0 }
         $vrScMode       = if ($vrSc.PSObject.Properties["mode"])                  { [string]$vrSc.mode }               else { "manual" }
         $vrScFallback   = if ($vrSc.PSObject.Properties["fallback_used"])         { [bool]$vrSc.fallback_used }        else { $false }
+        $vrScThreshold  = if ($vrSc.PSObject.Properties["threshold"])             { [int]$vrSc.threshold }             else { 6 }
         Write-Host ("  ai_selected_events : {0}" -f $vrScAiSel)
         Write-Host ("  deck_events        : {0}" -f $vrScDeckEv)
         Write-Host ("  mode               : {0}" -f $vrScMode)
         Write-Host ("  fallback_used      : {0}" -f $vrScFallback)
         Write-Host ("  showcase_ready     : {0}" -f $vrScReady)
+        Write-Host ("  threshold          : {0}" -f $vrScThreshold)
         if ($vrScReady) {
             Write-Host ("  => SHOWCASE_READY_HARD: PASS (ai_selected={0} mode={1})" -f $vrScAiSel, $vrScMode) -ForegroundColor Green
         } else {
-            Write-Host ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < 6, mode={1})" -f $vrScAiSel, $vrScMode) -ForegroundColor Red
-            Write-Host "     Fix: run in demo mode (-Mode demo) or wait for a day with >= 6 AI events." -ForegroundColor Yellow
+            Write-Host ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < {2}, mode={1})" -f $vrScAiSel, $vrScMode, $vrScThreshold) -ForegroundColor Red
+            Write-Host ("     Fix: run in demo mode (-Mode demo) or wait for a day with >= {0} AI events." -f $vrScThreshold) -ForegroundColor Yellow
             exit 1
         }
     } catch {
@@ -473,6 +475,51 @@ if ($densityRaw) {
     Write-Host "  Executive Slide Density Audit PASSED"
 } else {
     Write-Host "  [Density Audit] Skipped (pptx parser returned no output)"
+}
+
+# ---------------------------------------------------------------------------
+# BRIEF hard gates (brief mode only; SKIP when meta absent)
+#   BRIEF_MIN_EVENTS_HARD       : ai_selected_events in [5, 10]
+#   BRIEF_NO_BOILERPLATE_HARD   : no boilerplate in What happened / Why it matters
+#   BRIEF_ANCHOR_REQUIRED_HARD  : both What happened and Why it matters contain anchor
+# ---------------------------------------------------------------------------
+Write-Host ""
+Write-Host "BRIEF HARD GATES:" -ForegroundColor Yellow
+$vrBriefGateMetas = @(
+    @{ Label = "BRIEF_MIN_EVENTS_HARD";      File = "brief_min_events_hard.meta.json" },
+    @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
+    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" }
+)
+$vrBriefRepoRoot = Split-Path -Parent $PSScriptRoot
+foreach ($bg in $vrBriefGateMetas) {
+    $bgPath = Join-Path $vrBriefRepoRoot ("outputs\" + $bg.File)
+    if (-not (Test-Path $bgPath)) {
+        Write-Host ("  {0}: SKIP ({1} not found — non-brief run or pipeline did not reach gate)" -f $bg.Label, $bg.File) -ForegroundColor Yellow
+        continue
+    }
+    try {
+        $bgMeta = Get-Content $bgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $bgGate = if ($bgMeta.PSObject.Properties['gate_result']) { [string]$bgMeta.gate_result } else { "FAIL" }
+        if ($bg.Label -eq "BRIEF_MIN_EVENTS_HARD") {
+            $bgMin = if ($bgMeta.PSObject.Properties['required_min']) { [int]$bgMeta.required_min } else { 5 }
+            $bgMax = if ($bgMeta.PSObject.Properties['required_max']) { [int]$bgMeta.required_max } else { 10 }
+            $bgAct = if ($bgMeta.PSObject.Properties['actual'])       { [int]$bgMeta.actual }       else { 0 }
+            Write-Host ("  {0}: {1} (required=[{2},{3}] actual={4})" -f $bg.Label, $bgGate, $bgMin, $bgMax, $bgAct) `
+                -ForegroundColor $(if ($bgGate -eq "PASS") { "Green" } else { "Red" })
+        } else {
+            $bgTotal = if ($bgMeta.PSObject.Properties['events_total']) { [int]$bgMeta.events_total } else { 0 }
+            $bgFail  = if ($bgMeta.PSObject.Properties['fail_count'])   { [int]$bgMeta.fail_count }   else { 0 }
+            Write-Host ("  {0}: {1} (events_total={2} fail_count={3})" -f $bg.Label, $bgGate, $bgTotal, $bgFail) `
+                -ForegroundColor $(if ($bgGate -eq "PASS") { "Green" } else { "Red" })
+        }
+        if ($bgGate -eq "FAIL") {
+            Write-Host ("  => {0}: FAIL" -f $bg.Label) -ForegroundColor Red
+            exit 1
+        }
+    } catch {
+        Write-Host ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_) -ForegroundColor Red
+        exit 1
+    }
 }
 
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
@@ -1038,6 +1085,28 @@ Invoke-MetaGate -Label "STATS_SINGLE_SOURCE_HARD" -MetaFile "stats_single_source
     $total   = if ($d.PSObject.Properties['canonical_sources'] -and $d.canonical_sources) { @($d.canonical_sources).Count } else { 0 }
     $missing = if ($d.PSObject.Properties['missing'] -and $d.missing) { ($d.missing -join ',') } else { "" }
     "sources=$present/$total missing=[$missing]"
+}
+
+# BRIEF hard gates (brief mode only; SKIP when meta absent)
+Write-Host ""
+Write-Host "[AI Purity Gate] BRIEF_MIN_EVENTS_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_MIN_EVENTS_HARD" -MetaFile "brief_min_events_hard.meta.json" -InfoBuilder {
+    param($d)
+    "required_min=$((Get-MetaInt $d 'required_min' 5)) required_max=$((Get-MetaInt $d 'required_max' 10)) actual=$((Get-MetaInt $d 'actual' 0))"
+}
+
+Write-Host ""
+Write-Host "[AI Purity Gate] BRIEF_NO_BOILERPLATE_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_NO_BOILERPLATE_HARD" -MetaFile "brief_no_boilerplate_hard.meta.json" -InfoBuilder {
+    param($d)
+    "events_total=$((Get-MetaInt $d 'events_total' 0)) fail_count=$((Get-MetaInt $d 'fail_count' 0))"
+}
+
+Write-Host ""
+Write-Host "[AI Purity Gate] BRIEF_ANCHOR_REQUIRED_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_ANCHOR_REQUIRED_HARD" -MetaFile "brief_anchor_required_hard.meta.json" -InfoBuilder {
+    param($d)
+    "events_total=$((Get-MetaInt $d 'events_total' 0)) fail_count=$((Get-MetaInt $d 'fail_count' 0))"
 }
 
 Write-Host ""
