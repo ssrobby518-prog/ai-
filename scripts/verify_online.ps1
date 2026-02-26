@@ -323,22 +323,28 @@ if (Test-Path $zhMetaPath) {
 $execSelMetaPath   = Join-Path $repoRoot "outputs\exec_selection.meta.json"
 $showcaseReadyPath = Join-Path $repoRoot "outputs\showcase_ready.meta.json"
 
-# Resolve effective KPI mode
-$_kpiMode = ""
-if ($Mode -and ($Mode.ToLower() -eq "demo" -or $Mode.ToLower() -eq "manual")) {
-    $_kpiMode = $Mode.ToLower()
-} else {
-    # Fall back to showcase_ready.meta.json written by the pipeline that just ran
-    if (Test-Path $showcaseReadyPath) {
-        try {
-            $srMeta = Get-Content $showcaseReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($srMeta.PSObject.Properties['mode'] -and ([string]$srMeta.mode).ToLower() -eq "demo") {
-                $_kpiMode = "demo"
+# Resolve meta mode and effective mode
+$_metaMode = ""
+if (Test-Path $showcaseReadyPath) {
+    try {
+        $srMeta = Get-Content $showcaseReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($srMeta.PSObject.Properties['mode']) {
+            $_metaModeRaw = ([string]$srMeta.mode).ToLower()
+            if ($_metaModeRaw -eq "demo" -or $_metaModeRaw -eq "manual") {
+                $_metaMode = $_metaModeRaw
             }
-        } catch { }
-    }
+        }
+    } catch { }
 }
-if (-not $_kpiMode) { $_kpiMode = "manual" }   # conservative fallback
+
+$effectiveMode = ""
+if ($Mode -and ($Mode.ToLower() -eq "demo" -or $Mode.ToLower() -eq "manual")) {
+    $effectiveMode = $Mode.ToLower()
+} elseif ($_metaMode) {
+    $effectiveMode = $_metaMode
+} else {
+    $effectiveMode = "manual"
+}
 
 if (Test-Path $execSelMetaPath) {
     try {
@@ -363,7 +369,8 @@ if (Test-Path $execSelMetaPath) {
         $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
 
         Write-Output ""
-        Write-Output ("EXEC KPI GATES (mode={0}):" -f $_kpiMode)
+        Write-Output ("EXEC KPI GATES (mode={0}):" -f $effectiveMode)
+        Write-Output ("  effective_mode_for_kpi = {0}{1}" -f $effectiveMode, $(if ($Mode -and $Mode -ne $_metaMode -and $_metaMode -ne "") { " (CLI override)" } elseif ($Mode -and $_metaMode -eq "") { " (CLI override)" } else { "" }))
         Write-Output ("  MIN_EVENTS={0,-3} actual={1,-4} {2}{3}" -f $minEv, $actEv, $gateEv, $sparseNote)
         Write-Output ("  MIN_PRODUCT={0,-2} actual={1,-4} {2}{3}" -f $minPr, $actPr, $gatePr, $sparseNote)
         Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
@@ -371,14 +378,14 @@ if (Test-Path $execSelMetaPath) {
         Write-Output ("  buckets: product={0} tech={1} business={2}" -f $actPr, $actTe, $actBu)
 
         if (-not $anyFail) {
-            Write-Output ("  => EXEC KPI GATES: PASS (mode={0})" -f $_kpiMode)
-        } elseif ($_kpiMode -eq "demo") {
+            Write-Output ("  => EXEC KPI GATES: PASS (mode={0})" -f $effectiveMode)
+        } elseif ($effectiveMode -eq "demo") {
             # demo mode: bucket-quota shortfalls are expected on days where today's news skews to
             # one channel.  All hard quality gates (SHOWCASE_READY, AI_PURITY, DOCX/PPTX,
             # ZH_NARRATIVE) already passed above; bucket variability is non-fatal in demo context.
             Write-Output ("  => EXEC KPI GATES: WARN-OK (mode=demo, buckets=product:{0} tech:{1} business:{2}, reason: bucket variability)" -f $actPr, $actTe, $actBu)
         } else {
-            Write-Output ("  => EXEC KPI GATES: FAIL (mode={0})" -f $_kpiMode)
+            Write-Output ("  => EXEC KPI GATES: FAIL (mode={0})" -f $effectiveMode)
             exit 1
         }
     } catch {
@@ -1549,17 +1556,16 @@ if (Test-Path $voScPath) {
         $voScReady    = [bool]($voSc.PSObject.Properties["showcase_ready"]      -and $voSc.showcase_ready)
         $voScAiSel    = if ($voSc.PSObject.Properties["ai_selected_events"])    { [int]$voSc.ai_selected_events }    else { 0 }
         $voScDeckEv   = if ($voSc.PSObject.Properties["deck_events"])           { [int]$voSc.deck_events }           else { 0 }
-        $voScMode     = if ($voSc.PSObject.Properties["mode"])                  { [string]$voSc.mode }               else { "manual" }
         $voScFallback = if ($voSc.PSObject.Properties["fallback_used"])         { [bool]$voSc.fallback_used }        else { $false }
         Write-Output ("  ai_selected_events : {0}" -f $voScAiSel)
         Write-Output ("  deck_events        : {0}" -f $voScDeckEv)
-        Write-Output ("  mode               : {0}" -f $voScMode)
+        Write-Output ("  mode               : {0}" -f $effectiveMode)
         Write-Output ("  fallback_used      : {0}" -f $voScFallback)
         Write-Output ("  showcase_ready     : {0}" -f $voScReady)
         if ($voScReady) {
-            Write-Output ("  => SHOWCASE_READY_HARD: PASS (ai_selected={0}  mode={1})" -f $voScAiSel, $voScMode)
+            Write-Output ("  => SHOWCASE_READY_HARD: PASS (ai_selected={0}  mode={1})" -f $voScAiSel, $effectiveMode)
         } else {
-            Write-Output ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < 6  mode={1})" -f $voScAiSel, $voScMode)
+            Write-Output ("  => SHOWCASE_READY_HARD: FAIL (ai_selected={0} < 6  mode={1})" -f $voScAiSel, $effectiveMode)
             Write-Output "     Fix: run in demo mode (-Mode demo) or wait for a day with >= 6 AI events."
             exit 1
         }
