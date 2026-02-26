@@ -795,6 +795,115 @@ def _brief_build_key_details_zh(
     return valid[:4]
 
 
+def _brief_pick_detail_sentence_en(
+    cleaned_full_text: str,
+    title: str,
+    actor: str,
+    anchors: list[str],
+    exclude_used: set | None = None,
+) -> str:
+    """Pick one content-rich English sentence from cleaned_full_text for ZH bullet generation.
+
+    Rules (per DOD-2):
+    - Not in CTA stoplist (_BRIEF_CTA_RE / _UI_GARBAGE)
+    - >= 80 chars
+    - Contains digit OR anchor-hit OR >= 2 title-token overlap
+    - Sampled from 0.20–0.85 span (avoids lede and trailing CTA)
+    - Not in exclude_used set (deduplication across calls)
+    Returns "" when no qualifying sentence is found.
+    """
+    if not cleaned_full_text:
+        return ""
+    exclude_used = set(exclude_used) if exclude_used else set()
+    title_tokens = _brief_title_tokens(title)
+    sentences: list[str] = []
+    for seg in re.split(r"(?<=[\.\!\?])\s+|\n+", cleaned_full_text):
+        s = _normalize_ws(seg)
+        if s and len(s) >= 80:
+            sentences.append(s)
+    if not sentences:
+        return ""
+    total = len(sentences)
+    start_idx = max(0, int(total * 0.20))
+    end_idx = min(total, max(start_idx + 1, int(total * 0.85)))
+    span = sentences[start_idx:end_idx] or sentences  # fallback: all sentences
+    for sent in span:
+        if sent.lower() in exclude_used:
+            continue
+        if _brief_quote_is_cta(sent):
+            continue
+        has_digit = bool(re.search(r"\d", sent))
+        has_anchor = any(
+            a and a.lower() in sent.lower()
+            for a in (anchors or [])
+            if a and len(a) >= 2
+        )
+        sent_lower = sent.lower()
+        title_overlap = sum(1 for tk in title_tokens if tk and len(tk) >= 3 and tk in sent_lower)
+        if has_digit or has_anchor or title_overlap >= 2:
+            return sent
+    return ""
+
+
+def _brief_translate_detail_bullet_zh(
+    detail_sentence_en: str,
+    actor: str,
+    anchors: list[str],
+    title: str = "",
+) -> str:
+    """Rewrite an English detail sentence into a single ZH-TW bullet.
+
+    Strategy:
+    1. Call rewrite_news_lead_v2 (rule-based ZH rewriter, no LLM dependency)
+    2. Validate result with _brief_zh_tw_ok + !boilerplate
+    3. Fallback to anchor/number template (also validated)
+    Returns "" when nothing passes the ZH-TW gate.
+    """
+    if not detail_sentence_en:
+        return ""
+    anchor = next(
+        (a for a in (anchors or []) if a and not _is_actor_numeric(a) and len(a) >= 2),
+        actor or "",
+    )
+    num = _brief_extract_num_token(detail_sentence_en)
+    result = ""
+    try:
+        context = {
+            "title": title or detail_sentence_en[:100],
+            "bucket": "tech",
+            "date": "",
+            "what_happened": detail_sentence_en,
+            "subject": actor or anchor,
+        }
+        result = _normalize_ws(
+            rewrite_news_lead_v2(
+                detail_sentence_en,
+                context,
+                anchors=anchors or [],
+                primary_anchor=anchor or None,
+            )
+        )
+    except Exception:
+        result = ""
+    # Take only first sentence of rewrite output (keep it bullet-sized)
+    if result:
+        first = _normalize_ws(re.split(r"[。！？\n]", result)[0])
+        if first and 12 <= len(first) <= 100 and _brief_zh_tw_ok(first) and not _brief_contains_boilerplate("", first):
+            return _brief_norm_bullet(first)
+    # Fallback rule-based template — must contain anchor or number
+    if num and anchor:
+        fb = _brief_norm_bullet(f"{anchor} 相關數據顯示 {num}，需優先確認對產品或模型節奏的影響。")
+    elif num:
+        fb = _brief_norm_bullet(f"原文量化數據 {num}，為評估影響範圍的核心依據。")
+    elif anchor:
+        fb = _brief_norm_bullet(f"原文揭示 {anchor} 的關鍵細節，可作為後續技術評估與決策依據。")
+    else:
+        return ""
+    if _brief_zh_tw_ok(fb) and not _brief_contains_boilerplate("", fb):
+        return fb
+    return ""
+
+
 def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) -> tuple[list[dict], dict]:
     prepared: list[dict] = []
     diag = {
@@ -884,7 +993,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             final_url=_final_url,
         )
         # Replace what_bullets with ZH narrative sentences (split on 。！？；\n)
-        # Threshold lowered to >= 2 to handle typical 2-3 sentence ZH narratives
         if _q1_zh and _brief_zh_tw_ok(_q1_zh):
             q1_b = _brief_split_bullets(_q1_zh)
             if len(q1_b) >= 2:
@@ -893,6 +1001,30 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             q2_b = _brief_split_bullets(_q2_zh)
             if len(q2_b) >= 2:
                 why_bullets = q2_b[:4]
+        # ── Detail-sentence picker: ensure what_bullets >= 3 (DOD-2) ──────────
+        # If ZH narrative split produced < 3 bullets, extract English sentences
+        # from cleaned full_text, translate to ZH-TW, and append until >= 3.
+        _detail_sentences_used: list[str] = []
+        _exclude_sents: set[str] = {b.lower() for b in what_bullets}
+        while len(what_bullets) < 3:
+            _det_en = _brief_pick_detail_sentence_en(
+                cleaned_full_text=source_blob,
+                title=title,
+                actor=actor,
+                anchors=anchors_raw,
+                exclude_used=_exclude_sents,
+            )
+            if not _det_en:
+                break  # no more candidates; density gate will FAIL this event
+            _exclude_sents.add(_det_en.lower())
+            _det_zh = _brief_translate_detail_bullet_zh(
+                _det_en, actor=actor, anchors=anchors_raw, title=title
+            )
+            if not _det_zh:
+                continue  # translation failed; try next sentence
+            what_bullets.append(_det_zh)
+            _detail_sentences_used.append(_det_en)
+        # ── End detail-sentence picker ────────────────────────────────────────
         # Build content-rich key_details from ZH narrative + extracted numbers
         key_details_bullets = _brief_build_key_details_zh(
             q1_zh=_q1_zh,
@@ -929,6 +1061,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         out["what_happened_bullets"] = what_bullets
         out["key_details_bullets"] = key_details_bullets
         out["why_it_matters_bullets"] = why_bullets
+        out["detail_sentences_en_used"] = _detail_sentences_used
         out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
         prepared.append(out)
         if _is_tier_a_source(_fc_src, _fc_url, _fc_ttl):
@@ -4543,6 +4676,7 @@ def run_pipeline() -> None:
                         _brief_anchor_fail: list[dict] = []
                         _brief_zh_fail: list[dict] = []
                         _brief_info_fail: list[dict] = []
+                        _brief_info_events: list[dict] = []  # per-event observability (Step 4)
                         for _bfc in _brief_cards:
                             _title_b = str(_bfc.get("title", "") or "")[:80]
                             _what_b = _normalize_ws(str(_bfc.get("what_happened_brief", "") or _bfc.get("q1", "") or ""))
@@ -4583,6 +4717,23 @@ def run_pipeline() -> None:
                                 and _bullet_len_ok
                                 and _bullet_hit_count >= 2
                             )
+                            # Per-event observability record (Step 4)
+                            _det_en_used = [
+                                str(_s or "")[:200]
+                                for _s in (_bfc.get("detail_sentences_en_used", []) or [])
+                                if _s
+                            ]
+                            _brief_info_events.append({
+                                "title": _title_b,
+                                "what_happened_count": len(_what_bullets),
+                                "key_details_count": len(_key_bullets),
+                                "why_it_matters_count": len(_why_bullets),
+                                "bullet_len_ok": _bullet_len_ok,
+                                "anchor_number_hits": _bullet_hit_count,
+                                "density_ok": _brief_event_info_ok,
+                                "what_happened_sample": _what_bullets[:3],
+                                "detail_sentence_en_used": _det_en_used[:2],
+                            })
                             if not _brief_event_info_ok:
                                 _brief_info_fail.append(
                                     {
@@ -4667,6 +4818,7 @@ def run_pipeline() -> None:
                                 "min_bullet_chars": 12,
                                 "anchor_or_number_hits_min": 2,
                             },
+                            "events": _brief_info_events,  # per-event observability (Step 4)
                         }
                         (Path(settings.PROJECT_ROOT) / "outputs" / "brief_info_density_hard.meta.json").write_text(
                             _brief_json.dumps(_brief_info_meta, ensure_ascii=False, indent=2),

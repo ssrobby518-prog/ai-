@@ -357,18 +357,26 @@ if ($docxImageCount -lt 1) {
 }
 
 # PPTX must always have at least 1 embedded image (banner on cover or per-card images)
-$pptxHasImage = & $py -c "
+# EXCEPTION: brief mode intentionally removes all images from PPTX (per design) — skip check
+$isBriefModeVr = $false
+$briefMinMetaVrPath = Join-Path $PSScriptRoot "..\outputs\brief_min_events_hard.meta.json"
+if (Test-Path $briefMinMetaVrPath) { $isBriefModeVr = $true }
+if ($isBriefModeVr) {
+    Write-Host "  PPTX image check: SKIP (brief mode — images intentionally absent)" -ForegroundColor Yellow
+} else {
+    $pptxHasImage = & $py -c "
 import zipfile, sys
 with zipfile.ZipFile('outputs/executive_report.pptx') as z:
     media = [n for n in z.namelist() if n.startswith('ppt/media/')]
     print(len(media))
 " 2>$null
-$pptxImageCount = if ($pptxHasImage) { [int]$pptxHasImage } else { 0 }
-if ($pptxImageCount -lt 1) {
-    Write-Host "  FAIL: PPTX has no embedded images (ppt/media/ is empty)" -ForegroundColor Red
-    $v3Pass = $false
-} else {
-    Write-Host "  PPTX embedded images: $pptxImageCount file(s)" -ForegroundColor Green
+    $pptxImageCount = if ($pptxHasImage) { [int]$pptxHasImage } else { 0 }
+    if ($pptxImageCount -lt 1) {
+        Write-Host "  FAIL: PPTX has no embedded images (ppt/media/ is empty)" -ForegroundColor Red
+        $v3Pass = $false
+    } else {
+        Write-Host "  PPTX embedded images: $pptxImageCount file(s)" -ForegroundColor Green
+    }
 }
 
 if (-not $v3Pass) {
