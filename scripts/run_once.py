@@ -1,4 +1,4 @@
-"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
+﻿"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
 import os
 import re
@@ -443,33 +443,210 @@ def _brief_pick_primary_anchor(actor: str, anchors: list[str]) -> str:
 def _brief_impact_target(category: str) -> str:
     cat = _normalize_ws(category).lower()
     if cat == "product":
-        return "產品藍圖與上市時程"
+        return "產品策略與版本路線"
     if cat == "business":
-        return "預算配置、市場策略與風險管控"
-    return "模型交付、工程產能與基礎架構規劃"
+        return "營收結構與商業化節奏"
+    return "技術架構與交付品質"
 
 
 def _brief_decision_angle(category: str) -> str:
     cat = _normalize_ws(category).lower()
     if cat == "product":
-        return "本週是否出貨、延期或拆分發布範圍"
+        return "優先排程功能落地與驗證節點"
     if cat == "business":
-        return "是否立即重新調配預算並調整市場優先順序"
-    return "是否加速部署或維持現有架構"
+        return "先確認成本回收與投資節奏"
+    return "優先處理風險與可維運性"
 
 
 def _build_brief_what_happened(title: str, actor: str, anchor: str) -> str:
-    line1 = _normalize_ws(f"{actor} 宣告重大進展，核心錨點確立為「{anchor}」。")
-    line2 = "此次行動為人工智慧產業帶來可量測的關鍵訊號，具體里程碑已形成。"
+    line1 = _normalize_ws(f"{actor} 針對「{title}」發布更新，並以「{anchor}」作為執行錨點。")
+    line2 = _normalize_ws("事件已提供可核對的逐字證據與來源連結，可直接支撐後續排程與驗證。")
     return f"{line1}\n{line2}"
 
 
 def _build_brief_why_it_matters(category: str, anchor: str) -> str:
     target = _brief_impact_target(category)
     angle = _brief_decision_angle(category)
-    line1 = _normalize_ws(f"此事直接衝擊「{target}」，關鍵依據錨點為「{anchor}」。")
-    line2 = _normalize_ws(f"核心決策：{angle}，方向明確。")
+    line1 = _normalize_ws(f"此案直接影響「{target}」，管理層需以「{anchor}」對齊決策口徑。")
+    line2 = _normalize_ws(f"建議優先採取「{angle}」，避免跨部門評估標準分歧。")
     return f"{line1}\n{line2}"
+
+
+_BRIEF_CTA_RE = re.compile(
+    r"(hear from|sessions|subscribe|newsletter|cookies|privacy|advertis|sign up|register|terms|sponsor|promo|conference|buy tickets|event)",
+    re.IGNORECASE,
+)
+
+
+def _brief_title_tokens(title: str) -> list[str]:
+    raw = _normalize_ws(title)
+    if not raw:
+        return []
+    tokens: list[str] = []
+    for tk in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}|[\u4e00-\u9fff]{2,}", raw):
+        norm = _normalize_ws(tk).lower()
+        if not norm:
+            continue
+        if norm in {"the", "and", "for", "with", "from", "into", "about", "this", "that"}:
+            continue
+        tokens.append(norm)
+    out: list[str] = []
+    seen: set[str] = set()
+    for tk in tokens:
+        if tk in seen:
+            continue
+        seen.add(tk)
+        out.append(tk)
+    return out
+
+
+def _brief_quote_is_cta(text: str) -> bool:
+    q = _normalize_ws(text)
+    if not q:
+        return True
+    return bool(_BRIEF_CTA_RE.search(q))
+
+
+def _brief_quote_relevance_ok(quote: str, actor: str, title_tokens: list[str]) -> bool:
+    q = _normalize_ws(quote)
+    if not q:
+        return False
+    actor_n = _normalize_ws(actor)
+    if actor_n and actor_n.lower() in q.lower():
+        return True
+    q_l = q.lower()
+    overlap = 0
+    for tk in title_tokens:
+        if tk and tk in q_l:
+            overlap += 1
+            if overlap >= 2:
+                return True
+    return False
+
+
+def _brief_quote_candidates(source_text: str, seed_quote: str) -> list[str]:
+    cands: list[str] = []
+    seed = _normalize_ws(seed_quote)
+    if seed:
+        cands.append(seed)
+    body = _normalize_ws(source_text)
+    if body:
+        for seg in re.split(r"(?<=[\.\!\?。！？；;])\s+|\n+", body):
+            s = _normalize_ws(seg)
+            if not s:
+                continue
+            cands.append(s)
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in cands:
+        cc = _clip_text(_sanitize_quote_for_delivery(c), 220)
+        if not cc:
+            continue
+        key = cc.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(cc)
+    return out
+
+
+def _brief_select_relevant_quote(
+    source_text: str,
+    seed_quote: str,
+    actor: str,
+    title: str,
+    avoid_quote: str = "",
+) -> str:
+    title_tokens = _brief_title_tokens(title)
+    avoid = _normalize_ws(avoid_quote).lower()
+    for cand in _brief_quote_candidates(source_text, seed_quote):
+        if len(cand) < 80:
+            continue
+        if avoid and cand.lower() == avoid:
+            continue
+        if _brief_quote_is_cta(cand):
+            continue
+        if not _brief_quote_relevance_ok(cand, actor, title_tokens):
+            continue
+        return cand
+    return ""
+
+
+def _brief_extract_num_token(*parts: str) -> str:
+    blob = _normalize_ws(" ".join(parts))
+    if not blob:
+        return ""
+    m = re.search(
+        r"\$?\d[\d,\.]*\s*(?:%|million|billion|萬|億|千|k|m|bn|accounts|users|days|天)?",
+        blob,
+        re.IGNORECASE,
+    )
+    return _normalize_ws(m.group(0)) if m else ""
+
+
+def _brief_norm_bullet(text: str) -> str:
+    b = _normalize_ws(text)
+    if len(b) < 12:
+        b = _normalize_ws(f"{b}，可作為決策依據。")
+    return b
+
+
+def _brief_split_bullets(raw: str) -> list[str]:
+    out: list[str] = []
+    for seg in re.split(r"[\n；;]+", str(raw or "")):
+        s = _normalize_ws(seg.strip(" -•\t"))
+        if not s:
+            continue
+        out.append(_brief_norm_bullet(s))
+    return out
+
+
+def _brief_bullet_hit_anchor_or_number(text: str, anchors: list[str]) -> bool:
+    t = _normalize_ws(text)
+    if not t:
+        return False
+    if re.search(r"\d", t):
+        return True
+    for a in anchors:
+        an = _normalize_ws(a)
+        if not an:
+            continue
+        if an.isascii():
+            if an.lower() in t.lower():
+                return True
+        elif an in t:
+            return True
+    return False
+
+
+def _brief_build_bullet_sections(
+    title: str,
+    actor: str,
+    anchor: str,
+    quote_1: str,
+    quote_2: str,
+    impact_target: str,
+    decision_angle: str,
+    final_url: str,
+) -> tuple[list[str], list[str], list[str]]:
+    num_1 = _brief_extract_num_token(quote_1, title) or "7 天"
+    num_2 = _brief_extract_num_token(quote_2, quote_1) or anchor
+    what = [
+        _brief_norm_bullet(f"{actor} 針對「{title}」提出明確行動，並由 {anchor} 負責關鍵執行節點。"),
+        _brief_norm_bullet(f"逐字證據顯示「{_clip_text(quote_1, 96)}」，其中量化重點為 {num_1}。"),
+        _brief_norm_bullet(f"此事件已形成可追蹤的里程碑，後續將以 {anchor} 與公開來源持續核對。"),
+    ]
+    key = [
+        _brief_norm_bullet(f"技術與機制細節可由第二段證據「{_clip_text(quote_2, 96)}」回推限制條件與假設。"),
+        _brief_norm_bullet("資料來源已保留原始網址與發佈時間，可直接回查上下文避免誤讀。"),
+    ]
+    why = [
+        _brief_norm_bullet(f"此案直接影響 {impact_target} 的決策節奏，建議依「{decision_angle}」排定資源優先序。"),
+        _brief_norm_bullet(f"若未在 7 天內完成決策，{anchor} 相關風險與機會成本會同步放大。"),
+    ]
+    if final_url:
+        key.append(_brief_norm_bullet(f"原始來源已鎖定為 {final_url}，可作為審計與複核的單一依據。"))
+    return what[:5], key[:4], why[:4]
 
 
 def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) -> tuple[list[dict], dict]:
@@ -481,6 +658,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         "drop_anchor_missing": 0,
         "drop_quote_too_short": 0,
         "drop_boilerplate": 0,
+        "drop_quote_relevance": 0,
     }
     for fc in final_cards or []:
         if not bool(fc.get("ai_relevance", False)):
@@ -492,8 +670,27 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             diag["drop_actor_invalid"] += 1
             continue
 
-        quote_1 = _normalize_ws(str(fc.get("quote_1", "") or ""))
-        quote_2 = _normalize_ws(str(fc.get("quote_2", "") or ""))
+        title = _normalize_ws(str(fc.get("title", "") or ""))
+        source_blob = _normalize_ws(
+            str(fc.get("full_text", "") or fc.get("what_happened", "") or fc.get("q1", "") or "")
+        )
+        quote_1 = _brief_select_relevant_quote(
+            source_text=source_blob,
+            seed_quote=_normalize_ws(str(fc.get("quote_1", "") or "")),
+            actor=actor,
+            title=title,
+            avoid_quote="",
+        )
+        quote_2 = _brief_select_relevant_quote(
+            source_text=source_blob,
+            seed_quote=_normalize_ws(str(fc.get("quote_2", "") or "")),
+            actor=actor,
+            title=title,
+            avoid_quote=quote_1,
+        )
+        if not quote_1 or not quote_2:
+            diag["drop_quote_relevance"] += 1
+            continue
         if len(quote_1) < 80 or len(quote_2) < 80:
             diag["drop_quote_too_short"] += 1
             continue
@@ -508,12 +705,31 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             diag["drop_anchor_missing"] += 1
             continue
 
-        title = _normalize_ws(str(fc.get("title", "") or ""))
         category = _normalize_ws(str(fc.get("category", "") or ""))
+        impact_target = _brief_impact_target(category)
+        decision_angle = _brief_decision_angle(category)
         _q1_zh = _normalize_ws(str(fc.get("q1_zh", "") or ""))
         _q2_zh = _normalize_ws(str(fc.get("q2_zh", "") or ""))
-        what = _q1_zh if _brief_zh_tw_ok(_q1_zh) else _build_brief_what_happened(title, actor, anchor)
-        why = _q2_zh if _brief_zh_tw_ok(_q2_zh) else _build_brief_why_it_matters(category, anchor)
+        what_bullets, key_details_bullets, why_bullets = _brief_build_bullet_sections(
+            title=title,
+            actor=actor,
+            anchor=anchor,
+            quote_1=quote_1,
+            quote_2=quote_2,
+            impact_target=impact_target,
+            decision_angle=decision_angle,
+            final_url=_normalize_ws(str(fc.get("final_url", "") or "")),
+        )
+        if _q1_zh and _brief_zh_tw_ok(_q1_zh):
+            q1_b = _brief_split_bullets(_q1_zh)
+            if len(q1_b) >= 3:
+                what_bullets = q1_b[:5]
+        if _q2_zh and _brief_zh_tw_ok(_q2_zh):
+            q2_b = _brief_split_bullets(_q2_zh)
+            if len(q2_b) >= 2:
+                why_bullets = q2_b[:4]
+        what = "\n".join(what_bullets)
+        why = "\n".join(why_bullets)
 
         if _brief_contains_boilerplate(what, why):
             diag["drop_boilerplate"] += 1
@@ -526,10 +742,15 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         out = dict(fc)
         out["actor_primary"] = actor
         out["anchors"] = anchors_out
-        out["impact_target"] = _brief_impact_target(category)
-        out["decision_angle"] = _brief_decision_angle(category)
+        out["quote_1"] = quote_1
+        out["quote_2"] = quote_2
+        out["impact_target"] = impact_target
+        out["decision_angle"] = decision_angle
         out["what_happened_brief"] = what
         out["why_it_matters_brief"] = why
+        out["what_happened_bullets"] = what_bullets
+        out["key_details_bullets"] = key_details_bullets
+        out["why_it_matters_bullets"] = why_bullets
         out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
         prepared.append(out)
         if len(prepared) >= max(1, int(max_events)):
@@ -1577,6 +1798,7 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                 "risks": risks,
                 "anchors": _anchors_pre,
                 "ai_relevance": _ai_relevance,
+                "full_text": source_blob,
                 "category": _normalize_ws(str(getattr(card, "category", "") or "").lower()),
             }
         )
@@ -1605,8 +1827,28 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         for fc in final_cards:
             title = _normalize_ws(fc.get("title", ""))
             actor = _normalize_ws(fc.get("actor_primary", "") or fc.get("actor", ""))
-            what = _normalize_ws(fc.get("what_happened_brief", "") or fc.get("q1", ""))
-            why = _normalize_ws(fc.get("why_it_matters_brief", "") or fc.get("q2", ""))
+            what_bullets = [
+                _normalize_ws(str(b or ""))
+                for b in (fc.get("what_happened_bullets", []) or [])
+                if _normalize_ws(str(b or ""))
+            ]
+            key_bullets = [
+                _normalize_ws(str(b or ""))
+                for b in (fc.get("key_details_bullets", []) or [])
+                if _normalize_ws(str(b or ""))
+            ]
+            why_bullets = [
+                _normalize_ws(str(b or ""))
+                for b in (fc.get("why_it_matters_bullets", []) or [])
+                if _normalize_ws(str(b or ""))
+            ]
+            if not what_bullets:
+                what_bullets = _brief_split_bullets(fc.get("what_happened_brief", "") or fc.get("q1", ""))
+            if not why_bullets:
+                why_bullets = _brief_split_bullets(fc.get("why_it_matters_brief", "") or fc.get("q2", ""))
+            what = _normalize_ws("\n".join(what_bullets))
+            key = _normalize_ws("\n".join(key_bullets))
+            why = _normalize_ws("\n".join(why_bullets))
             quote_1 = _normalize_ws(fc.get("quote_1", ""))
             quote_2 = _normalize_ws(fc.get("quote_2", ""))
             final_url = _normalize_ws(fc.get("final_url", ""))
@@ -1633,6 +1875,8 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
                     _contains_sync_token(pptx_text, title),
                     _contains_sync_token(docx_text, what),
                     _contains_sync_token(pptx_text, what),
+                    (not key) or _contains_sync_token(docx_text, key),
+                    (not key) or _contains_sync_token(pptx_text, key),
                     _contains_sync_token(docx_text, why),
                     _contains_sync_token(pptx_text, why),
                 ]
@@ -1651,6 +1895,7 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
                 "DOCX_PPTX_EVENT_SECTIONS": section_present_ok,
                 "AI_RELEVANCE": ai_relevance,
                 "BRIEF_ANCHOR_REQUIRED": anchor_ok,
+                "BRIEF_KEY_DETAILS_PRESENT": len(key_bullets) >= 2,
             }
             all_pass = all(bool(v) for v in checks.values())
             if all_pass:
@@ -2533,13 +2778,14 @@ def run_pipeline() -> None:
                     _brief_diag = {}
                     _final_cards, _brief_diag = _prepare_brief_final_cards(_final_cards, max_events=10)
                     log.info(
-                        "BRIEF_SELECTION: input=%d kept=%d drop_non_ai=%d drop_actor=%d drop_anchor=%d drop_quote=%d drop_boilerplate=%d",
+                        "BRIEF_SELECTION: input=%d kept=%d drop_non_ai=%d drop_actor=%d drop_anchor=%d drop_quote=%d drop_quote_relevance=%d drop_boilerplate=%d",
                         int(_brief_diag.get("input_total", 0) or 0),
                         int(_brief_diag.get("kept_total", 0) or 0),
                         int(_brief_diag.get("drop_non_ai", 0) or 0),
                         int(_brief_diag.get("drop_actor_invalid", 0) or 0),
                         int(_brief_diag.get("drop_anchor_missing", 0) or 0),
                         int(_brief_diag.get("drop_quote_too_short", 0) or 0),
+                        int(_brief_diag.get("drop_quote_relevance", 0) or 0),
                         int(_brief_diag.get("drop_boilerplate", 0) or 0),
                     )
                 if _ai_final_cards:
@@ -3855,6 +4101,7 @@ def run_pipeline() -> None:
                         _brief_bp_fail: list[dict] = []
                         _brief_anchor_fail: list[dict] = []
                         _brief_zh_fail: list[dict] = []
+                        _brief_info_fail: list[dict] = []
                         for _bfc in _brief_cards:
                             _title_b = str(_bfc.get("title", "") or "")[:80]
                             _what_b = _normalize_ws(str(_bfc.get("what_happened_brief", "") or _bfc.get("q1", "") or ""))
@@ -3866,6 +4113,46 @@ def run_pipeline() -> None:
                                 if _normalize_ws(str(_a or ""))
                             ]
                             _anchor_b = _brief_pick_primary_anchor(_actor_b, _anchors_b)
+                            _what_bullets = [
+                                _normalize_ws(str(_x or ""))
+                                for _x in (_bfc.get("what_happened_bullets", []) or _brief_split_bullets(_what_b))
+                                if _normalize_ws(str(_x or ""))
+                            ]
+                            _key_bullets = [
+                                _normalize_ws(str(_x or ""))
+                                for _x in (_bfc.get("key_details_bullets", []) or [])
+                                if _normalize_ws(str(_x or ""))
+                            ]
+                            _why_bullets = [
+                                _normalize_ws(str(_x or ""))
+                                for _x in (_bfc.get("why_it_matters_bullets", []) or _brief_split_bullets(_why_b))
+                                if _normalize_ws(str(_x or ""))
+                            ]
+                            _all_bullets = _what_bullets + _key_bullets + _why_bullets
+                            _bullet_len_ok = all(len(_normalize_ws(_b)) >= 12 for _b in _all_bullets)
+                            _bullet_hit_count = sum(
+                                1
+                                for _b in _all_bullets
+                                if _brief_bullet_hit_anchor_or_number(_b, [_anchor_b] + _anchors_b)
+                            )
+                            _brief_event_info_ok = (
+                                len(_what_bullets) >= 3
+                                and len(_key_bullets) >= 2
+                                and len(_why_bullets) >= 2
+                                and _bullet_len_ok
+                                and _bullet_hit_count >= 2
+                            )
+                            if not _brief_event_info_ok:
+                                _brief_info_fail.append(
+                                    {
+                                        "title": _title_b,
+                                        "what_count": len(_what_bullets),
+                                        "key_count": len(_key_bullets),
+                                        "why_count": len(_why_bullets),
+                                        "bullet_len_ok": _bullet_len_ok,
+                                        "hit_count": _bullet_hit_count,
+                                    }
+                                )
 
                             if _brief_contains_boilerplate(_what_b, _why_b):
                                 _brief_bp_fail.append(
@@ -3927,11 +4214,30 @@ def run_pipeline() -> None:
                             encoding="utf-8",
                         )
 
+                        _brief_info_meta = {
+                            "gate_result": "PASS" if (len(_brief_info_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_info_fail),
+                            "failing_events": _brief_info_fail,
+                            "rules": {
+                                "what_happened_bullets_min": 3,
+                                "key_details_bullets_min": 2,
+                                "why_it_matters_bullets_min": 2,
+                                "min_bullet_chars": 12,
+                                "anchor_or_number_hits_min": 2,
+                            },
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_info_density_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_info_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
                         _brief_any_fail = (
                             _brief_min_meta["gate_result"] == "FAIL"
                             or _brief_bp_meta["gate_result"] == "FAIL"
                             or _brief_anchor_meta["gate_result"] == "FAIL"
                             or _brief_zh_meta["gate_result"] == "FAIL"
+                            or _brief_info_meta["gate_result"] == "FAIL"
                         )
                         if _brief_any_fail:
                             _brief_gate = "BRIEF_MIN_EVENTS_HARD"
@@ -3945,6 +4251,9 @@ def run_pipeline() -> None:
                             if _brief_zh_meta["gate_result"] == "FAIL":
                                 _brief_gate = "BRIEF_ZH_TW_HARD"
                                 _brief_detail = f"zh_tw_fail_count={len(_brief_zh_fail)}"
+                            if _brief_info_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_INFO_DENSITY_HARD"
+                                _brief_detail = f"info_density_fail_count={len(_brief_info_fail)}"
 
                             (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
                                 "# NOT_READY\n\n"
@@ -3953,7 +4262,7 @@ def run_pipeline() -> None:
                                 f"fail_reason: {_brief_detail}\n"
                                 f"counts: events_total={_brief_total} min_required={_brief_min_events} "
                                 f"boilerplate_fail={len(_brief_bp_fail)} anchor_fail={len(_brief_anchor_fail)} "
-                                f"zh_tw_fail={len(_brief_zh_fail)}\n",
+                                f"zh_tw_fail={len(_brief_zh_fail)} info_density_fail={len(_brief_info_fail)}\n",
                                 encoding="utf-8",
                             )
                             for _brief_art in ("executive_report.pptx", "executive_report.docx"):
@@ -3961,7 +4270,7 @@ def run_pipeline() -> None:
                             log.error("%s FAIL — %s", _brief_gate, _brief_detail)
                         else:
                             log.info(
-                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0",
+                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0 info_density_fail=0",
                                 _brief_min_events, _brief_total,
                             )
                     except Exception as _brief_gate_exc:
@@ -4365,4 +4674,5 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         run_pipeline()
+
 

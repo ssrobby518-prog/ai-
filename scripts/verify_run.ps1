@@ -490,6 +490,7 @@ $vrBriefGateMetas = @(
     @{ Label = "BRIEF_MIN_EVENTS_HARD";      File = "brief_min_events_hard.meta.json" },
     @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
     @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" },
+    @{ Label = "BRIEF_INFO_DENSITY_HARD";    File = "brief_info_density_hard.meta.json" },
     @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" }
 )
 $vrBriefRepoRoot = Split-Path -Parent $PSScriptRoot
@@ -1112,7 +1113,14 @@ Invoke-MetaGate -Label "BRIEF_ANCHOR_REQUIRED_HARD" -MetaFile "brief_anchor_requ
 }
 
 Write-Host ""
-Write-Host "AI_PURITY_GATES: 7/7 PASS" -ForegroundColor Green
+Write-Host "[AI Purity Gate] BRIEF_INFO_DENSITY_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_INFO_DENSITY_HARD" -MetaFile "brief_info_density_hard.meta.json" -InfoBuilder {
+    param($d)
+    "events_total=$((Get-MetaInt $d 'events_total' 0)) fail_count=$((Get-MetaInt $d 'fail_count' 0))"
+}
+
+Write-Host ""
+Write-Host "AI_PURITY_GATES: 8/8 PASS" -ForegroundColor Green
 
 # LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
 # ---------------------------------------------------------------------------
