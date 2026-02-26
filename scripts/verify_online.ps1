@@ -956,6 +956,27 @@ foreach ($bg in $briefGateMetas) {
                 $bgCjk = if ($bgRules.PSObject.Properties['min_bullet_cjk_chars']) { [int]$bgRules.min_bullet_cjk_chars } else { 12 }
                 $bgHits = if ($bgRules.PSObject.Properties['anchor_or_number_hits_min']) { [int]$bgRules.anchor_or_number_hits_min } else { 2 }
                 Write-Output ("     rules: min_bullet_cjk_chars={0} anchor_or_number_hits_min={1} quotes_non_cta={2}" -f $bgCjk, $bgHits, $(if ($bgRules.PSObject.Properties['quotes_must_not_hit_cta_stoplist']) { [bool]$bgRules.quotes_must_not_hit_cta_stoplist } else { $true }))
+                if ($bgMeta.PSObject.Properties['events'] -and @($bgMeta.events).Count -gt 0) {
+                    $bgEvents = @($bgMeta.events)
+                    $evCount = $bgEvents.Count
+                    $sumBullets = 0
+                    $sumCjkWeighted = 0.0
+                    foreach ($ev in $bgEvents) {
+                        $evBullets = if ($ev.PSObject.Properties['bullets_total']) {
+                            [int]$ev.bullets_total
+                        } else {
+                            ($(if ($ev.PSObject.Properties['what_happened_count']) { [int]$ev.what_happened_count } else { 0 }) +
+                             $(if ($ev.PSObject.Properties['key_details_count'])   { [int]$ev.key_details_count }   else { 0 }) +
+                             $(if ($ev.PSObject.Properties['why_it_matters_count']) { [int]$ev.why_it_matters_count } else { 0 }))
+                        }
+                        $sumBullets += $evBullets
+                        $evAvgCjk = if ($ev.PSObject.Properties['avg_cjk_chars_per_bullet']) { [double]$ev.avg_cjk_chars_per_bullet } else { 0.0 }
+                        $sumCjkWeighted += ($evAvgCjk * $evBullets)
+                    }
+                    $avgBullets = [Math]::Round(($sumBullets / [Math]::Max(1, $evCount)), 2)
+                    $avgCjk = if ($sumBullets -gt 0) { [Math]::Round(($sumCjkWeighted / $sumBullets), 2) } else { 0.0 }
+                    Write-Output ("     soft: avg_bullets_per_event={0} avg_cjk_chars_per_bullet={1}" -f $avgBullets, $avgCjk)
+                }
             }
         }
         if ($bgGate -eq "FAIL") {

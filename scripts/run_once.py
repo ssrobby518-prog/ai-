@@ -352,6 +352,13 @@ _BRIEF_GARBAGE_ACTORS = {
 _BRIEF_QUOTE_SPAN_START = 0.15
 _BRIEF_QUOTE_SPAN_END = 0.75
 _BRIEF_QUOTE_SPAN_POLICY = "0.15-0.75"
+_BRIEF_TARGET_WHAT_BULLETS = 5
+_BRIEF_TARGET_KEY_BULLETS = 4
+_BRIEF_TARGET_WHY_BULLETS_DEFAULT = 4
+_BRIEF_TARGET_WHY_BULLETS_MIN = 3
+_BRIEF_MIN_BULLET_CJK_CHARS = 18
+_BRIEF_MIN_ANCHOR_NUMBER_HITS = 3
+_BRIEF_MAX_SENTENCE_CANDIDATES = 20
 
 _TIER_A_SOURCE_RE = re.compile(
     r"(openai|anthropic|hugging\s*face|huggingface|google\s+research|google\s+ai|"
@@ -600,20 +607,40 @@ def _brief_quote_is_cta(text: str) -> bool:
     return bool(_BRIEF_CTA_RE.search(q))
 
 
-def _brief_quote_relevance_ok(quote: str, actor: str, title_tokens: list[str]) -> bool:
+def _brief_quote_relevance_ok(
+    quote: str,
+    actor: str,
+    title_tokens: list[str],
+    anchors: list[str] | None = None,
+) -> bool:
     q = _normalize_ws(quote)
     if not q:
         return False
     actor_n = _normalize_ws(actor)
-    if actor_n and actor_n.lower() in q.lower():
-        return True
     q_l = q.lower()
+    if actor_n and actor_n.lower() in q_l:
+        return True
     overlap = 0
     for tk in title_tokens:
         if tk and tk in q_l:
             overlap += 1
-            if overlap >= 2:
+    if overlap >= 2:
+        return True
+    if anchors:
+        for anc in anchors:
+            a = _normalize_ws(anc)
+            if not a:
+                continue
+            if a.isascii():
+                if a.lower() in q_l:
+                    return True
+            elif a in q:
                 return True
+    has_number = bool(re.search(r"(?:\d|[$€¥£]|(?:19|20)\d{2}|%)", q))
+    has_impact = bool(_BRIEF_IMPACT_WORD_RE.search(q))
+    has_action = bool(_BRIEF_ACTION_WORD_RE.search(q))
+    if overlap >= 1 and (has_number or has_impact or has_action):
+        return True
     return False
 
 
@@ -661,6 +688,7 @@ def _brief_select_relevant_quote(
     seed_quote: str,
     actor: str,
     title: str,
+    anchors: list[str] | None = None,
     avoid_quote: str = "",
     diag: dict | None = None,
     span_start: float = _BRIEF_QUOTE_SPAN_START,
@@ -677,7 +705,7 @@ def _brief_select_relevant_quote(
             if isinstance(diag, dict):
                 diag["quote_stoplist_hits_count"] = int(diag.get("quote_stoplist_hits_count", 0) or 0) + 1
             continue
-        if not _brief_quote_relevance_ok(cand, actor, title_tokens):
+        if not _brief_quote_relevance_ok(cand, actor, title_tokens, anchors=anchors):
             continue
         return cand
     return ""
@@ -689,6 +717,7 @@ def _brief_collect_relevant_quotes(
     seed_quote: str,
     actor: str,
     title: str,
+    anchors: list[str] | None = None,
     avoid_quotes: set[str] | None = None,
     diag: dict | None = None,
     span_start: float,
@@ -710,7 +739,7 @@ def _brief_collect_relevant_quotes(
             if isinstance(diag, dict):
                 diag["quote_stoplist_hits_count"] = int(diag.get("quote_stoplist_hits_count", 0) or 0) + 1
             continue
-        if not _brief_quote_relevance_ok(c, actor, title_tokens):
+        if not _brief_quote_relevance_ok(c, actor, title_tokens, anchors=anchors):
             continue
         seen.add(cl)
         out.append(c)
@@ -760,6 +789,39 @@ def _brief_extract_num_token(*parts: str) -> str:
         re.IGNORECASE,
     )
     return _normalize_ws(m.group(0)) if m else ""
+
+
+def _brief_topic_marker(title: str, actor: str, anchors: list[str]) -> str:
+    ttl = _normalize_ws(title)
+    if not ttl:
+        return ""
+    actor_l = _normalize_ws(actor).lower()
+    anchor_l = {
+        _normalize_ws(a).lower()
+        for a in (anchors or [])
+        if _normalize_ws(a)
+    }
+    for tk in re.findall(r"[A-Za-z][A-Za-z0-9\-]{2,}|[\u4e00-\u9fff]{2,}", ttl):
+        t = _normalize_ws(tk)
+        if not t:
+            continue
+        tl = t.lower()
+        if actor_l and tl == actor_l:
+            continue
+        if tl in anchor_l:
+            continue
+        return _clip_text(t, 20)
+    return _clip_text(ttl, 20)
+
+
+def _brief_apply_topic_marker(bullet: str, marker: str) -> str:
+    b = _normalize_ws(bullet)
+    m = _normalize_ws(marker)
+    if (not b) or (not m):
+        return b
+    if m.lower() in b.lower():
+        return b
+    return _normalize_ws(f"「{m}」{b}")
 
 
 def _brief_norm_bullet(text: str) -> str:
@@ -986,7 +1048,7 @@ def _brief_mine_sentence_candidates(
     actor: str,
     anchors: list[str],
     full_text: str,
-    max_candidates: int = 12,
+    max_candidates: int = _BRIEF_MAX_SENTENCE_CANDIDATES,
     diag: dict | None = None,
 ) -> list[dict]:
     sents = _brief_split_source_sentences(full_text)
@@ -1100,7 +1162,8 @@ def _brief_pick_quote_from_candidates(
         if role == "impact":
             has_num = bool(re.search(r"(?:\d|[$€¥£]|%)", q))
             has_impact = bool(_BRIEF_IMPACT_WORD_RE.search(q))
-            if (not has_num) and (not has_impact):
+            has_anchor = bool(cand.get("has_anchor"))
+            if (not has_num) and (not has_impact) and (not has_anchor):
                 continue
         return q
     return ""
@@ -1110,7 +1173,7 @@ def _brief_validate_zh_bullet(text: str) -> bool:
     b = _normalize_ws(text)
     if not b:
         return False
-    if _brief_count_cjk_chars(b) < 12:
+    if _brief_count_cjk_chars(b) < _BRIEF_MIN_BULLET_CJK_CHARS:
         return False
     if _STYLE_SANITY_RE.search(b):
         return False
@@ -1214,12 +1277,15 @@ def _brief_build_role_bullets(
     min_count: int,
     max_count: int,
     used_sentences: set[str],
+    allow_reuse_sentences: bool = False,
 ) -> list[str]:
     out: list[str] = []
     used_bullets: set[str] = set()
     for cand in candidates:
         en = _normalize_ws(str(cand.get("text", "") or ""))
-        if (not en) or (en.lower() in used_sentences):
+        if not en:
+            continue
+        if (not allow_reuse_sentences) and (en.lower() in used_sentences):
             continue
         zh = _brief_sentence_to_zh_bullet(
             sentence_en=en,
@@ -1235,7 +1301,8 @@ def _brief_build_role_bullets(
             continue
         out.append(zh)
         used_bullets.add(zhl)
-        used_sentences.add(en.lower())
+        if not allow_reuse_sentences:
+            used_sentences.add(en.lower())
         if len(out) >= max(1, int(max_count)):
             break
     return out[:max(1, int(max_count))]
@@ -1495,7 +1562,20 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         "tierA_candidates": 0,
         "tierA_used": 0,
         "content_miner_events": [],
+        "dropped_events": [],
     }
+    def _record_drop(reason: str, title_text: str, extra: dict | None = None) -> None:
+        if len(diag.get("dropped_events", [])) >= 40:
+            return
+        payload = {
+            "reason": _normalize_ws(reason),
+            "title": _normalize_ws(title_text)[:140],
+        }
+        if isinstance(extra, dict):
+            for k, v in extra.items():
+                payload[str(k)] = v
+        diag["dropped_events"].append(payload)
+
     for fc in sorted(final_cards or [], key=_brief_candidate_priority, reverse=True):
         _fc_src = _normalize_ws(str(fc.get("source_name", "") or ""))
         _fc_url = _normalize_ws(str(fc.get("final_url", "") or fc.get("source_url", "") or ""))
@@ -1504,11 +1584,13 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             diag["tierA_candidates"] += 1
         if not bool(fc.get("ai_relevance", False)):
             diag["drop_non_ai"] += 1
+            _record_drop("non_ai", _fc_ttl)
             continue
 
         actor = _normalize_ws(str(fc.get("actor_primary", "") or fc.get("actor", "") or ""))
         if (not actor) or _is_actor_numeric(actor) or _brief_is_garbage_actor(actor):
             diag["drop_actor_invalid"] += 1
+            _record_drop("actor_invalid", _fc_ttl, {"actor": actor})
             continue
 
         title = _normalize_ws(str(fc.get("title", "") or ""))
@@ -1518,6 +1600,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         fulltext_len = len(source_blob)
         if fulltext_len < 200:
             diag["drop_quote_relevance"] += 1
+            _record_drop("fulltext_too_short", title, {"fulltext_len": fulltext_len})
             continue
 
         anchors_raw = [
@@ -1528,6 +1611,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         anchor = _brief_pick_primary_anchor(actor, anchors_raw)
         if not anchor:
             diag["drop_anchor_missing"] += 1
+            _record_drop("anchor_missing", title, {"actor": actor})
             continue
         anchors_all = [anchor] + anchors_raw
 
@@ -1537,7 +1621,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             actor=actor,
             anchors=anchors_all,
             full_text=source_blob,
-            max_candidates=16,
+            max_candidates=_BRIEF_MAX_SENTENCE_CANDIDATES,
             diag=miner_diag,
         )
         diag["quote_stoplist_hits_count"] = int(diag.get("quote_stoplist_hits_count", 0) or 0) + int(
@@ -1545,16 +1629,29 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         )
         if len(mined) < 4:
             diag["drop_quote_relevance"] += 1
+            _record_drop(
+                "mined_candidates_insufficient",
+                title,
+                {
+                    "fulltext_len": fulltext_len,
+                    "candidates_total": int(miner_diag.get("candidates_total", 0) or 0),
+                    "stoplist_rejected": int(miner_diag.get("stoplist_rejected", 0) or 0),
+                    "short_rejected": int(miner_diag.get("short_rejected", 0) or 0),
+                    "span_policy_used": str(miner_diag.get("span_policy_used", "")),
+                },
+            )
             continue
 
-        quote_1 = _brief_pick_quote_from_candidates(mined, role="lede", avoid_quotes=set())
-        quote_2 = _brief_pick_quote_from_candidates(mined, role="impact", avoid_quotes={quote_1})
+        _sorted_by_score = sorted(mined, key=lambda c: (-int(c.get("score", 0)), int(c.get("index", 0))))
+        quote_1 = _brief_pick_quote_from_candidates(_sorted_by_score, role="lede", avoid_quotes=set())
+        quote_2 = _brief_pick_quote_from_candidates(_sorted_by_score, role="impact", avoid_quotes={quote_1})
         if not quote_1:
             quote_1 = _brief_select_relevant_quote(
                 source_text=source_blob,
                 seed_quote=_normalize_ws(str(fc.get("quote_1", "") or "")),
                 actor=actor,
                 title=title,
+                anchors=anchors_all,
                 avoid_quote="",
                 diag=diag,
                 span_start=0.15,
@@ -1566,19 +1663,55 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                 seed_quote=_normalize_ws(str(fc.get("quote_2", "") or "")),
                 actor=actor,
                 title=title,
+                anchors=anchors_all,
                 avoid_quote=quote_1,
                 diag=diag,
                 span_start=0.35,
                 span_end=0.75,
             )
         if (not quote_1) or (not quote_2):
+            _quote_fallbacks = _brief_collect_relevant_quotes(
+                source_text=source_blob,
+                seed_quote="",
+                actor=actor,
+                title=title,
+                anchors=anchors_all,
+                avoid_quotes={_normalize_ws(quote_1), _normalize_ws(quote_2)},
+                diag=diag,
+                span_start=0.12,
+                span_end=0.82,
+                max_candidates=6,
+            )
+            if (not quote_1) and _quote_fallbacks:
+                quote_1 = _quote_fallbacks[0]
+            if not quote_2:
+                for _qf in _quote_fallbacks:
+                    if _normalize_ws(_qf).lower() != _normalize_ws(quote_1).lower():
+                        quote_2 = _qf
+                        break
+        if (not quote_1) or (not quote_2):
             diag["drop_quote_relevance"] += 1
+            _record_drop(
+                "quote_missing_after_selection",
+                title,
+                {
+                    "q1_len": len(_normalize_ws(quote_1)),
+                    "q2_len": len(_normalize_ws(quote_2)),
+                    "candidates_total": int(miner_diag.get("candidates_total", 0) or 0),
+                },
+            )
             continue
         if len(quote_1) < 80 or len(quote_2) < 80:
             diag["drop_quote_too_short"] += 1
+            _record_drop(
+                "quote_too_short",
+                title,
+                {"q1_len": len(quote_1), "q2_len": len(quote_2)},
+            )
             continue
         if _brief_quote_is_cta(quote_1) or _brief_quote_is_cta(quote_2):
             diag["drop_quote_relevance"] += 1
+            _record_drop("quote_cta_hit", title, {"q1_cta": _brief_quote_is_cta(quote_1), "q2_cta": _brief_quote_is_cta(quote_2)})
             continue
 
         _final_url = _normalize_ws(str(fc.get("final_url", "") or ""))
@@ -1587,7 +1720,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         decision_angle = _brief_decision_angle(category)
 
         used_en: set[str] = set()
-        _sorted_by_score = sorted(mined, key=lambda c: (-int(c.get("score", 0)), int(c.get("index", 0))))
         _what_pool = [
             c for c in _sorted_by_score
             if bool(c.get("has_action")) or bool(c.get("actor_hit")) or int(c.get("title_overlap", 0) or 0) >= 2
@@ -1607,8 +1739,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             title=title,
             actor=actor,
             anchors=anchors_all,
-            min_count=3,
-            max_count=5,
+            min_count=_BRIEF_TARGET_WHAT_BULLETS,
+            max_count=_BRIEF_TARGET_WHAT_BULLETS,
             used_sentences=used_en,
         )
         key_details_bullets = _brief_build_role_bullets(
@@ -1617,9 +1749,10 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             title=title,
             actor=actor,
             anchors=anchors_all,
-            min_count=2,
-            max_count=4,
+            min_count=_BRIEF_TARGET_KEY_BULLETS,
+            max_count=_BRIEF_TARGET_KEY_BULLETS,
             used_sentences=used_en,
+            allow_reuse_sentences=True,
         )
         why_bullets = _brief_build_role_bullets(
             role="why",
@@ -1627,8 +1760,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             title=title,
             actor=actor,
             anchors=anchors_all,
-            min_count=2,
-            max_count=4,
+            min_count=_BRIEF_TARGET_WHY_BULLETS_MIN,
+            max_count=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
             used_sentences=used_en,
         )
 
@@ -1640,45 +1773,49 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             f"{anchor} 在原文中明確提到「{q1_clip}」，可核對事件主軸與行動內容。",
             f"同篇報導另段指出「{q2_clip}」，補足了事件邊界與涉入對象。",
             f"該事件與 {anchor} 的公開更新直接相關，來源句可逐字回查。",
+            f"原文提及的核心數據為 {num_token or '關鍵數字'}，可直接驗證影響規模與時間節點。",
+            f"此事件標題「{_clip_text(title, 36)}」與 {anchor} 的實際動作相互對照，能快速定位重點。",
         ]
         key_fallbacks = [
-            f"技術細節可由引文「{q2_clip}」回推，並可檢查前提限制。",
-            f"原始來源為 {(_final_url or '公開網址')}，可追溯全文與發布時間。",
-            f"量化依據顯示 {num_token or '關鍵數字'}，可對照實際影響範圍。",
+            f"技術細節可由引文「{q2_clip}」回推，並可檢查前提限制與部署條件。",
+            f"量化依據顯示 {num_token or '關鍵數字'}，可對照實際影響範圍與時程節點。",
+            f"若以 {anchor} 為錨點回查原文，可釐清功能邊界、適用場景與操作限制。",
+            f"同篇報導亦提及「{q1_clip}」，能補齊模型能力、風險條件與驗證方法。",
+            f"交叉比對兩段引文可確認資料來源、更新時點與推論假設是否一致。",
+            f"根據原文對 {anchor} 的描述，可建立可追溯的技術條件與資源估算基準。",
         ]
         why_fallbacks = [
             f"此更新將影響 {impact_target} 的評估方法，需重新比較優先順序。",
             f"依據引文與數據訊號，{decision_angle} 需要同步調整。",
             f"{anchor} 的進展會改變後續決策節奏，並牽動跨團隊配置。",
+            f"若忽略 {num_token or '關鍵數字'} 與 {anchor} 的變化，將提高判斷落差與資源錯配風險。",
         ]
         for fb in what_fallbacks:
-            if len(what_bullets) >= 5:
+            if len(what_bullets) >= _BRIEF_TARGET_WHAT_BULLETS:
                 break
             norm_fb = _brief_norm_bullet(fb)
             if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in what_bullets}):
                 what_bullets.append(norm_fb)
-            if len(what_bullets) >= 3:
-                break
         for fb in key_fallbacks:
-            if len(key_details_bullets) >= 4:
+            if len(key_details_bullets) >= _BRIEF_TARGET_KEY_BULLETS:
                 break
             norm_fb = _brief_norm_bullet(fb)
             if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in key_details_bullets}):
                 key_details_bullets.append(norm_fb)
-            if len(key_details_bullets) >= 2:
-                break
         for fb in why_fallbacks:
-            if len(why_bullets) >= 4:
+            if len(why_bullets) >= _BRIEF_TARGET_WHY_BULLETS_DEFAULT:
                 break
             norm_fb = _brief_norm_bullet(fb)
             if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in why_bullets}):
                 why_bullets.append(norm_fb)
-            if len(why_bullets) >= 2:
-                break
 
-        what_bullets = what_bullets[:5]
-        key_details_bullets = key_details_bullets[:4]
-        why_bullets = why_bullets[:4]
+        what_bullets = what_bullets[:_BRIEF_TARGET_WHAT_BULLETS]
+        key_details_bullets = key_details_bullets[:_BRIEF_TARGET_KEY_BULLETS]
+        why_bullets = why_bullets[:_BRIEF_TARGET_WHY_BULLETS_DEFAULT]
+        _topic_marker = _brief_topic_marker(title, actor, anchors_all)
+        what_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in what_bullets]
+        key_details_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in key_details_bullets]
+        why_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in why_bullets]
         what = "\n".join(what_bullets)
         why = "\n".join(why_bullets)
         summary_zh = _normalize_ws(
@@ -1694,29 +1831,43 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         )
         if _generic_hits:
             diag["drop_generic_narrative"] += 1
+            _record_drop("generic_narrative", title, {"sample_hit_pattern": str(_generic_hits[0].get("hit_pattern", "") or "")})
             continue
         if _brief_contains_boilerplate(summary_zh, what, why):
             diag["drop_boilerplate"] += 1
+            _record_drop("boilerplate", title)
             continue
         if (not _brief_has_anchor_token(what, [anchor])) or (not _brief_has_anchor_token(why, [anchor])):
             diag["drop_anchor_missing"] += 1
+            _record_drop("anchor_missing_in_sections", title, {"anchor": anchor})
             continue
 
         _all_bullets = what_bullets + key_details_bullets + why_bullets
-        _bullet_cjk_ok = all(_brief_count_cjk_chars(_b) >= 12 for _b in _all_bullets)
+        _bullet_cjk_ok = all(_brief_count_cjk_chars(_b) >= _BRIEF_MIN_BULLET_CJK_CHARS for _b in _all_bullets)
         _bullet_hit_count = sum(
             1
             for _b in _all_bullets
             if _brief_bullet_hit_anchor_or_number(_b, anchors_all)
         )
         if (
-            len(what_bullets) < 3
-            or len(key_details_bullets) < 2
-            or len(why_bullets) < 2
+            len(what_bullets) < _BRIEF_TARGET_WHAT_BULLETS
+            or len(key_details_bullets) < _BRIEF_TARGET_KEY_BULLETS
+            or len(why_bullets) < _BRIEF_TARGET_WHY_BULLETS_MIN
             or (not _bullet_cjk_ok)
-            or _bullet_hit_count < 2
+            or _bullet_hit_count < _BRIEF_MIN_ANCHOR_NUMBER_HITS
         ):
             diag["drop_quote_relevance"] += 1
+            _record_drop(
+                "density_target_not_met",
+                title,
+                {
+                    "what_count": len(what_bullets),
+                    "key_count": len(key_details_bullets),
+                    "why_count": len(why_bullets),
+                    "bullet_cjk_ok": bool(_bullet_cjk_ok),
+                    "anchor_or_number_hits": int(_bullet_hit_count),
+                },
+            )
             continue
 
         _sig_set = _brief_collect_frame_signatures(
@@ -1735,6 +1886,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                 break
         if _dup_hit is not None:
             diag["drop_duplicate_frames"] += 1
+            _record_drop("duplicate_frames", title, {"sample_hit_pattern": str(_dup_hit[0] if _dup_hit else "")})
             continue
 
         anchors_out = [anchor] + [a for a in anchors_raw if a.lower() != anchor.lower()]
@@ -1748,15 +1900,27 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         out["summary_zh"] = summary_zh
         out["what_happened_brief"] = what
         out["why_it_matters_brief"] = why
-        _qw1 = _normalize_ws(str(fc.get("quote_window_1", "") or "")) or _extract_quote_window(quote_1, min_len=20, max_len=30)
-        _qw2 = _normalize_ws(str(fc.get("quote_window_2", "") or "")) or _extract_quote_window(quote_2, min_len=20, max_len=30)
+        _qw1 = _normalize_ws(str(fc.get("quote_window_1", "") or ""))
+        if len(_qw1) < 8:
+            _qw1 = _extract_quote_window(quote_1, min_len=20, max_len=30)
+        if len(_qw1) < 8:
+            _qw1 = _clip_text(_normalize_ws(quote_1), 20)
+        _qw2 = _normalize_ws(str(fc.get("quote_window_2", "") or ""))
+        if len(_qw2) < 8:
+            _qw2 = _extract_quote_window(quote_2, min_len=20, max_len=30)
+        if len(_qw2) < 8:
+            _qw2 = _clip_text(_normalize_ws(quote_2), 20)
         out["quote_window_1"] = _qw1
         out["quote_window_2"] = _qw2
+        _q1_header = _normalize_ws(f"{actor}（錨點 {anchor}）的事件重點：")
+        _q2_header = _normalize_ws(f"{actor}（錨點 {anchor}）的影響判讀：")
+        _q1_body = _normalize_ws(" ".join(what_bullets[:2])).replace("「", "\"").replace("」", "\"")
+        _q2_body = _normalize_ws(" ".join(why_bullets[:2])).replace("「", "\"").replace("」", "\"")
         out["q1_zh"] = _normalize_ws(
-            f"{' '.join(what_bullets[:2])} 原文片段：「{_qw1}」。"
+            f"{_q1_header} {_q1_body} 原文片段：「{_qw1}」。"
         )
         out["q2_zh"] = _normalize_ws(
-            f"{' '.join(why_bullets[:2])} 影響片段：「{_qw2}」。"
+            f"{_q2_header} {_q2_body} 影響片段：「{_qw2}」。"
         )
         out["q1"] = out["q1_zh"]
         out["q2"] = out["q2_zh"]
@@ -1983,6 +2147,7 @@ def _write_brief_content_miner_meta(
 
         _diag = dict(diag or {})
         _events = list(_diag.get("content_miner_events", []) or [])
+        _dropped = list(_diag.get("dropped_events", []) or [])
         _quote1_cta = sum(1 for _ev in _events if bool(_ev.get("quote1_is_cta", False)))
         _quote2_cta = sum(1 for _ev in _events if bool(_ev.get("quote2_is_cta", False)))
         _out = {
@@ -1996,6 +2161,7 @@ def _write_brief_content_miner_meta(
             "quote_stoplist_hits_count": int(_diag.get("quote_stoplist_hits_count", 0) or 0),
             "sentence_span_policy": _BRIEF_QUOTE_SPAN_POLICY,
             "events": _events,
+            "dropped_events": _dropped,
         }
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_content_miner.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5489,7 +5655,10 @@ def run_pipeline() -> None:
                             _quote_1_b = _normalize_ws(str(_bfc.get("quote_1", "") or ""))
                             _quote_2_b = _normalize_ws(str(_bfc.get("quote_2", "") or ""))
                             _all_bullets = _what_bullets + _key_bullets + _why_bullets
-                            _bullet_len_ok = all(_brief_count_cjk_chars(_b) >= 12 for _b in _all_bullets)
+                            _total_cjk_chars = sum(_brief_count_cjk_chars(_b) for _b in _all_bullets)
+                            _bullets_total = len(_all_bullets)
+                            _avg_cjk_chars_per_bullet = round((_total_cjk_chars / max(1, _bullets_total)), 2)
+                            _bullet_len_ok = all(_brief_count_cjk_chars(_b) >= _BRIEF_MIN_BULLET_CJK_CHARS for _b in _all_bullets)
                             _bullet_hit_count = sum(
                                 1
                                 for _b in _all_bullets
@@ -5497,11 +5666,11 @@ def run_pipeline() -> None:
                             )
                             _quote_cta_clean = (not _brief_quote_is_cta(_quote_1_b)) and (not _brief_quote_is_cta(_quote_2_b))
                             _brief_event_info_ok = (
-                                len(_what_bullets) >= 3
-                                and len(_key_bullets) >= 2
-                                and len(_why_bullets) >= 2
+                                len(_what_bullets) >= _BRIEF_TARGET_WHAT_BULLETS
+                                and len(_key_bullets) >= _BRIEF_TARGET_KEY_BULLETS
+                                and len(_why_bullets) >= _BRIEF_TARGET_WHY_BULLETS_MIN
                                 and _bullet_len_ok
-                                and _bullet_hit_count >= 2
+                                and _bullet_hit_count >= _BRIEF_MIN_ANCHOR_NUMBER_HITS
                                 and _quote_cta_clean
                             )
                             # Per-event observability record (Step 4)
@@ -5515,6 +5684,8 @@ def run_pipeline() -> None:
                                 "what_happened_count": len(_what_bullets),
                                 "key_details_count": len(_key_bullets),
                                 "why_it_matters_count": len(_why_bullets),
+                                "bullets_total": _bullets_total,
+                                "avg_cjk_chars_per_bullet": _avg_cjk_chars_per_bullet,
                                 "bullet_len_ok": _bullet_len_ok,
                                 "anchor_number_hits": _bullet_hit_count,
                                 "quote_cta_clean": _quote_cta_clean,
@@ -5651,11 +5822,11 @@ def run_pipeline() -> None:
                             "fail_count": len(_brief_info_fail),
                             "failing_events": _brief_info_fail,
                             "rules": {
-                                "what_happened_bullets_min": 3,
-                                "key_details_bullets_min": 2,
-                                "why_it_matters_bullets_min": 2,
-                                "min_bullet_cjk_chars": 12,
-                                "anchor_or_number_hits_min": 2,
+                                "what_happened_bullets_min": _BRIEF_TARGET_WHAT_BULLETS,
+                                "key_details_bullets_min": _BRIEF_TARGET_KEY_BULLETS,
+                                "why_it_matters_bullets_min": _BRIEF_TARGET_WHY_BULLETS_MIN,
+                                "min_bullet_cjk_chars": _BRIEF_MIN_BULLET_CJK_CHARS,
+                                "anchor_or_number_hits_min": _BRIEF_MIN_ANCHOR_NUMBER_HITS,
                                 "quotes_must_not_hit_cta_stoplist": True,
                             },
                             "events": _brief_info_events,  # per-event observability (Step 4)
