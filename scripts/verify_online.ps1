@@ -971,6 +971,43 @@ foreach ($bg in $briefGateMetas) {
         exit 1
     }
 }
+
+# ---------------------------------------------------------------------------
+# PPTX_MEDIA_AUDIT (soft): observability only; never affects PASS/FAIL.
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "PPTX_MEDIA_AUDIT (soft):"
+$pptxExecPath = Join-Path $repoRoot "outputs\executive_report.pptx"
+$pptxNotReadyPath = Join-Path $repoRoot "outputs\NOT_READY_report.pptx"
+$pptxAuditPath = ""
+if (Test-Path $pptxExecPath) {
+    $pptxAuditPath = $pptxExecPath
+} elseif (Test-Path $pptxNotReadyPath) {
+    $pptxAuditPath = $pptxNotReadyPath
+}
+if (-not $pptxAuditPath) {
+    Write-Output "  PPTX_MEDIA_AUDIT: SKIP (no pptx found)"
+} else {
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($pptxAuditPath)
+        try {
+            $slideCount = @($zip.Entries | Where-Object { $_.FullName -match '^ppt/slides/slide\d+\.xml$' }).Count
+            $imageCount = @($zip.Entries | Where-Object { $_.FullName -match '^ppt/media/.*\.(png|jpg|jpeg|gif|bmp|wmf|emf)$' }).Count
+            Write-Output ("  pptx_path     : {0}" -f $pptxAuditPath)
+            Write-Output ("  report_mode   : {0}" -f $(if ($reportMode) { $reportMode } else { "unknown" }))
+            Write-Output ("  slide_count   : {0}" -f $slideCount)
+            Write-Output ("  image_count   : {0}" -f $imageCount)
+            Write-Output "  expected_images_if_brief : 0"
+            Write-Output "  note          : brief 模式期望 image_count=0（僅提示，不影響 PASS/FAIL）"
+        } finally {
+            $zip.Dispose()
+        }
+    } catch {
+        Write-Output ("  PPTX_MEDIA_AUDIT: SKIP (audit error: {0})" -f $_)
+    }
+}
+
 if ($briefAnyFail) {
     exit 1
 }
