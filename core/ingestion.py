@@ -5,6 +5,7 @@ Fetch RSS -> clean -> normalize -> dedup -> filter -> batch.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -26,6 +27,28 @@ from utils.text_clean import normalize_whitespace, strip_html
 # ---------------------------------------------------------------------------
 # RSS fetching with retries
 # ---------------------------------------------------------------------------
+
+_TIER_A_SOURCE_RE = re.compile(
+    r"(openai|anthropic|hugging\s*face|huggingface|google\s+research|google\s+ai|"
+    r"deepmind|model\s+release|research\s+blog|official\s+blog)",
+    re.IGNORECASE,
+)
+
+_TIER_A_URL_RE = re.compile(
+    r"(openai\.com/blog|anthropic\.com/news|huggingface\.co/blog|ai\.googleblog\.com|"
+    r"blog\.google/.*/ai|research\.google|deepmind\.google/.*/blog|google-research)",
+    re.IGNORECASE,
+)
+
+
+def _is_tier_a_feed(feed_cfg: dict) -> bool:
+    """Tier-A sources have higher full-text hydration reliability."""
+    name = str(feed_cfg.get("name", "") or "")
+    url = str(feed_cfg.get("url", "") or "")
+    blob = f"{name} {url}".strip()
+    if not blob:
+        return False
+    return bool(_TIER_A_SOURCE_RE.search(blob) or _TIER_A_URL_RE.search(url))
 
 
 @retry(
@@ -120,14 +143,23 @@ def fetch_all_feeds() -> list[RawItem]:
     rss_items: list[RawItem] = []
     rss_success = 0
     rss_failed = 0
+    tier_a_feeds = 0
     _feed_source_counts: list[dict] = []
-    for feed_cfg in settings.RSS_FEEDS:
+    _ordered_feeds = sorted(
+        list(settings.RSS_FEEDS),
+        key=lambda cfg: (0 if _is_tier_a_feed(cfg) else 1, str(cfg.get("name", "") or "").lower()),
+    )
+    for feed_cfg in _ordered_feeds:
+        _tier_a = _is_tier_a_feed(feed_cfg)
+        if _tier_a:
+            tier_a_feeds += 1
         items = fetch_feed(feed_cfg)
         rss_items.extend(items)
         _feed_source_counts.append({
             "name": feed_cfg.get("name", ""),
             "url": feed_cfg.get("url", ""),
             "lang": feed_cfg.get("lang", ""),
+            "tier_a": _tier_a,
             "returned": len(items),
         })
         if items:
@@ -141,8 +173,17 @@ def fetch_all_feeds() -> list[RawItem]:
         _fsp = settings.PROJECT_ROOT / "outputs" / "feed_stats.meta.json"
         _fsp.parent.mkdir(parents=True, exist_ok=True)
         _fsp.write_text(
-            _json.dumps({"mode": "rss", "source_feeds": _feed_source_counts, "total_from_rss": len(rss_items)},
-                        ensure_ascii=False, indent=2),
+            _json.dumps(
+                {
+                    "mode": "rss",
+                    "source_feeds": _feed_source_counts,
+                    "total_from_rss": len(rss_items),
+                    "tier_a_feeds": tier_a_feeds,
+                    "tier_a_ratio": round(tier_a_feeds / max(1, len(_ordered_feeds)), 3),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
     except Exception:

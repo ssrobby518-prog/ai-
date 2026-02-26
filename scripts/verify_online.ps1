@@ -941,6 +941,39 @@ foreach ($bg in $briefGateMetas) {
 }
 
 # ---------------------------------------------------------------------------
+# SUPPLY RESILIENCE META (observability only; non-gating)
+# ---------------------------------------------------------------------------
+$supplyMetaPath = Join-Path $repoRoot "outputs\supply_resilience.meta.json"
+Write-Output ""
+Write-Output "SUPPLY_RESILIENCE:"
+if (Test-Path $supplyMetaPath) {
+    try {
+        $srm = Get-Content $supplyMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Output ("  run_id                     : {0}" -f $(if ($srm.PSObject.Properties['run_id']) { $srm.run_id } else { "" }))
+        Write-Output ("  report_mode                : {0}" -f $(if ($srm.PSObject.Properties['report_mode']) { $srm.report_mode } else { "" }))
+        Write-Output ("  mode                       : {0}" -f $(if ($srm.PSObject.Properties['mode']) { $srm.mode } else { "" }))
+        Write-Output ("  fetched_total              : {0}" -f $(if ($srm.PSObject.Properties['fetched_total']) { $srm.fetched_total } else { 0 }))
+        Write-Output ("  hydrated_ok                : {0}" -f $(if ($srm.PSObject.Properties['hydrated_ok']) { $srm.hydrated_ok } else { 0 }))
+        Write-Output ("  hydrated_coverage          : {0}" -f $(if ($srm.PSObject.Properties['hydrated_coverage']) { $srm.hydrated_coverage } else { 0 }))
+        Write-Output ("  tierA_candidates           : {0}" -f $(if ($srm.PSObject.Properties['tierA_candidates']) { $srm.tierA_candidates } else { 0 }))
+        Write-Output ("  tierA_used                 : {0}" -f $(if ($srm.PSObject.Properties['tierA_used']) { $srm.tierA_used } else { 0 }))
+        Write-Output ("  quote_candidate_span_policy: {0}" -f $(if ($srm.PSObject.Properties['quote_candidate_span_policy']) { $srm.quote_candidate_span_policy } else { "" }))
+        Write-Output ("  quote_stoplist_hits_count  : {0}" -f $(if ($srm.PSObject.Properties['quote_stoplist_hits_count']) { $srm.quote_stoplist_hits_count } else { 0 }))
+        Write-Output ("  extended_pool_used         : {0}" -f $(if ($srm.PSObject.Properties['extended_pool_used']) { $srm.extended_pool_used } else { $false }))
+        Write-Output ("  extended_pool_added_count  : {0}" -f $(if ($srm.PSObject.Properties['extended_pool_added_count']) { $srm.extended_pool_added_count } else { 0 }))
+        Write-Output ("  final_ai_selected_events   : {0}" -f $(if ($srm.PSObject.Properties['final_ai_selected_events']) { $srm.final_ai_selected_events } else { 0 }))
+        Write-Output ("  not_ready                  : {0}" -f $(if ($srm.PSObject.Properties['not_ready']) { $srm.not_ready } else { $false }))
+        if ($srm.PSObject.Properties['reason']) {
+            Write-Output ("  reason                     : {0}" -f $srm.reason)
+        }
+    } catch {
+        Write-Output ("  supply_resilience meta parse error (non-fatal): {0}" -f $_)
+    }
+} else {
+    Write-Output "  supply_resilience.meta.json not found (skipped)"
+}
+
+# ---------------------------------------------------------------------------
 # EXEC_NEWS_QUALITY_HARD GATE (online run)
 #   Reads outputs/exec_news_quality.meta.json written by run_once.py.
 #   PASS: gate_result=PASS; SKIP: meta absent; FAIL: gate_result=FAIL (exit 1)

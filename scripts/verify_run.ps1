@@ -525,6 +525,39 @@ foreach ($bg in $vrBriefGateMetas) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# SUPPLY RESILIENCE META (observability only; non-gating)
+# ---------------------------------------------------------------------------
+$vrSupplyMetaPath = Join-Path $vrBriefRepoRoot "outputs\supply_resilience.meta.json"
+Write-Host ""
+Write-Host "SUPPLY RESILIENCE META:" -ForegroundColor Yellow
+if (Test-Path $vrSupplyMetaPath) {
+    try {
+        $vrSrm = Get-Content $vrSupplyMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Write-Host ("  run_id                     : {0}" -f $(if ($vrSrm.PSObject.Properties['run_id']) { $vrSrm.run_id } else { "" }))
+        Write-Host ("  report_mode                : {0}" -f $(if ($vrSrm.PSObject.Properties['report_mode']) { $vrSrm.report_mode } else { "" }))
+        Write-Host ("  mode                       : {0}" -f $(if ($vrSrm.PSObject.Properties['mode']) { $vrSrm.mode } else { "" }))
+        Write-Host ("  fetched_total              : {0}" -f $(if ($vrSrm.PSObject.Properties['fetched_total']) { $vrSrm.fetched_total } else { 0 }))
+        Write-Host ("  hydrated_ok                : {0}" -f $(if ($vrSrm.PSObject.Properties['hydrated_ok']) { $vrSrm.hydrated_ok } else { 0 }))
+        Write-Host ("  hydrated_coverage          : {0}" -f $(if ($vrSrm.PSObject.Properties['hydrated_coverage']) { $vrSrm.hydrated_coverage } else { 0 }))
+        Write-Host ("  tierA_candidates           : {0}" -f $(if ($vrSrm.PSObject.Properties['tierA_candidates']) { $vrSrm.tierA_candidates } else { 0 }))
+        Write-Host ("  tierA_used                 : {0}" -f $(if ($vrSrm.PSObject.Properties['tierA_used']) { $vrSrm.tierA_used } else { 0 }))
+        Write-Host ("  quote_candidate_span_policy: {0}" -f $(if ($vrSrm.PSObject.Properties['quote_candidate_span_policy']) { $vrSrm.quote_candidate_span_policy } else { "" }))
+        Write-Host ("  quote_stoplist_hits_count  : {0}" -f $(if ($vrSrm.PSObject.Properties['quote_stoplist_hits_count']) { $vrSrm.quote_stoplist_hits_count } else { 0 }))
+        Write-Host ("  extended_pool_used         : {0}" -f $(if ($vrSrm.PSObject.Properties['extended_pool_used']) { $vrSrm.extended_pool_used } else { $false }))
+        Write-Host ("  extended_pool_added_count  : {0}" -f $(if ($vrSrm.PSObject.Properties['extended_pool_added_count']) { $vrSrm.extended_pool_added_count } else { 0 }))
+        Write-Host ("  final_ai_selected_events   : {0}" -f $(if ($vrSrm.PSObject.Properties['final_ai_selected_events']) { $vrSrm.final_ai_selected_events } else { 0 }))
+        Write-Host ("  not_ready                  : {0}" -f $(if ($vrSrm.PSObject.Properties['not_ready']) { $vrSrm.not_ready } else { $false }))
+        if ($vrSrm.PSObject.Properties['reason']) {
+            Write-Host ("  reason                     : {0}" -f $vrSrm.reason)
+        }
+    } catch {
+        Write-Host ("  supply_resilience meta parse error (non-fatal): {0}" -f $_)
+    }
+} else {
+    Write-Host "  supply_resilience.meta.json not found (skipped)" -ForegroundColor Yellow
+}
+
 Write-Host "`n=== Verification Complete ===" -ForegroundColor Cyan
 Write-Host "NOTE: Executive reports are build artifacts. Do NOT commit them." -ForegroundColor DarkGray
 Write-Host "      To share, use file transfer or CI release artifacts." -ForegroundColor DarkGray

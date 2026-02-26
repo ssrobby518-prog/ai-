@@ -5,6 +5,7 @@ import re
 import shutil
 import sys
 import time
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -347,6 +348,55 @@ _BRIEF_GARBAGE_ACTORS = {
     "git", "true", "false", "none", "null", "na", "n/a", "4.0", "3.5", "1.0",
 }
 
+_BRIEF_QUOTE_SPAN_START = 0.15
+_BRIEF_QUOTE_SPAN_END = 0.70
+_BRIEF_QUOTE_SPAN_POLICY = "0.15-0.70"
+
+_TIER_A_SOURCE_RE = re.compile(
+    r"(openai|anthropic|hugging\s*face|huggingface|google\s+research|google\s+ai|"
+    r"deepmind|model\s+release|research\s+blog|official\s+blog)",
+    re.IGNORECASE,
+)
+_TIER_A_URL_RE = re.compile(
+    r"(openai\.com/blog|anthropic\.com/news|huggingface\.co/blog|ai\.googleblog\.com|"
+    r"blog\.google/.*/ai|research\.google|deepmind\.google/.*/blog|google-research)",
+    re.IGNORECASE,
+)
+
+
+def _is_tier_a_source(source_name: str, url: str, title: str = "") -> bool:
+    blob = _normalize_ws(f"{source_name} {url} {title}")
+    if not blob:
+        return False
+    return bool(_TIER_A_SOURCE_RE.search(blob) or _TIER_A_URL_RE.search(_normalize_ws(url)))
+
+
+def _brief_candidate_priority(fc: dict) -> tuple:
+    src_name = _normalize_ws(str(fc.get("source_name", "") or ""))
+    final_url = _normalize_ws(str(fc.get("final_url", "") or fc.get("source_url", "") or ""))
+    title = _normalize_ws(str(fc.get("title", "") or ""))
+    tier_a = 1 if _is_tier_a_source(src_name, final_url, title) else 0
+    ai = 1 if bool(fc.get("ai_relevance", False)) else 0
+    full_text_len = len(_normalize_ws(str(fc.get("full_text", "") or "")))
+    quote_len = len(_normalize_ws(str(fc.get("quote_1", "") or ""))) + len(_normalize_ws(str(fc.get("quote_2", "") or "")))
+    anchors_n = len(fc.get("anchors", []) or [])
+    return (tier_a, ai, full_text_len, quote_len, anchors_n)
+
+
+def _parse_iso_utc(ts: str) -> datetime | None:
+    raw = _normalize_ws(ts)
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt
+
 
 def _resolve_report_mode() -> str:
     """Resolve report mode from env / argv. Supported: brief, legacy."""
@@ -524,18 +574,35 @@ def _brief_quote_relevance_ok(quote: str, actor: str, title_tokens: list[str]) -
     return False
 
 
-def _brief_quote_candidates(source_text: str, seed_quote: str) -> list[str]:
+def _brief_quote_candidates(
+    source_text: str,
+    seed_quote: str,
+    span_start: float = _BRIEF_QUOTE_SPAN_START,
+    span_end: float = _BRIEF_QUOTE_SPAN_END,
+) -> list[str]:
     cands: list[str] = []
     seed = _normalize_ws(seed_quote)
     if seed:
         cands.append(seed)
-    body = _normalize_ws(source_text)
+    raw_body = str(source_text or "")
+    body = _normalize_ws(raw_body)
     if body:
+        sentences: list[str] = []
         for seg in re.split(r"(?<=[\.\!\?。！？；;])\s+|\n+", body):
             s = _normalize_ws(seg)
             if not s:
                 continue
-            cands.append(s)
+            sentences.append(s)
+        if sentences:
+            total = len(sentences)
+            start_idx = max(0, min(total - 1, int(total * max(0.0, span_start))))
+            end_idx = max(start_idx + 1, min(total, int(total * min(1.0, span_end))))
+            span_sents = sentences[start_idx:end_idx]
+            if len(span_sents) < 3 and total >= 3:
+                fallback_end = max(3, min(total, int(total * max(span_end, 0.75))))
+                span_sents = sentences[:fallback_end]
+            for s in span_sents:
+                cands.append(s)
     out: list[str] = []
     seen: set[str] = set()
     for c in cands:
@@ -556,6 +623,7 @@ def _brief_select_relevant_quote(
     actor: str,
     title: str,
     avoid_quote: str = "",
+    diag: dict | None = None,
 ) -> str:
     title_tokens = _brief_title_tokens(title)
     avoid = _normalize_ws(avoid_quote).lower()
@@ -565,6 +633,8 @@ def _brief_select_relevant_quote(
         if avoid and cand.lower() == avoid:
             continue
         if _brief_quote_is_cta(cand):
+            if isinstance(diag, dict):
+                diag["quote_stoplist_hits_count"] = int(diag.get("quote_stoplist_hits_count", 0) or 0) + 1
             continue
         if not _brief_quote_relevance_ok(cand, actor, title_tokens):
             continue
@@ -659,8 +729,16 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         "drop_quote_too_short": 0,
         "drop_boilerplate": 0,
         "drop_quote_relevance": 0,
+        "quote_stoplist_hits_count": 0,
+        "tierA_candidates": 0,
+        "tierA_used": 0,
     }
-    for fc in final_cards or []:
+    for fc in sorted(final_cards or [], key=_brief_candidate_priority, reverse=True):
+        _fc_src = _normalize_ws(str(fc.get("source_name", "") or ""))
+        _fc_url = _normalize_ws(str(fc.get("final_url", "") or fc.get("source_url", "") or ""))
+        _fc_ttl = _normalize_ws(str(fc.get("title", "") or ""))
+        if _is_tier_a_source(_fc_src, _fc_url, _fc_ttl):
+            diag["tierA_candidates"] += 1
         if not bool(fc.get("ai_relevance", False)):
             diag["drop_non_ai"] += 1
             continue
@@ -680,6 +758,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             actor=actor,
             title=title,
             avoid_quote="",
+            diag=diag,
         )
         quote_2 = _brief_select_relevant_quote(
             source_text=source_blob,
@@ -687,6 +766,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             actor=actor,
             title=title,
             avoid_quote=quote_1,
+            diag=diag,
         )
         if not quote_1 or not quote_2:
             diag["drop_quote_relevance"] += 1
@@ -753,11 +833,166 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         out["why_it_matters_bullets"] = why_bullets
         out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
         prepared.append(out)
+        if _is_tier_a_source(_fc_src, _fc_url, _fc_ttl):
+            diag["tierA_used"] += 1
         if len(prepared) >= max(1, int(max_events)):
             break
 
     diag["kept_total"] = len(prepared)
     return prepared, diag
+
+
+def _build_brief_extended_pool_candidates(
+    *,
+    existing_item_ids: set[str],
+    needed: int,
+    quote_diag: dict | None = None,
+) -> tuple[list[dict], dict]:
+    """Backfill brief candidates from 48h~7d history (Tier-A first)."""
+    stats = {
+        "window_candidates": 0,
+        "tierA_window_candidates": 0,
+        "scanned": 0,
+        "added": 0,
+        "tierA_added": 0,
+    }
+    out: list[dict] = []
+    if needed <= 0:
+        return out, stats
+
+    try:
+        from core.storage import load_passed_results
+        from utils.fulltext_hydrator import hydrate_fulltext
+        from utils.topic_router import is_relevant_ai as _is_relevant_ai_brief
+    except Exception:
+        return out, stats
+
+    try:
+        rows = load_passed_results(settings.DB_PATH, limit=300)
+    except Exception:
+        return out, stats
+
+    now_utc = datetime.now(timezone.utc)
+    window_rows: list[dict] = []
+    for row in rows:
+        created_at = _parse_iso_utc(str(row.get("created_at", "") or ""))
+        if not created_at:
+            continue
+        age_hours = (now_utc - created_at).total_seconds() / 3600.0
+        if age_hours < 48 or age_hours > 168:
+            continue
+        stats["window_candidates"] += 1
+        src_name = _normalize_ws(str(row.get("source_name", "") or ""))
+        src_url = _normalize_ws(str(row.get("url", "") or ""))
+        ttl = _normalize_ws(str(row.get("title", "") or ""))
+        if _is_tier_a_source(src_name, src_url, ttl):
+            stats["tierA_window_candidates"] += 1
+        window_rows.append(row)
+
+    ranked_rows = sorted(
+        window_rows,
+        key=lambda r: (
+            1 if _is_tier_a_source(
+                _normalize_ws(str(r.get("source_name", "") or "")),
+                _normalize_ws(str(r.get("url", "") or "")),
+                _normalize_ws(str(r.get("title", "") or "")),
+            ) else 0,
+            _normalize_ws(str(r.get("created_at", "") or "")),
+        ),
+        reverse=True,
+    )
+
+    max_scan = max(30, needed * 25)
+    for row in ranked_rows:
+        if stats["scanned"] >= max_scan:
+            break
+        if len(out) >= max(needed * 2, 6):
+            break
+        stats["scanned"] += 1
+
+        item_id = _normalize_ws(str(row.get("item_id", "") or ""))
+        if not item_id or item_id in existing_item_ids:
+            continue
+
+        url = _normalize_ws(str(row.get("url", "") or ""))
+        if not url.startswith(("http://", "https://")):
+            continue
+
+        schema_a = row.get("schema_a", {}) or {}
+        title = _normalize_ws(str(schema_a.get("title_zh", "") or row.get("title", "") or ""))
+        if not title:
+            continue
+
+        src_name = _normalize_ws(str(row.get("source_name", "") or ""))
+        hydrated = hydrate_fulltext(url, timeout_s=9)
+        full_text = _normalize_ws(str((hydrated or {}).get("full_text", "") or ""))
+        if len(full_text) < 300:
+            continue
+        final_url = _normalize_ws(str((hydrated or {}).get("final_url", "") or url))
+        ai_rel, _ = _is_relevant_ai_brief(f"{title} {full_text[:1600]}", final_url)
+        if not ai_rel:
+            continue
+
+        actor_hint = _normalize_ws(src_name)
+        quote_1 = _brief_select_relevant_quote(
+            source_text=full_text,
+            seed_quote="",
+            actor=actor_hint,
+            title=title,
+            avoid_quote="",
+            diag=quote_diag,
+        )
+        quote_2 = _brief_select_relevant_quote(
+            source_text=full_text,
+            seed_quote="",
+            actor=actor_hint,
+            title=title,
+            avoid_quote=quote_1,
+            diag=quote_diag,
+        )
+        if len(quote_1) < 80 or len(quote_2) < 80:
+            continue
+
+        anchors = extract_event_anchors(title, quote_1, quote_2, full_text, n=6) or []
+        actor = _brief_pick_primary_anchor(actor_hint, anchors)
+        if not actor or _is_actor_numeric(actor) or _brief_is_garbage_actor(actor):
+            continue
+
+        category = _normalize_ws(str(schema_a.get("category", "") or "tech")).lower()
+        cand = {
+            "item_id": item_id,
+            "title": title,
+            "actor": actor,
+            "actor_primary": actor,
+            "quote_1": quote_1,
+            "quote_2": quote_2,
+            "final_url": final_url,
+            "source_url": url,
+            "source_name": src_name,
+            "published_at": _normalize_ws(str(row.get("created_at", "") or "")),
+            "category": category if category in {"product", "tech", "business"} else "tech",
+            "anchors": anchors if anchors else [actor],
+            "ai_relevance": True,
+            "full_text": full_text,
+        }
+        out.append(cand)
+        existing_item_ids.add(item_id)
+        stats["added"] += 1
+        if _is_tier_a_source(src_name, final_url, title):
+            stats["tierA_added"] += 1
+
+    return out, stats
+
+
+def _write_supply_resilience_meta(meta: dict) -> None:
+    try:
+        import json as _sr_json
+
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "supply_resilience.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_sr_json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _sanitize_quote_for_delivery(text: str) -> str:
@@ -1794,6 +2029,10 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
                         or ""
                     )
                 ),
+                "source_name": _normalize_ws(str(getattr(card, "source_name", "") or "")),
+                "source_url": _normalize_ws(
+                    str(getattr(card, "source_url", "") or getattr(card, "final_url", "") or "")
+                ),
                 "moves": moves,
                 "risks": risks,
                 "anchors": _anchors_pre,
@@ -2129,11 +2368,11 @@ def run_pipeline() -> None:
     log.info("PIPELINE START")
     log.info("=" * 60)
     t_start = time.time()
-    from datetime import UTC, datetime
 
     t_start_iso = datetime.now(UTC).isoformat()
     _report_mode = _resolve_report_mode()
     _is_brief_mode = (_report_mode == "brief")
+    _pipeline_mode_runtime = _normalize_ws(os.environ.get("PIPELINE_MODE", "manual") or "manual")
     _brief_min_events = 5
     if _is_brief_mode:
         try:
@@ -2145,6 +2384,23 @@ def run_pipeline() -> None:
         _report_mode,
         _brief_min_events,
     )
+    _supply_meta: dict = {
+        "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+        "report_mode": _report_mode,
+        "mode": _pipeline_mode_runtime,
+        "fetched_total": 0,
+        "hydrated_ok": 0,
+        "hydrated_coverage": 0.0,
+        "tierA_candidates": 0,
+        "tierA_used": 0,
+        "quote_candidate_span_policy": _BRIEF_QUOTE_SPAN_POLICY,
+        "quote_stoplist_hits_count": 0,
+        "extended_pool_used": False,
+        "extended_pool_added_count": 0,
+        "final_ai_selected_events": 0,
+        "not_ready": False,
+        "reason": "",
+    }
 
     # Clean up NOT_READY.md from previous run to prevent stale false-positives.
     _nr_startup_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
@@ -2185,6 +2441,13 @@ def run_pipeline() -> None:
         raw_items = fetch_all_feeds()
     log.info("Fetched %d total raw items", len(raw_items))
     collector.fetched_total = len(raw_items)
+    _supply_meta["fetched_total"] = len(raw_items)
+    _hydrated_ok_now = sum(1 for _ri in raw_items if int(getattr(_ri, "fulltext_len", 0) or 0) >= 300)
+    _supply_meta["hydrated_ok"] = int(_hydrated_ok_now)
+    _supply_meta["hydrated_coverage"] = round(
+        float(_hydrated_ok_now) / max(1, len(raw_items)),
+        3,
+    )
 
     # Write per-source counts to feed_stats.meta.json (covers both Z0 and RSS paths).
     # ingestion.py already writes this for RSS path; for Z0 path we overwrite with live counts.
@@ -2226,6 +2489,9 @@ def run_pipeline() -> None:
 
     if not raw_items:
         log.warning("No items fetched from any feed. Exiting.")
+        _supply_meta["not_ready"] = True
+        _supply_meta["reason"] = "no_raw_items_fetched"
+        _write_supply_resilience_meta(_supply_meta)
         collector.stop()
         collector.write_json()
         send_all_notifications(t_start_iso, 0, True, "")
@@ -2763,7 +3029,16 @@ def run_pipeline() -> None:
                 # Route A: AI_RELEVANCE hard filter ??non-AI events go to watchlist only
                 _ai_final_cards = [fc for fc in _final_cards if fc.get("ai_relevance", False)]
                 _watchlist_cards = [fc for fc in _final_cards if not fc.get("ai_relevance", False)]
-                _final_cards = _ai_final_cards
+                _final_cards = sorted(_ai_final_cards, key=_brief_candidate_priority, reverse=True)
+                _supply_meta["tierA_candidates"] = sum(
+                    1
+                    for _fc_a in _ai_final_cards
+                    if _is_tier_a_source(
+                        _normalize_ws(str(_fc_a.get("source_name", "") or "")),
+                        _normalize_ws(str(_fc_a.get("final_url", "") or _fc_a.get("source_url", "") or "")),
+                        _normalize_ws(str(_fc_a.get("title", "") or "")),
+                    )
+                )
                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and len(_final_cards) > 6:
                     _before_demo_trim = len(_final_cards)
                     _final_cards = _select_stable_demo_cards(_final_cards, target=6)
@@ -2775,10 +3050,42 @@ def run_pipeline() -> None:
                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
                 if _is_brief_mode:
-                    _brief_diag = {}
-                    _final_cards, _brief_diag = _prepare_brief_final_cards(_final_cards, max_events=10)
+                    _brief_diag = {"quote_stoplist_hits_count": 0}
+                    _brief_pool = list(_final_cards or [])
+                    if len(_brief_pool) < 6:
+                        _existing_brief_ids = {
+                            _normalize_ws(str(_fc_i.get("item_id", "") or ""))
+                            for _fc_i in _brief_pool
+                            if _normalize_ws(str(_fc_i.get("item_id", "") or ""))
+                        }
+                        _needed_brief = max(0, 6 - len(_brief_pool))
+                        _ext_cards, _ext_stats = _build_brief_extended_pool_candidates(
+                            existing_item_ids=_existing_brief_ids,
+                            needed=max(2, _needed_brief),
+                            quote_diag=_brief_diag,
+                        )
+                        if _ext_cards:
+                            _brief_pool.extend(_ext_cards)
+                            _brief_pool = sorted(_brief_pool, key=_brief_candidate_priority, reverse=True)
+                            _supply_meta["extended_pool_used"] = True
+                            _supply_meta["extended_pool_added_count"] = int(_ext_stats.get("added", 0) or 0)
+                            log.info(
+                                "BRIEF_EXTENDED_POOL: window_candidates=%d tierA_window=%d scanned=%d added=%d tierA_added=%d",
+                                int(_ext_stats.get("window_candidates", 0) or 0),
+                                int(_ext_stats.get("tierA_window_candidates", 0) or 0),
+                                int(_ext_stats.get("scanned", 0) or 0),
+                                int(_ext_stats.get("added", 0) or 0),
+                                int(_ext_stats.get("tierA_added", 0) or 0),
+                            )
+                        else:
+                            _supply_meta["extended_pool_used"] = False
+                            _supply_meta["extended_pool_added_count"] = 0
+                    _final_cards, _brief_diag = _prepare_brief_final_cards(_brief_pool, max_events=10)
+                    _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
+                    _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
+                    _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
                     log.info(
-                        "BRIEF_SELECTION: input=%d kept=%d drop_non_ai=%d drop_actor=%d drop_anchor=%d drop_quote=%d drop_quote_relevance=%d drop_boilerplate=%d",
+                        "BRIEF_SELECTION: input=%d kept=%d drop_non_ai=%d drop_actor=%d drop_anchor=%d drop_quote=%d drop_quote_relevance=%d drop_boilerplate=%d quote_stoplist_hits=%d tierA_candidates=%d tierA_used=%d",
                         int(_brief_diag.get("input_total", 0) or 0),
                         int(_brief_diag.get("kept_total", 0) or 0),
                         int(_brief_diag.get("drop_non_ai", 0) or 0),
@@ -2787,6 +3094,19 @@ def run_pipeline() -> None:
                         int(_brief_diag.get("drop_quote_too_short", 0) or 0),
                         int(_brief_diag.get("drop_quote_relevance", 0) or 0),
                         int(_brief_diag.get("drop_boilerplate", 0) or 0),
+                        int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0),
+                        int(_brief_diag.get("tierA_candidates", 0) or 0),
+                        int(_brief_diag.get("tierA_used", 0) or 0),
+                    )
+                else:
+                    _supply_meta["tierA_used"] = sum(
+                        1
+                        for _fc_u in (_final_cards or [])
+                        if _is_tier_a_source(
+                            _normalize_ws(str(_fc_u.get("source_name", "") or "")),
+                            _normalize_ws(str(_fc_u.get("final_url", "") or _fc_u.get("source_url", "") or "")),
+                            _normalize_ws(str(_fc_u.get("title", "") or "")),
+                        )
                     )
                 if _ai_final_cards:
                     log.info(
@@ -2813,8 +3133,13 @@ def run_pipeline() -> None:
                     encoding="utf-8",
                 )
                 log.info("final_cards.meta.json written: %s (%d events)", _final_cards_meta_path, len(_final_cards))
+                _supply_meta["final_ai_selected_events"] = len(_final_cards or [])
+                _write_supply_resilience_meta(_supply_meta)
             except Exception as _fc_exc:
                 log.warning("final_cards build failed (non-fatal): %s", _fc_exc)
+                _supply_meta["not_ready"] = True
+                _supply_meta["reason"] = f"final_cards_build_failed:{_normalize_ws(str(_fc_exc))[:180]}"
+                _write_supply_resilience_meta(_supply_meta)
 
             # Write showcase_ready.meta.json ??authoritative content-readiness signal.
             # Uses exec_selection.final_selected_events (set by content_strategy, always
@@ -2869,6 +3194,11 @@ def run_pipeline() -> None:
                     "showcase_ready.meta.json: ai_selected=%d showcase_ready=%s demo_supplement=%s",
                     _sr_ai_selected, _sr_showcase_ready, _sr_demo_supplement,
                 )
+                _supply_meta["final_ai_selected_events"] = int(_sr_ai_selected)
+                if not bool(_sr_showcase_ready):
+                    _supply_meta["not_ready"] = True
+                    _supply_meta["reason"] = f"showcase_not_ready: ai_selected={_sr_ai_selected} threshold={_sr_threshold}"
+                _write_supply_resilience_meta(_supply_meta)
             except Exception as _sr_exc:
                 log.warning("showcase_ready.meta.json write failed (non-fatal): %s", _sr_exc)
 
@@ -4268,11 +4598,19 @@ def run_pipeline() -> None:
                             for _brief_art in ("executive_report.pptx", "executive_report.docx"):
                                 (Path(settings.PROJECT_ROOT) / "outputs" / _brief_art).unlink(missing_ok=True)
                             log.error("%s FAIL — %s", _brief_gate, _brief_detail)
+                            _supply_meta["not_ready"] = True
+                            _supply_meta["reason"] = f"{_brief_gate}: {_brief_detail}"
+                            _supply_meta["final_ai_selected_events"] = int(_brief_total)
+                            _write_supply_resilience_meta(_supply_meta)
                         else:
                             log.info(
                                 "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0 info_density_fail=0",
                                 _brief_min_events, _brief_total,
                             )
+                            _supply_meta["not_ready"] = False
+                            _supply_meta["reason"] = ""
+                            _supply_meta["final_ai_selected_events"] = int(_brief_total)
+                            _write_supply_resilience_meta(_supply_meta)
                     except Exception as _brief_gate_exc:
                         log.warning("BRIEF hard gates check failed (non-fatal): %s", _brief_gate_exc)
 
@@ -4349,12 +4687,20 @@ def run_pipeline() -> None:
                                 "Check source feed freshness and filter settings.\n",
                                 encoding="utf-8",
                             )
+                            _supply_meta["not_ready"] = True
+                            _supply_meta["reason"] = f"SHOWCASE_READY_HARD: ai_selected={_scg_ai} threshold={_scg_thr}"
+                            _supply_meta["final_ai_selected_events"] = int(_scg_ai)
+                            _write_supply_resilience_meta(_supply_meta)
                         else:
                             (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").unlink(missing_ok=True)
                             log.info(
                                 "SHOWCASE_READY_HARD: PASS ??ai_selected=%d >= %d (mode=%s)",
                                 _scg_ai, _scg_thr, _scg_mode,
                             )
+                            _supply_meta["not_ready"] = False
+                            _supply_meta["reason"] = ""
+                            _supply_meta["final_ai_selected_events"] = int(_scg_ai)
+                            _write_supply_resilience_meta(_supply_meta)
                     else:
                         log.warning("SHOWCASE_READY_HARD: showcase_ready.meta.json not found (skipping gate)")
                 except Exception as _scg_exc:
@@ -4391,6 +4737,14 @@ def run_pipeline() -> None:
             "POOL_SUFFICIENCY FAIL ??NOT_READY.md exists; "
             "PPTX/DOCX not generated. Pipeline exits 1."
         )
+        _supply_meta["not_ready"] = True
+        if not _supply_meta.get("reason"):
+            try:
+                _nr_text = _nr_check_path.read_text(encoding="utf-8")
+                _supply_meta["reason"] = _normalize_ws(_nr_text)[:240]
+            except Exception:
+                _supply_meta["reason"] = "NOT_READY.md exists"
+        _write_supply_resilience_meta(_supply_meta)
         sys.exit(1)
 
     # (A) Write flow_counts.meta.json + filter_breakdown.meta.json ??pipeline funnel audit
@@ -4558,6 +4912,18 @@ def run_pipeline() -> None:
         log.info("desktop_button.meta.json written: run_id=%s", _db_run_id)
     except Exception as _db_exc:
         log.warning("desktop_button.meta.json write failed (non-fatal): %s", _db_exc)
+
+    if not _supply_meta.get("final_ai_selected_events"):
+        _md = locals().get("metrics_dict", {})
+        if isinstance(_md, dict):
+            _supply_meta["final_ai_selected_events"] = int(len(_md.get("final_cards", []) or []))
+        else:
+            _supply_meta["final_ai_selected_events"] = 0
+    if not (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").exists():
+        _supply_meta["not_ready"] = False
+        if not _supply_meta.get("reason"):
+            _supply_meta["reason"] = ""
+    _write_supply_resilience_meta(_supply_meta)
 
     # Notifications
     send_all_notifications(t_start_iso, len(all_results), True, str(digest_path))
