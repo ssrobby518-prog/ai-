@@ -959,6 +959,26 @@ foreach ($bg in $briefGateMetas) {
     }
 }
 
+# FULLTEXT_FIDELITY OBSERVATION (non-fatal)
+$fidPath = Join-Path $repoRoot "outputs\fulltext_fidelity.meta.json"
+if (Test-Path $fidPath) {
+    try {
+        $fidMeta2       = Get-Content $fidPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $fidTotal2      = if ($fidMeta2.PSObject.Properties['events_total'])                { [int]$fidMeta2.events_total }                else { 0 }
+        $fidCta2        = if ($fidMeta2.PSObject.Properties['total_cta_paragraphs_removed']) { [int]$fidMeta2.total_cta_paragraphs_removed } else { 0 }
+        $fidWhere2      = if ($fidMeta2.PSObject.Properties['wheresyoured_at_events'])       { [int]$fidMeta2.wheresyoured_at_events }       else { 0 }
+        $fidAvgRemoved2 = if ($fidMeta2.PSObject.Properties['avg_removed_paragraphs'])      { $fidMeta2.avg_removed_paragraphs }            else { "n/a" }
+        $fidAvgCleaned2 = if ($fidMeta2.PSObject.Properties['avg_cleaned_len'])             { [int]$fidMeta2.avg_cleaned_len }              else { 0 }
+        $fidDomTop2     = if ($fidMeta2.PSObject.Properties['domain_top'])                  { ($fidMeta2.domain_top -join ", ") }           else { "n/a" }
+        Write-Output ("FULLTEXT_FIDELITY (obs): events={0} cta_removed={1} wheresyoured_at={2}" -f $fidTotal2, $fidCta2, $fidWhere2)
+        Write-Output ("  domain_top={0}  avg_removed_paragraphs={1}  avg_cleaned_len={2}" -f $fidDomTop2, $fidAvgRemoved2, $fidAvgCleaned2)
+    } catch {
+        Write-Output "FULLTEXT_FIDELITY (obs): parse error"
+    }
+} else {
+    Write-Output "FULLTEXT_FIDELITY (obs): not found (skip)"
+}
+
 # ---------------------------------------------------------------------------
 # EXEC_NEWS_QUALITY_HARD GATE (online run)
 #   Reads outputs/exec_news_quality.meta.json written by run_once.py.

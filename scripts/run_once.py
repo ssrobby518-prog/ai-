@@ -523,7 +523,10 @@ def _build_brief_why_it_matters(category: str, anchor: str) -> str:
 
 
 _BRIEF_CTA_RE = re.compile(
-    r"(hear from|sessions|subscribe|newsletter|cookies|privacy|advertis|sign up|register|terms|sponsor|promo|conference|buy tickets|event)",
+    r"(hear from|sessions|subscribe|newsletter|cookies|privacy|advertis|sign up|register|terms|sponsor|promo|conference|buy tickets|event"
+    r"|unsubscribe|manage subscription|upgrade to paid|paid subscriber|forwarded this email|view in browser"
+    r"|get it in your inbox|leave a comment|share this post|restack|open in app|read in app"
+    r"|\$\s*\d{2,})",
     re.IGNORECASE,
 )
 
@@ -624,10 +627,12 @@ def _brief_select_relevant_quote(
     title: str,
     avoid_quote: str = "",
     diag: dict | None = None,
+    span_start: float = _BRIEF_QUOTE_SPAN_START,
+    span_end: float = _BRIEF_QUOTE_SPAN_END,
 ) -> str:
     title_tokens = _brief_title_tokens(title)
     avoid = _normalize_ws(avoid_quote).lower()
-    for cand in _brief_quote_candidates(source_text, seed_quote):
+    for cand in _brief_quote_candidates(source_text, seed_quote, span_start=span_start, span_end=span_end):
         if len(cand) < 80:
             continue
         if avoid and cand.lower() == avoid:
@@ -663,7 +668,9 @@ def _brief_norm_bullet(text: str) -> str:
 
 def _brief_split_bullets(raw: str) -> list[str]:
     out: list[str] = []
-    for seg in re.split(r"[\n；;]+", str(raw or "")):
+    # Split on newlines, Chinese/English semicolons, AND Chinese sentence endings
+    # This correctly handles ZH narratives like "句一。句二。句三。" → 3 bullets
+    for seg in re.split(r"[\n；;。！？]+", str(raw or "")):
         s = _normalize_ws(seg.strip(" -•\t"))
         if not s:
             continue
@@ -719,6 +726,75 @@ def _brief_build_bullet_sections(
     return what[:5], key[:4], why[:4]
 
 
+def _brief_build_key_details_zh(
+    *,
+    q1_zh: str,
+    q2_zh: str,
+    what_bullets: list[str],
+    why_bullets: list[str],
+    quote_1: str,
+    quote_2: str,
+    anchor: str,
+    source_blob: str,
+    final_url: str,
+    key_defaults: list[str],
+) -> list[str]:
+    """Build content-rich ZH key-detail bullets.
+
+    Strategy (priority order):
+    1. Leftover ZH sentences from q1_zh/q2_zh not already in what/why bullets
+    2. Number-focused bullet from extracted metric in quotes/source
+    3. Quote-2 embedding bullet
+    4. Source URL bullet
+    Fall back to key_defaults if we can't produce >= 2 clean bullets.
+    """
+    bullets: list[str] = []
+
+    # Collect ZH sentences not already used in what_bullets / why_bullets
+    used_lower = {b.lower() for b in (what_bullets or []) + (why_bullets or [])}
+    for src in (q1_zh, q2_zh):
+        if not src:
+            continue
+        for seg in re.split(r"[。！？]+", src):
+            s = _normalize_ws(seg.strip())
+            if len(s) < 12:
+                continue
+            if _brief_quote_is_cta(s):
+                continue
+            if any(s.lower() in u or u in s.lower() for u in used_lower):
+                continue
+            bullets.append(_brief_norm_bullet(s))
+            if len(bullets) >= 2:
+                break
+        if len(bullets) >= 2:
+            break
+
+    # Number-focused bullet
+    num = _brief_extract_num_token(quote_1, quote_2, source_blob[:800])
+    if num:
+        nb = _brief_norm_bullet(f"量化依據：原文顯示「{num}」，為評估影響範圍的核心數字錨點。")
+        if nb.lower() not in used_lower and not any(nb.lower() in b.lower() for b in bullets):
+            bullets.append(nb)
+
+    # Quote-2 embedding bullet (only if not already captured)
+    if len(bullets) < 2 and quote_2:
+        q2clip = _clip_text(quote_2, 96)
+        bullets.append(_brief_norm_bullet(
+            f"技術細節佐證：「{q2clip}」可回推假設條件與執行限制。"
+        ))
+
+    # Source URL bullet
+    if final_url and len(bullets) < 4:
+        bullets.append(_brief_norm_bullet(
+            f"原始來源已鎖定：{final_url}，可直接回查避免誤讀。"
+        ))
+
+    valid = [b for b in bullets if len(b) >= 12]
+    if len(valid) < 2:
+        return key_defaults
+    return valid[:4]
+
+
 def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) -> tuple[list[dict], dict]:
     prepared: list[dict] = []
     diag = {
@@ -752,6 +828,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         source_blob = _normalize_ws(
             str(fc.get("full_text", "") or fc.get("what_happened", "") or fc.get("q1", "") or "")
         )
+        # Zone-separated quote sampling: quote_1 from front half, quote_2 from back half
+        # This prevents both quotes from being extracted from the introduction
         quote_1 = _brief_select_relevant_quote(
             source_text=source_blob,
             seed_quote=_normalize_ws(str(fc.get("quote_1", "") or "")),
@@ -759,6 +837,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             title=title,
             avoid_quote="",
             diag=diag,
+            span_start=0.10,
+            span_end=0.52,
         )
         quote_2 = _brief_select_relevant_quote(
             source_text=source_blob,
@@ -767,6 +847,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             title=title,
             avoid_quote=quote_1,
             diag=diag,
+            span_start=0.45,
+            span_end=0.80,
         )
         if not quote_1 or not quote_2:
             diag["drop_quote_relevance"] += 1
@@ -785,6 +867,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             diag["drop_anchor_missing"] += 1
             continue
 
+        _final_url = _normalize_ws(str(fc.get("final_url", "") or ""))
         category = _normalize_ws(str(fc.get("category", "") or ""))
         impact_target = _brief_impact_target(category)
         decision_angle = _brief_decision_angle(category)
@@ -798,16 +881,31 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             quote_2=quote_2,
             impact_target=impact_target,
             decision_angle=decision_angle,
-            final_url=_normalize_ws(str(fc.get("final_url", "") or "")),
+            final_url=_final_url,
         )
+        # Replace what_bullets with ZH narrative sentences (split on 。！？；\n)
+        # Threshold lowered to >= 2 to handle typical 2-3 sentence ZH narratives
         if _q1_zh and _brief_zh_tw_ok(_q1_zh):
             q1_b = _brief_split_bullets(_q1_zh)
-            if len(q1_b) >= 3:
+            if len(q1_b) >= 2:
                 what_bullets = q1_b[:5]
         if _q2_zh and _brief_zh_tw_ok(_q2_zh):
             q2_b = _brief_split_bullets(_q2_zh)
             if len(q2_b) >= 2:
                 why_bullets = q2_b[:4]
+        # Build content-rich key_details from ZH narrative + extracted numbers
+        key_details_bullets = _brief_build_key_details_zh(
+            q1_zh=_q1_zh,
+            q2_zh=_q2_zh,
+            what_bullets=what_bullets,
+            why_bullets=why_bullets,
+            quote_1=quote_1,
+            quote_2=quote_2,
+            anchor=anchor,
+            source_blob=source_blob,
+            final_url=_final_url,
+            key_defaults=key_details_bullets,
+        )
         what = "\n".join(what_bullets)
         why = "\n".join(why_bullets)
 
@@ -941,6 +1039,8 @@ def _build_brief_extended_pool_candidates(
             title=title,
             avoid_quote="",
             diag=quote_diag,
+            span_start=0.10,
+            span_end=0.52,
         )
         quote_2 = _brief_select_relevant_quote(
             source_text=full_text,
@@ -949,6 +1049,8 @@ def _build_brief_extended_pool_candidates(
             title=title,
             avoid_quote=quote_1,
             diag=quote_diag,
+            span_start=0.45,
+            span_end=0.80,
         )
         if len(quote_1) < 80 or len(quote_2) < 80:
             continue

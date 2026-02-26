@@ -60,7 +60,27 @@ _UI_GARBAGE = (
     "cookie policy", "privacy policy", "terms of service",
     "terms of use", "please enable", "advertisement",
     "newsletter", "follow us on", "share this article",
+    # CTA / ad / conversion noise
+    "hear from", "sessions", "sponsors", "sponsored by",
+    "brought to you by", "click that", "click here",
+    "bottom right", "manage preferences", "accept all cookies",
+    "free trial", "try it free", "get started for free",
+    "promo code", "discount code", "limited time offer",
+    "register now", "buy tickets", "join us",
+    "already a subscriber", "become a member",
+    # Substack / wheresyoured.at / email-newsletter specific
+    "get it in your inbox", "forwarded this email", "view in browser",
+    "unsubscribe", "manage subscription", "this is a free post",
+    "paid subscribers", "upgrade to paid", "if you're reading this",
+    "subscribe now", "type your email", "start a 14-day",
+    "this post is for", "subscribe to read", "listen to this post",
+    "subscribe for access", "read in app", "open in app",
+    "you're receiving this", "you received this", "share this post",
+    "leave a comment", "top picks", "like this post", "restack",
 )
+
+# Price-push CTA pattern — e.g. "$99/year", "$12 per month"
+_PRICE_CTA_RE = re.compile(r"\$\s*\d{2,}", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +99,7 @@ class _ArticleParser(HTMLParser):
         self._in_main: int = 0
         self._in_skip: int = 0   # script / style / nav / footer / header / aside
         self._in_p: bool = False
+        self._in_li: bool = False
         self._article_ps: list[str] = []
         self._all_ps: list[str] = []
         self._buf: list[str] = []
@@ -97,6 +118,9 @@ class _ArticleParser(HTMLParser):
             self._in_skip += 1
         elif tag == "p" and self._in_skip == 0:
             self._in_p = True
+            self._buf = []
+        elif tag == "li" and self._in_skip == 0 and not self._in_p:
+            self._in_li = True
             self._buf = []
         elif tag == "meta":
             heq = ad.get("http-equiv", "").lower()
@@ -129,9 +153,18 @@ class _ArticleParser(HTMLParser):
                 else:
                     self._all_ps.append(text)
             self._buf = []
+        elif tag == "li" and self._in_li:
+            self._in_li = False
+            text = " ".join(self._buf).strip()
+            if text:
+                if self._in_article > 0 or self._in_main > 0:
+                    self._article_ps.append(text)
+                else:
+                    self._all_ps.append(text)
+            self._buf = []
 
     def handle_data(self, data: str) -> None:
-        if self._in_p and self._in_skip == 0:
+        if (self._in_p or self._in_li) and self._in_skip == 0:
             self._buf.append(data)
 
     def best_paragraphs(self) -> list[str]:
@@ -175,8 +208,8 @@ def _fetch_html(url: str, timeout_s: int) -> tuple[str, str]:
             return raw.decode("utf-8", errors="replace"), final_url
 
 
-def _extract_text(html: str) -> str:
-    """Extract clean article text from HTML."""
+def _extract_text(html: str) -> tuple[str, dict]:
+    """Extract clean article text from HTML. Returns (text, fidelity_dict)."""
     parser = _ArticleParser()
     try:
         parser.feed(html)
@@ -184,18 +217,39 @@ def _extract_text(html: str) -> str:
         pass
 
     paragraphs = parser.best_paragraphs()
+    extract_method = "article_ps" if parser._article_ps else "all_ps"
+    raw_count = min(len(paragraphs), 40)
+    # Compute raw text length BEFORE CTA filtering (for fidelity comparison)
+    raw_paras_text = "\n\n".join(
+        re.sub(r"\s+", " ", p).strip()
+        for p in paragraphs[:40]
+        if len(re.sub(r"\s+", " ", p).strip()) >= 40
+    )
     clean: list[str] = []
+    cta_hits = 0
     for p in paragraphs[:40]:
         p = re.sub(r"\s+", " ", p).strip()
         if len(p) < 40:
             continue
         p_low = p.lower()
         if any(tok in p_low for tok in _UI_GARBAGE):
+            cta_hits += 1
+            continue
+        if _PRICE_CTA_RE.search(p):
+            cta_hits += 1
             continue
         clean.append(p)
 
     text = "\n\n".join(clean)
-    return text[:MAX_BODY_CHARS]
+    fidelity: dict = {
+        "raw_paragraph_count": raw_count,
+        "cleaned_paragraph_count": len(clean),
+        "removed_paragraphs_count": raw_count - len(clean),
+        "cta_hits_count": cta_hits,
+        "extract_method": extract_method,
+        "raw_text_len": len(raw_paras_text),  # length BEFORE CTA removal
+    }
+    return text[:MAX_BODY_CHARS], fidelity
 
 
 def _decode_gnews_rss_url(url: str) -> str:
@@ -331,17 +385,27 @@ def hydrate_fulltext(url: str, timeout_s: int = 8) -> dict:
             return result
 
         # Phase 4: text extraction
-        text = _extract_text(html)
+        text, fidelity = _extract_text(html)
+        fidelity["final_url"] = result.get("final_url", "")
+        try:
+            fidelity["domain"] = urlparse(result.get("final_url", "")).netloc.lower().lstrip("www.")
+        except Exception:
+            fidelity["domain"] = ""
+        # cleaned_text_len = len after CTA removal + MAX_BODY_CHARS cap
+        fidelity["cleaned_text_len"] = len(text)
+        # raw_text_len was already set inside _extract_text (before CTA filtering)
 
         if len(text) < _FULLTEXT_OK_MIN:
             result["status"] = "fail"
             result["reason"] = "extract_too_short"
+            result["fidelity"] = fidelity
             return result
 
         result["status"] = "ok"
         result["full_text"] = text
         result["fulltext_len"] = len(text)
         result["reason"] = "ok"
+        result["fidelity"] = fidelity
         return result
 
     except HTTPError as exc:
@@ -468,12 +532,14 @@ def hydrate_items_batch(
         if status == "ok":
             ok_count += 1
 
+        fidelity = res.get("fidelity", {}) or {}
         for item in grp:
             setattr(item, "full_text", full_text)
             setattr(item, "fulltext_len", fulltext_len)
             setattr(item, "fulltext_status", status)
             setattr(item, "final_url", res.get("final_url", url))
             setattr(item, "fulltext_reason", res.get("reason", ""))
+            setattr(item, "fulltext_fidelity", fidelity)
 
             # Enrich item.body when full_text is substantial
             if fulltext_len >= _ENRICH_MIN:
@@ -492,6 +558,7 @@ def hydrate_items_batch(
     )
 
     _write_hydrator_meta(items)
+    _write_fidelity_meta(items)
     return items
 
 
@@ -560,5 +627,64 @@ def _write_hydrator_meta(items: list, outdir: str | None = None) -> None:
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
+    except Exception:
+        pass  # non-fatal
+
+
+def _write_fidelity_meta(items: list, outdir: str | None = None) -> None:
+    """Write outputs/fulltext_fidelity.meta.json with per-event extraction quality."""
+    try:
+        root = Path(outdir) if outdir else Path(__file__).resolve().parent.parent / "outputs"
+        root.mkdir(parents=True, exist_ok=True)
+
+        events: list[dict] = []
+        for item in items:
+            fid = getattr(item, "fulltext_fidelity", {}) or {}
+            if not fid:
+                continue
+            cleaned_len = fid.get("cleaned_text_len", getattr(item, "fulltext_len", 0))
+            raw_len = fid.get("raw_text_len", cleaned_len)  # raw_text_len set in _extract_text
+            entry = {
+                "title": (getattr(item, "title", "") or "")[:80],
+                "final_url": fid.get("final_url", getattr(item, "final_url", "")),
+                "domain": fid.get("domain", ""),
+                "raw_text_len": raw_len,
+                "cleaned_text_len": cleaned_len,
+                "raw_paragraph_count": fid.get("raw_paragraph_count", 0),
+                "cleaned_paragraph_count": fid.get("cleaned_paragraph_count", 0),
+                "removed_paragraphs_count": fid.get("removed_paragraphs_count", 0),
+                "cta_hits_count": fid.get("cta_hits_count", 0),
+                "extract_method": fid.get("extract_method", ""),
+                "status": getattr(item, "fulltext_status", ""),
+            }
+            events.append(entry)
+
+        total_cta = sum(e["cta_hits_count"] for e in events)
+        wheresyoued_events = [e for e in events if "wheresyoured" in e.get("domain", "")]
+
+        # Summary statistics for display in verify scripts
+        ok_events = [e for e in events if e.get("status") == "ok"]
+        avg_removed = round(
+            sum(e["removed_paragraphs_count"] for e in ok_events) / len(ok_events), 2
+        ) if ok_events else 0.0
+        avg_cleaned = round(
+            sum(e["cleaned_text_len"] for e in ok_events) / len(ok_events)
+        ) if ok_events else 0
+        domain_counts: Counter = Counter(e["domain"] for e in ok_events if e.get("domain"))
+        domain_top = [d for d, _ in domain_counts.most_common(3)]
+
+        meta = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "events_total": len(events),
+            "total_cta_paragraphs_removed": total_cta,
+            "wheresyoured_at_events": len(wheresyoued_events),
+            "avg_removed_paragraphs": avg_removed,
+            "avg_cleaned_len": avg_cleaned,
+            "domain_top": domain_top,
+            "events": events,
+        }
+        out_path = root / "fulltext_fidelity.meta.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
     except Exception:
         pass  # non-fatal

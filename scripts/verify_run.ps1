@@ -1155,6 +1155,27 @@ Invoke-MetaGate -Label "BRIEF_INFO_DENSITY_HARD" -MetaFile "brief_info_density_h
 Write-Host ""
 Write-Host "AI_PURITY_GATES: 8/8 PASS" -ForegroundColor Green
 
+# FULLTEXT_FIDELITY OBSERVATION (non-fatal) — reads fulltext_fidelity.meta.json
+$fidelityMetaPath = Join-Path $PSScriptRoot "..\outputs\fulltext_fidelity.meta.json"
+if (Test-Path $fidelityMetaPath) {
+    try {
+        $fidMeta        = Get-Content $fidelityMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $fidTotal       = if ($fidMeta.PSObject.Properties['events_total'])                { [int]$fidMeta.events_total }                else { 0 }
+        $fidCtaTotal    = if ($fidMeta.PSObject.Properties['total_cta_paragraphs_removed']) { [int]$fidMeta.total_cta_paragraphs_removed } else { 0 }
+        $fidWhere       = if ($fidMeta.PSObject.Properties['wheresyoured_at_events'])       { [int]$fidMeta.wheresyoured_at_events }       else { 0 }
+        $fidAvgRemoved  = if ($fidMeta.PSObject.Properties['avg_removed_paragraphs'])      { $fidMeta.avg_removed_paragraphs }            else { "n/a" }
+        $fidAvgCleaned  = if ($fidMeta.PSObject.Properties['avg_cleaned_len'])             { [int]$fidMeta.avg_cleaned_len }              else { 0 }
+        $fidDomTop      = if ($fidMeta.PSObject.Properties['domain_top'])                  { ($fidMeta.domain_top -join ", ") }           else { "n/a" }
+        Write-Host ""
+        Write-Host "FULLTEXT_FIDELITY (obs): events=$fidTotal cta_removed=$fidCtaTotal wheresyoured_at=$fidWhere" -ForegroundColor Cyan
+        Write-Host "  domain_top=$fidDomTop  avg_removed_paragraphs=$fidAvgRemoved  avg_cleaned_len=$fidAvgCleaned" -ForegroundColor Cyan
+    } catch {
+        Write-Host "FULLTEXT_FIDELITY (obs): parse error — $_" -ForegroundColor DarkYellow
+    }
+} else {
+    Write-Host "FULLTEXT_FIDELITY (obs): fulltext_fidelity.meta.json not found (skip)" -ForegroundColor DarkYellow
+}
+
 # LONGFORM EVIDENCE — reads exec_longform.meta.json written by ppt_generator
 # ---------------------------------------------------------------------------
 $longformMetaPath = Join-Path $PSScriptRoot "..\outputs\exec_longform.meta.json"
