@@ -237,3 +237,67 @@ def test_clean_v2_template_passes() -> None:
     ok, reasons = validate_zh_card_fields(q1_zh, q2_zh, qw1, qw2, q1, q2)
     assert ok, f"V2 fallback template should pass all style checks but got: {reasons}"
     assert reasons == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: fallback q2_zh in run_once.py must pass Q2_ZH_CHARS (>=40 CJK)
+# even when _anchor_for_zh is an all-English company name (0 CJK contribution).
+# Previously the 39-char template failed with Q2_ZH_CHARS_LOW for 8 events.
+# ---------------------------------------------------------------------------
+
+def test_run_once_q2_fallback_template_zh_chars_pass() -> None:
+    """The two-sentence fallback q2_zh template used in run_once.py when
+    validate_zh_card_fields fails must itself pass Q2_ZH_CHARS (>=40 CJK).
+
+    Reproduces the failing scenario: English-only anchor → the old 39-char
+    template scored Q2_ZH_CHARS_LOW.  The new template guarantees 56 fixed
+    CJK chars independent of the variable tokens.
+    """
+    # Worst-case: all-English actor/anchor — contributes 0 CJK chars
+    anchor = "OpenAI"
+    qw2 = "new model that outperforms competitors"
+    q2 = "The new model that outperforms competitors on all major benchmarks"
+
+    # Reconstruct the new fallback template from run_once.py (lines 1354-1359)
+    q2_zh = (
+        f"原文「{qw2}」直接揭示本次事件的影響邊界，"
+        f"{anchor} 相關部署預計牽動市場結構與產品節奏。"
+        f"管理層可依此安排 T+7 核查節點，"
+        f"針對 {anchor} 後續指標制定驗證計畫。"
+    )
+
+    # Use a valid q1_zh (not under test; just satisfies the validator)
+    qw1 = "diverse set of investors in the"
+    q1 = "Wayve self-driving tech attracted a diverse set of investors in the company"
+    q1_zh = _make_q1zh("業界", qw1)
+
+    ok, reasons = validate_zh_card_fields(q1_zh, q2_zh, qw1, qw2, q1, q2)
+
+    # Q2_ZH_CHARS must NOT fail
+    assert "Q2_ZH_CHARS_LOW" not in reasons, (
+        f"Fallback q2_zh template has insufficient CJK chars. reasons={reasons}"
+    )
+    # Q2_ZH_NO_WINDOW must NOT fail (「qw2」 is embedded)
+    assert "Q2_ZH_NO_WINDOW" not in reasons, (
+        f"Fallback q2_zh template missing 「quote_window_2」. reasons={reasons}"
+    )
+
+
+def test_run_once_q2_fallback_template_no_boilerplate() -> None:
+    """Fallback q2_zh template must not trigger NO_BOILERPLATE banned phrases."""
+    from utils.evidence_pack import check_no_boilerplate
+
+    anchor = "OpenAI"
+    qw2 = "new model that outperforms competitors"
+    q2_zh = (
+        f"原文「{qw2}」直接揭示本次事件的影響邊界，"
+        f"{anchor} 相關部署預計牽動市場結構與產品節奏。"
+        f"管理層可依此安排 T+7 核查節點，"
+        f"針對 {anchor} 後續指標制定驗證計畫。"
+    )
+
+    qw1 = "diverse set of investors in the"
+    q1_zh = _make_q1zh("業界", qw1)
+
+    nbp_ok, nbp_reasons = check_no_boilerplate(q1_zh, q2_zh)
+    assert nbp_ok, f"Fallback q2_zh triggered NO_BOILERPLATE: {nbp_reasons}"
