@@ -1,4 +1,4 @@
-# verify_online.ps1 — Z0 collect (online) then verify pipeline (offline read)
+﻿# verify_online.ps1 — Z0 collect (online) then verify pipeline (offline read)
 #
 # Steps:
 #   1) Run z0_collect.ps1  (goes online, writes data/raw/z0/latest.jsonl)
@@ -425,7 +425,7 @@ if (Test-Path $execSelMetaPath) {
                 Write-Output ("  tierA_share_in_selected    : {0:F3}" -f $srShare)
                 Write-Output ("  tierA_share_soft_target    : {0:F2}" -f $srTarget)
                 Write-Output ("  tierA_share_soft_status    : {0}" -f $srStatus)
-                Write-Output "  NOTE: This is a soft indicator only; it does not affect PASS/FAIL."
+                Write-Output "  note          : brief 模式期望 image_count=0（僅提示，不影響 PASS/FAIL）"
             } catch {
                 Write-Output ("  supply_resilience soft parse error (non-fatal): {0}" -f $_)
             }
