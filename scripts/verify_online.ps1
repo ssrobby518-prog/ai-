@@ -408,6 +408,28 @@ if (Test-Path $execSelMetaPath) {
             }
         }
 
+        # SUPPLY_RESILIENCE soft indicator (display only; non-gating)
+        $supplyMetaPathSoft = Join-Path $repoRoot "outputs\supply_resilience.meta.json"
+        if (Test-Path $supplyMetaPathSoft) {
+            try {
+                $srmSoft = Get-Content $supplyMetaPathSoft -Raw -Encoding UTF8 | ConvertFrom-Json
+                $srTierAUsed = if ($srmSoft.PSObject.Properties['tierA_used']) { [int]$srmSoft.tierA_used } else { 0 }
+                $srFinalSel  = if ($srmSoft.PSObject.Properties['final_ai_selected_events']) { [int]$srmSoft.final_ai_selected_events } else { 0 }
+                $srShare     = if ($srmSoft.PSObject.Properties['tierA_share_in_selected']) { [double]$srmSoft.tierA_share_in_selected } elseif ($srFinalSel -gt 0) { [Math]::Round(($srTierAUsed / $srFinalSel), 3) } else { 0.0 }
+                $srTarget    = if ($srmSoft.PSObject.Properties['tierA_share_soft_target']) { [double]$srmSoft.tierA_share_soft_target } else { 0.30 }
+                $srStatus    = if ($srmSoft.PSObject.Properties['tierA_share_soft_status']) { [string]$srmSoft.tierA_share_soft_status } else { if ($srShare -ge $srTarget) { "OK" } else { "LOW" } }
+                Write-Output ""
+                Write-Output "SUPPLY_RESILIENCE (soft):"
+                Write-Output ("  tierA_used/final_selected  : {0}/{1}" -f $srTierAUsed, $srFinalSel)
+                Write-Output ("  tierA_share_in_selected    : {0:F3}" -f $srShare)
+                Write-Output ("  tierA_share_soft_target    : {0:F2}" -f $srTarget)
+                Write-Output ("  tierA_share_soft_status    : {0}" -f $srStatus)
+                Write-Output "  NOTE: This is a soft indicator only; it does not affect PASS/FAIL."
+            } catch {
+                Write-Output ("  supply_resilience soft parse error (non-fatal): {0}" -f $_)
+            }
+        }
+
         # Exit code logic — always runs regardless of output suppression (gate behavior unchanged)
         if (-not $anyFail) {
             # PASS — no action needed
@@ -938,52 +960,6 @@ foreach ($bg in $briefGateMetas) {
         Write-Output ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_)
         exit 1
     }
-}
-
-# ---------------------------------------------------------------------------
-# SUPPLY RESILIENCE META (observability only; non-gating)
-# ---------------------------------------------------------------------------
-$supplyMetaPath = Join-Path $repoRoot "outputs\supply_resilience.meta.json"
-Write-Output ""
-Write-Output "SUPPLY_RESILIENCE:"
-if (Test-Path $supplyMetaPath) {
-    try {
-        $srm = Get-Content $supplyMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Write-Output ("  run_id                     : {0}" -f $(if ($srm.PSObject.Properties['run_id']) { $srm.run_id } else { "" }))
-        Write-Output ("  report_mode                : {0}" -f $(if ($srm.PSObject.Properties['report_mode']) { $srm.report_mode } else { "" }))
-        Write-Output ("  mode                       : {0}" -f $(if ($srm.PSObject.Properties['mode']) { $srm.mode } else { "" }))
-        Write-Output ("  fetched_total              : {0}" -f $(if ($srm.PSObject.Properties['fetched_total']) { $srm.fetched_total } else { 0 }))
-        Write-Output ("  hydrated_ok                : {0}" -f $(if ($srm.PSObject.Properties['hydrated_ok']) { $srm.hydrated_ok } else { 0 }))
-        Write-Output ("  hydrated_coverage          : {0}" -f $(if ($srm.PSObject.Properties['hydrated_coverage']) { $srm.hydrated_coverage } else { 0 }))
-        Write-Output ("  tierA_candidates           : {0}" -f $(if ($srm.PSObject.Properties['tierA_candidates']) { $srm.tierA_candidates } else { 0 }))
-        Write-Output ("  tierA_used                 : {0}" -f $(if ($srm.PSObject.Properties['tierA_used']) { $srm.tierA_used } else { 0 }))
-        Write-Output ("  quote_candidate_span_policy: {0}" -f $(if ($srm.PSObject.Properties['quote_candidate_span_policy']) { $srm.quote_candidate_span_policy } else { "" }))
-        Write-Output ("  quote_stoplist_hits_count  : {0}" -f $(if ($srm.PSObject.Properties['quote_stoplist_hits_count']) { $srm.quote_stoplist_hits_count } else { 0 }))
-        Write-Output ("  extended_pool_used         : {0}" -f $(if ($srm.PSObject.Properties['extended_pool_used']) { $srm.extended_pool_used } else { $false }))
-        Write-Output ("  extended_pool_added_count  : {0}" -f $(if ($srm.PSObject.Properties['extended_pool_added_count']) { $srm.extended_pool_added_count } else { 0 }))
-        Write-Output ("  final_ai_selected_events   : {0}" -f $(if ($srm.PSObject.Properties['final_ai_selected_events']) { $srm.final_ai_selected_events } else { 0 }))
-        Write-Output ("  not_ready                  : {0}" -f $(if ($srm.PSObject.Properties['not_ready']) { $srm.not_ready } else { $false }))
-        if ($srm.PSObject.Properties['reason']) {
-            Write-Output ("  reason                     : {0}" -f $srm.reason)
-        }
-
-        $srTierAUsed = if ($srm.PSObject.Properties['tierA_used']) { [int]$srm.tierA_used } else { 0 }
-        $srFinalSel  = if ($srm.PSObject.Properties['final_ai_selected_events']) { [int]$srm.final_ai_selected_events } else { 0 }
-        $srShare     = if ($srm.PSObject.Properties['tierA_share_in_selected']) { [double]$srm.tierA_share_in_selected } elseif ($srFinalSel -gt 0) { [Math]::Round(($srTierAUsed / $srFinalSel), 3) } else { 0.0 }
-        $srTarget    = if ($srm.PSObject.Properties['tierA_share_soft_target']) { [double]$srm.tierA_share_soft_target } else { 0.30 }
-        $srStatus    = if ($srm.PSObject.Properties['tierA_share_soft_status']) { [string]$srm.tierA_share_soft_status } else { if ($srShare -ge $srTarget) { "OK" } else { "LOW" } }
-        Write-Output ""
-        Write-Output "SUPPLY_RESILIENCE (soft):"
-        Write-Output ("  tierA_used/final_selected  : {0}/{1}" -f $srTierAUsed, $srFinalSel)
-        Write-Output ("  tierA_share_in_selected    : {0:F3}" -f $srShare)
-        Write-Output ("  tierA_share_soft_target    : {0:F2}" -f $srTarget)
-        Write-Output ("  tierA_share_soft_status    : {0}" -f $srStatus)
-        Write-Output "  NOTE: This is a soft indicator only; it does not affect PASS/FAIL."
-    } catch {
-        Write-Output ("  supply_resilience meta parse error (non-fatal): {0}" -f $_)
-    }
-} else {
-    Write-Output "  supply_resilience.meta.json not found (skipped)"
 }
 
 # ---------------------------------------------------------------------------
