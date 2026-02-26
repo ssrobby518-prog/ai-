@@ -499,9 +499,12 @@ $vrBriefGateMetas = @(
     @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
     @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" },
     @{ Label = "BRIEF_INFO_DENSITY_HARD";    File = "brief_info_density_hard.meta.json" },
-    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" }
+    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" },
+    @{ Label = "BRIEF_NO_GENERIC_NARRATIVE_HARD"; File = "brief_no_generic_narrative_hard.meta.json" },
+    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" }
 )
 $vrBriefRepoRoot = Split-Path -Parent $PSScriptRoot
+$vrBriefAnyFail = $false
 foreach ($bg in $vrBriefGateMetas) {
     $bgPath = Join-Path $vrBriefRepoRoot ("outputs\" + $bg.File)
     if (-not (Test-Path $bgPath)) {
@@ -524,13 +527,26 @@ foreach ($bg in $vrBriefGateMetas) {
                 -ForegroundColor $(if ($bgGate -eq "PASS") { "Green" } else { "Red" })
         }
         if ($bgGate -eq "FAIL") {
+            $vrBriefAnyFail = $true
+            if ($bgMeta.PSObject.Properties['failing_events'] -and @($bgMeta.failing_events).Count -gt 0) {
+                $bgFirst = @($bgMeta.failing_events)[0]
+                $bgTitleA = if ($bgFirst.PSObject.Properties['title']) { [string]$bgFirst.title } elseif ($bgFirst.PSObject.Properties['title_a']) { [string]$bgFirst.title_a } else { "" }
+                $bgTitleB = if ($bgFirst.PSObject.Properties['title_b']) { [string]$bgFirst.title_b } else { "" }
+                $bgHit = if ($bgFirst.PSObject.Properties['hit_pattern']) { [string]$bgFirst.hit_pattern } elseif ($bgFirst.PSObject.Properties['sample_hit_pattern']) { [string]$bgFirst.sample_hit_pattern } else { "" }
+                if ($bgTitleA) { Write-Host ("     failing_title={0}" -f $bgTitleA) -ForegroundColor Red }
+                if ($bgTitleB) { Write-Host ("     failing_title_pair={0}" -f $bgTitleB) -ForegroundColor Red }
+                if ($bgHit) { Write-Host ("     sample_hit_pattern={0}" -f $bgHit) -ForegroundColor Red }
+            }
             Write-Host ("  => {0}: FAIL" -f $bg.Label) -ForegroundColor Red
-            exit 1
+            continue
         }
     } catch {
         Write-Host ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_) -ForegroundColor Red
         exit 1
     }
+}
+if ($vrBriefAnyFail) {
+    exit 1
 }
 
 # ---------------------------------------------------------------------------

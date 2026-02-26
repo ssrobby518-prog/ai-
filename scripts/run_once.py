@@ -1,5 +1,6 @@
 ﻿"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
+import hashlib
 import os
 import re
 import shutil
@@ -522,13 +523,36 @@ def _build_brief_why_it_matters(category: str, anchor: str) -> str:
     return f"{line1}\n{line2}"
 
 
+_BRIEF_EMAIL_RE = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+    re.IGNORECASE,
+)
+
 _BRIEF_CTA_RE = re.compile(
     r"(hear from|sessions|subscribe|newsletter|cookies|privacy|advertis|sign up|register|terms|sponsor|promo|conference|buy tickets|event"
     r"|unsubscribe|manage subscription|upgrade to paid|paid subscriber|forwarded this email|view in browser"
     r"|get it in your inbox|leave a comment|share this post|restack|open in app|read in app"
+    r"|contact|verify outreach"
     r"|\$\s*\d{2,})",
     re.IGNORECASE,
 )
+
+_BRIEF_GENERIC_NARRATIVE_RULES: list[tuple[str, re.Pattern]] = [
+    ("explicit_action", re.compile(r"提出(?:明確|具體|清晰)?行動", re.IGNORECASE)),
+    ("trackable_milestone", re.compile(r"(?:形成|建立|已形成).*(?:可追蹤|可追踪).*(?:里程碑|節點)", re.IGNORECASE)),
+    ("decision_anchor", re.compile(r"建議(?:以|依).{0,24}為決策錨點", re.IGNORECASE)),
+    ("seven_day_decision", re.compile(r"在(?:七天|7天)內(?:完成|取捨|排程|決策)", re.IGNORECASE)),
+    ("tech_delivery_quality", re.compile(r"直接影響.{0,30}技術架構.{0,30}交付品質", re.IGNORECASE)),
+    ("risk_opportunity_sync", re.compile(r"風險與機會成本(?:會)?同步放大", re.IGNORECASE)),
+    ("followup_public_source_verify", re.compile(r"後續(?:將)?以.{0,24}與公開來源持續核對", re.IGNORECASE)),
+    ("workflow_supervision_style", re.compile(r"(?:提出|建議).{0,20}(?:排程|里程碑|執行節點|責任分工|優先序|完成取捨)", re.IGNORECASE)),
+]
+
+_BRIEF_FRAME_SIG_STOPWORDS = {
+    "the", "and", "for", "with", "from", "into", "about", "this", "that", "will",
+    "have", "has", "had", "are", "was", "were", "their", "there", "which", "while",
+    "actor", "anchor", "num", "email", "source", "quote",
+}
 
 
 def _brief_title_tokens(title: str) -> list[str]:
@@ -556,6 +580,8 @@ def _brief_title_tokens(title: str) -> list[str]:
 def _brief_quote_is_cta(text: str) -> bool:
     q = _normalize_ws(text)
     if not q:
+        return True
+    if _BRIEF_EMAIL_RE.search(q):
         return True
     return bool(_BRIEF_CTA_RE.search(q))
 
@@ -696,6 +722,94 @@ def _brief_bullet_hit_anchor_or_number(text: str, anchors: list[str]) -> bool:
     return False
 
 
+def _brief_find_generic_narrative_hits(*parts: str) -> list[dict]:
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for part in parts:
+        txt = _normalize_ws(part)
+        if not txt:
+            continue
+        for rule_name, rule_re in _BRIEF_GENERIC_NARRATIVE_RULES:
+            m = rule_re.search(txt)
+            if not m:
+                continue
+            key = f"{rule_name}:{_normalize_ws(m.group(0)).lower()}"
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append(
+                {
+                    "hit_pattern": rule_name,
+                    "matched_text": _normalize_ws(m.group(0)),
+                    "sample_text": _clip_text(txt, 160),
+                }
+            )
+    return hits
+
+
+def _brief_replace_token_ci(text: str, token: str, replacement: str) -> str:
+    t = _normalize_ws(token)
+    if not t:
+        return text
+    flags = re.IGNORECASE if t.isascii() else 0
+    return re.sub(re.escape(t), replacement, text, flags=flags)
+
+
+def _brief_collect_frame_signatures(
+    *,
+    summary_zh: str,
+    what_bullets: list[str],
+    key_bullets: list[str],
+    why_bullets: list[str],
+    actor: str,
+    anchors: list[str],
+) -> set[str]:
+    parts: list[str] = []
+    if summary_zh:
+        parts.append(_normalize_ws(summary_zh))
+    parts.extend(_normalize_ws(s) for s in (what_bullets or []))
+    parts.extend(_normalize_ws(s) for s in (key_bullets or []))
+    parts.extend(_normalize_ws(s) for s in (why_bullets or []))
+    blob = "\n".join([p for p in parts if p])
+    if not blob:
+        return set()
+
+    normalized = str(blob)
+    normalized = _BRIEF_EMAIL_RE.sub("<EMAIL>", normalized)
+    normalized = _brief_replace_token_ci(normalized, actor, "<ACTOR>")
+    anchor_tokens = sorted(
+        {_normalize_ws(a) for a in (anchors or []) if _normalize_ws(a)},
+        key=len,
+        reverse=True,
+    )
+    for anc in anchor_tokens:
+        if actor and _normalize_ws(anc).lower() == _normalize_ws(actor).lower():
+            continue
+        normalized = _brief_replace_token_ci(normalized, anc, "<ANCHOR>")
+    normalized = re.sub(r"\b\d[\d,\.%:/\-]*\b", "<NUM>", normalized)
+    normalized = _normalize_ws(normalized)
+
+    signatures: set[str] = set()
+    for seg in re.split(r"(?:[。！？；\n]+|(?<=[\.\!\?;])\s+)", normalized):
+        sent = _normalize_ws(seg)
+        if len(sent) < 12:
+            continue
+        prefix = sent[:24]
+        keywords: list[str] = []
+        for tk in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z][A-Za-z0-9\-]{2,}", sent.lower()):
+            if tk in _BRIEF_FRAME_SIG_STOPWORDS:
+                continue
+            if tk in keywords:
+                continue
+            keywords.append(tk)
+            if len(keywords) >= 6:
+                break
+        hash_basis = "|".join(keywords) if keywords else prefix.lower()
+        sig_hash = hashlib.sha1(hash_basis.encode("utf-8")).hexdigest()[:8]
+        signatures.add(f"{prefix}|{sig_hash}")
+    return signatures
+
+
 def _brief_build_bullet_sections(
     title: str,
     actor: str,
@@ -709,20 +823,20 @@ def _brief_build_bullet_sections(
     num_1 = _brief_extract_num_token(quote_1, title) or "7 天"
     num_2 = _brief_extract_num_token(quote_2, quote_1) or anchor
     what = [
-        _brief_norm_bullet(f"{actor} 針對「{title}」提出明確行動，並由 {anchor} 負責關鍵執行節點。"),
-        _brief_norm_bullet(f"逐字證據顯示「{_clip_text(quote_1, 96)}」，其中量化重點為 {num_1}。"),
-        _brief_norm_bullet(f"此事件已形成可追蹤的里程碑，後續將以 {anchor} 與公開來源持續核對。"),
+        _brief_norm_bullet(f"{actor} 在「{title}」中公開了可核對的更新內容，核心證據對象包含 {anchor}。"),
+        _brief_norm_bullet(f"第一段逐字證據為「{_clip_text(quote_1, 96)}」，其中可量測數字為 {num_1}。"),
+        _brief_norm_bullet(f"同篇報導已交代事件邊界與涉及對象，可直接對照原文避免二次詮釋偏差。"),
     ]
     key = [
-        _brief_norm_bullet(f"技術與機制細節可由第二段證據「{_clip_text(quote_2, 96)}」回推限制條件與假設。"),
+        _brief_norm_bullet(f"第二段逐字證據「{_clip_text(quote_2, 96)}」揭示技術或機制細節，可回推限制條件。"),
         _brief_norm_bullet("資料來源已保留原始網址與發佈時間，可直接回查上下文避免誤讀。"),
     ]
     why = [
-        _brief_norm_bullet(f"此案直接影響 {impact_target} 的決策節奏，建議依「{decision_angle}」排定資源優先序。"),
-        _brief_norm_bullet(f"若未在 7 天內完成決策，{anchor} 相關風險與機會成本會同步放大。"),
+        _brief_norm_bullet(f"此訊號會改變 {impact_target} 的評估基準，需重新比較 {anchor} 與同類方案的差異。"),
+        _brief_norm_bullet(f"就「{decision_angle}」而言，{num_2} 可作為下一輪資源配置與風險評估的量化依據。"),
     ]
     if final_url:
-        key.append(_brief_norm_bullet(f"原始來源已鎖定為 {final_url}，可作為審計與複核的單一依據。"))
+        key.append(_brief_norm_bullet(f"原始來源為 {final_url}，可作為審計與複核的直接依據。"))
     return what[:5], key[:4], why[:4]
 
 
@@ -4676,11 +4790,17 @@ def run_pipeline() -> None:
                         _brief_anchor_fail: list[dict] = []
                         _brief_zh_fail: list[dict] = []
                         _brief_info_fail: list[dict] = []
+                        _brief_generic_fail: list[dict] = []
+                        _brief_dup_fail: list[dict] = []
                         _brief_info_events: list[dict] = []  # per-event observability (Step 4)
+                        _brief_frame_signatures: list[dict] = []
                         for _bfc in _brief_cards:
                             _title_b = str(_bfc.get("title", "") or "")[:80]
+                            _summary_b = _normalize_ws(str(_bfc.get("summary_zh", "") or ""))
                             _what_b = _normalize_ws(str(_bfc.get("what_happened_brief", "") or _bfc.get("q1", "") or ""))
                             _why_b = _normalize_ws(str(_bfc.get("why_it_matters_brief", "") or _bfc.get("q2", "") or ""))
+                            if not _summary_b:
+                                _summary_b = _normalize_ws(f"{_what_b} {_why_b}")
                             _actor_b = _normalize_ws(str(_bfc.get("actor_primary", "") or _bfc.get("actor", "") or ""))
                             _anchors_b = [
                                 _normalize_ws(str(_a or ""))
@@ -4734,6 +4854,36 @@ def run_pipeline() -> None:
                                 "what_happened_sample": _what_bullets[:3],
                                 "detail_sentence_en_used": _det_en_used[:2],
                             })
+                            _generic_hits = _brief_find_generic_narrative_hits(
+                                _summary_b,
+                                _what_b,
+                                _why_b,
+                                *(_what_bullets + _key_bullets + _why_bullets),
+                            )
+                            if _generic_hits:
+                                _g0 = _generic_hits[0]
+                                _brief_generic_fail.append(
+                                    {
+                                        "title": _title_b,
+                                        "hit_pattern": str(_g0.get("hit_pattern", "") or ""),
+                                        "matched_text": str(_g0.get("matched_text", "") or ""),
+                                        "sample_text": str(_g0.get("sample_text", "") or ""),
+                                    }
+                                )
+                            _sig_set = _brief_collect_frame_signatures(
+                                summary_zh=_summary_b,
+                                what_bullets=_what_bullets,
+                                key_bullets=_key_bullets,
+                                why_bullets=_why_bullets,
+                                actor=_actor_b,
+                                anchors=[_anchor_b] + _anchors_b,
+                            )
+                            _brief_frame_signatures.append(
+                                {
+                                    "title": _title_b,
+                                    "signatures": sorted(_sig_set),
+                                }
+                            )
                             if not _brief_event_info_ok:
                                 _brief_info_fail.append(
                                     {
@@ -4772,6 +4922,26 @@ def run_pipeline() -> None:
                                         "reason": "zh_tw_check_fail",
                                     }
                                 )
+
+                        for _i in range(len(_brief_frame_signatures)):
+                            _left = _brief_frame_signatures[_i]
+                            _left_sigs = set(_left.get("signatures", []) or [])
+                            if len(_left_sigs) < 2:
+                                continue
+                            for _j in range(_i + 1, len(_brief_frame_signatures)):
+                                _right = _brief_frame_signatures[_j]
+                                _right_sigs = set(_right.get("signatures", []) or [])
+                                _shared = sorted(_left_sigs.intersection(_right_sigs))
+                                if len(_shared) >= 2:
+                                    _brief_dup_fail.append(
+                                        {
+                                            "title_a": str(_left.get("title", "") or ""),
+                                            "title_b": str(_right.get("title", "") or ""),
+                                            "duplicate_signature_count": len(_shared),
+                                            "sample_hit_pattern": _shared[0],
+                                            "shared_signatures": _shared[:5],
+                                        }
+                                    )
 
                         _brief_bp_meta = {
                             "gate_result": "PASS" if (len(_brief_bp_fail) == 0) else "FAIL",
@@ -4825,12 +4995,43 @@ def run_pipeline() -> None:
                             encoding="utf-8",
                         )
 
+                        _brief_generic_meta = {
+                            "gate_result": "PASS" if (len(_brief_generic_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_generic_fail),
+                            "failing_events": _brief_generic_fail,
+                            "first_failing_event": (_brief_generic_fail[0] if _brief_generic_fail else {}),
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_no_generic_narrative_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_generic_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
+                        _brief_dup_meta = {
+                            "gate_result": "PASS" if (len(_brief_dup_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_dup_fail),
+                            "failing_events": _brief_dup_fail,
+                            "first_failing_event": (_brief_dup_fail[0] if _brief_dup_fail else {}),
+                            "signature_policy": {
+                                "sentence_prefix_chars": 24,
+                                "same_signature_min": 2,
+                                "normalization": "remove_numbers_actor_anchors",
+                            },
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_no_duplicate_frames_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_dup_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
                         _brief_any_fail = (
                             _brief_min_meta["gate_result"] == "FAIL"
                             or _brief_bp_meta["gate_result"] == "FAIL"
                             or _brief_anchor_meta["gate_result"] == "FAIL"
                             or _brief_zh_meta["gate_result"] == "FAIL"
                             or _brief_info_meta["gate_result"] == "FAIL"
+                            or _brief_generic_meta["gate_result"] == "FAIL"
+                            or _brief_dup_meta["gate_result"] == "FAIL"
                         )
                         if _brief_any_fail:
                             _brief_gate = "BRIEF_MIN_EVENTS_HARD"
@@ -4847,6 +5048,12 @@ def run_pipeline() -> None:
                             if _brief_info_meta["gate_result"] == "FAIL":
                                 _brief_gate = "BRIEF_INFO_DENSITY_HARD"
                                 _brief_detail = f"info_density_fail_count={len(_brief_info_fail)}"
+                            if _brief_generic_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_NO_GENERIC_NARRATIVE_HARD"
+                                _brief_detail = f"generic_narrative_fail_count={len(_brief_generic_fail)}"
+                            if _brief_dup_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_NO_DUPLICATE_FRAMES_HARD"
+                                _brief_detail = f"duplicate_frames_fail_count={len(_brief_dup_fail)}"
 
                             (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
                                 "# NOT_READY\n\n"
@@ -4855,7 +5062,8 @@ def run_pipeline() -> None:
                                 f"fail_reason: {_brief_detail}\n"
                                 f"counts: events_total={_brief_total} min_required={_brief_min_events} "
                                 f"boilerplate_fail={len(_brief_bp_fail)} anchor_fail={len(_brief_anchor_fail)} "
-                                f"zh_tw_fail={len(_brief_zh_fail)} info_density_fail={len(_brief_info_fail)}\n",
+                                f"zh_tw_fail={len(_brief_zh_fail)} info_density_fail={len(_brief_info_fail)} "
+                                f"generic_narrative_fail={len(_brief_generic_fail)} duplicate_frames_fail={len(_brief_dup_fail)}\n",
                                 encoding="utf-8",
                             )
                             for _brief_art in ("executive_report.pptx", "executive_report.docx"):
@@ -4867,7 +5075,7 @@ def run_pipeline() -> None:
                             _write_supply_resilience_meta(_supply_meta)
                         else:
                             log.info(
-                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0 info_density_fail=0",
+                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0 info_density_fail=0 generic_narrative_fail=0 duplicate_frames_fail=0",
                                 _brief_min_events, _brief_total,
                             )
                             _supply_meta["not_ready"] = False
@@ -5303,5 +5511,3 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         run_pipeline()
-
-

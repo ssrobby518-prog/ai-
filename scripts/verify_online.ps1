@@ -928,8 +928,11 @@ $briefGateMetas = @(
     @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
     @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" },
     @{ Label = "BRIEF_INFO_DENSITY_HARD";    File = "brief_info_density_hard.meta.json" },
-    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" }
+    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" },
+    @{ Label = "BRIEF_NO_GENERIC_NARRATIVE_HARD"; File = "brief_no_generic_narrative_hard.meta.json" },
+    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" }
 )
+$briefAnyFail = $false
 foreach ($bg in $briefGateMetas) {
     $bgPath = Join-Path $repoRoot ("outputs\" + $bg.File)
     if (-not (Test-Path $bgPath)) {
@@ -950,13 +953,26 @@ foreach ($bg in $briefGateMetas) {
             Write-Output ("  {0}: {1} (events_total={2} fail_count={3})" -f $bg.Label, $bgGate, $bgTotal, $bgFail)
         }
         if ($bgGate -eq "FAIL") {
+            $briefAnyFail = $true
+            if ($bgMeta.PSObject.Properties['failing_events'] -and @($bgMeta.failing_events).Count -gt 0) {
+                $bgFirst = @($bgMeta.failing_events)[0]
+                $bgTitleA = if ($bgFirst.PSObject.Properties['title']) { [string]$bgFirst.title } elseif ($bgFirst.PSObject.Properties['title_a']) { [string]$bgFirst.title_a } else { "" }
+                $bgTitleB = if ($bgFirst.PSObject.Properties['title_b']) { [string]$bgFirst.title_b } else { "" }
+                $bgHit = if ($bgFirst.PSObject.Properties['hit_pattern']) { [string]$bgFirst.hit_pattern } elseif ($bgFirst.PSObject.Properties['sample_hit_pattern']) { [string]$bgFirst.sample_hit_pattern } else { "" }
+                if ($bgTitleA) { Write-Output ("     failing_title={0}" -f $bgTitleA) }
+                if ($bgTitleB) { Write-Output ("     failing_title_pair={0}" -f $bgTitleB) }
+                if ($bgHit) { Write-Output ("     sample_hit_pattern={0}" -f $bgHit) }
+            }
             Write-Output ("  => {0}: FAIL" -f $bg.Label)
-            exit 1
+            continue
         }
     } catch {
         Write-Output ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_)
         exit 1
     }
+}
+if ($briefAnyFail) {
+    exit 1
 }
 
 # FULLTEXT_FIDELITY OBSERVATION (non-fatal)
