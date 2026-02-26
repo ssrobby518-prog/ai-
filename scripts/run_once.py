@@ -988,9 +988,18 @@ def _write_supply_resilience_meta(meta: dict) -> None:
     try:
         import json as _sr_json
 
+        _meta = dict(meta or {})
+        _tier_a_used = int(_meta.get("tierA_used", 0) or 0)
+        _final_selected = int(_meta.get("final_ai_selected_events", 0) or 0)
+        _share_target = 0.30
+        _share = round((_tier_a_used / _final_selected), 3) if _final_selected > 0 else 0.0
+        _meta["tierA_share_in_selected"] = _share
+        _meta["tierA_share_soft_target"] = _share_target
+        _meta["tierA_share_soft_status"] = "OK" if _share >= _share_target else "LOW"
+
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "supply_resilience.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(_sr_json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        out_path.write_text(_sr_json.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 

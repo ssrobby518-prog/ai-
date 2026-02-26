@@ -966,6 +966,19 @@ if (Test-Path $supplyMetaPath) {
         if ($srm.PSObject.Properties['reason']) {
             Write-Output ("  reason                     : {0}" -f $srm.reason)
         }
+
+        $srTierAUsed = if ($srm.PSObject.Properties['tierA_used']) { [int]$srm.tierA_used } else { 0 }
+        $srFinalSel  = if ($srm.PSObject.Properties['final_ai_selected_events']) { [int]$srm.final_ai_selected_events } else { 0 }
+        $srShare     = if ($srm.PSObject.Properties['tierA_share_in_selected']) { [double]$srm.tierA_share_in_selected } elseif ($srFinalSel -gt 0) { [Math]::Round(($srTierAUsed / $srFinalSel), 3) } else { 0.0 }
+        $srTarget    = if ($srm.PSObject.Properties['tierA_share_soft_target']) { [double]$srm.tierA_share_soft_target } else { 0.30 }
+        $srStatus    = if ($srm.PSObject.Properties['tierA_share_soft_status']) { [string]$srm.tierA_share_soft_status } else { if ($srShare -ge $srTarget) { "OK" } else { "LOW" } }
+        Write-Output ""
+        Write-Output "SUPPLY_RESILIENCE (soft):"
+        Write-Output ("  tierA_used/final_selected  : {0}/{1}" -f $srTierAUsed, $srFinalSel)
+        Write-Output ("  tierA_share_in_selected    : {0:F3}" -f $srShare)
+        Write-Output ("  tierA_share_soft_target    : {0:F2}" -f $srTarget)
+        Write-Output ("  tierA_share_soft_status    : {0}" -f $srStatus)
+        Write-Output "  NOTE: This is a soft indicator only; it does not affect PASS/FAIL."
     } catch {
         Write-Output ("  supply_resilience meta parse error (non-fatal): {0}" -f $_)
     }
