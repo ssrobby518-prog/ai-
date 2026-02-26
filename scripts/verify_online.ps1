@@ -994,12 +994,24 @@ if (-not $pptxAuditPath) {
         try {
             $slideCount = @($zip.Entries | Where-Object { $_.FullName -match '^ppt/slides/slide\d+\.xml$' }).Count
             $imageCount = @($zip.Entries | Where-Object { $_.FullName -match '^ppt/media/.*\.(png|jpg|jpeg|gif|bmp|wmf|emf)$' }).Count
+            $slideRangeStatus = "SKIP"
+            if ($reportMode -eq "brief") {
+                if ($slideCount -ge 5 -and $slideCount -le 10) {
+                    $slideRangeStatus = "OK"
+                } else {
+                    $slideRangeStatus = "WARN"
+                }
+            } else {
+                $slideRangeStatus = "N/A"
+            }
             Write-Output ("  pptx_path     : {0}" -f $pptxAuditPath)
             Write-Output ("  report_mode   : {0}" -f $(if ($reportMode) { $reportMode } else { "unknown" }))
             Write-Output ("  slide_count   : {0}" -f $slideCount)
             Write-Output ("  image_count   : {0}" -f $imageCount)
+            Write-Output "  expected_slide_range_if_brief : 5-10"
+            Write-Output ("  slide_range_status           : {0}" -f $slideRangeStatus)
             Write-Output "  expected_images_if_brief : 0"
-            Write-Output "  note          : brief 模式期望 image_count=0（僅提示，不影響 PASS/FAIL）"
+            Write-Output "  note          : brief 模式期望 image_count=0（僅提示，不影響 PASS/FAIL）；demo 建議 slide_count 落在 5-10"
         } finally {
             $zip.Dispose()
         }
