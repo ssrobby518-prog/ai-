@@ -1029,7 +1029,7 @@ Write-Host "[AI Purity Gate] AI_PURITY_HARD..." -ForegroundColor Yellow
 $aiPurityPath = Join-Path $PSScriptRoot "..\outputs\ai_purity_hard.meta.json"
 if (Test-Path $aiPurityPath) {
     try {
-        $aiPurity = Get-Content $aiPurityPath -Raw | ConvertFrom-Json
+        $aiPurity = Get-Content $aiPurityPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $aiGate   = if ($aiPurity.PSObject.Properties['gate_result']) { [string]$aiPurity.gate_result } else { 'FAIL' }
         $aiSel    = if ($aiPurity.PSObject.Properties['selected']) { [int]$aiPurity.selected } else { 0 }
         $aiTrue   = if ($aiPurity.PSObject.Properties['ai_true']) { [int]$aiPurity.ai_true } else { 0 }
@@ -1069,7 +1069,7 @@ function Invoke-MetaGate {
         return
     }
     try {
-        $metaObj = Get-Content $metaPath -Raw | ConvertFrom-Json
+        $metaObj = Get-Content $metaPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $gate = if ($metaObj.PSObject.Properties['gate_result']) { [string]$metaObj.gate_result } else { 'FAIL' }
         $info = & $InfoBuilder $metaObj
         if ($gate -eq 'PASS') {
