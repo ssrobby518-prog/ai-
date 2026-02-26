@@ -951,6 +951,12 @@ foreach ($bg in $briefGateMetas) {
             $bgTotal = if ($bgMeta.PSObject.Properties['events_total']) { [int]$bgMeta.events_total } else { 0 }
             $bgFail  = if ($bgMeta.PSObject.Properties['fail_count']) { [int]$bgMeta.fail_count } else { 0 }
             Write-Output ("  {0}: {1} (events_total={2} fail_count={3})" -f $bg.Label, $bgGate, $bgTotal, $bgFail)
+            if ($bg.Label -eq "BRIEF_INFO_DENSITY_HARD" -and $bgMeta.PSObject.Properties['rules']) {
+                $bgRules = $bgMeta.rules
+                $bgCjk = if ($bgRules.PSObject.Properties['min_bullet_cjk_chars']) { [int]$bgRules.min_bullet_cjk_chars } else { 12 }
+                $bgHits = if ($bgRules.PSObject.Properties['anchor_or_number_hits_min']) { [int]$bgRules.anchor_or_number_hits_min } else { 2 }
+                Write-Output ("     rules: min_bullet_cjk_chars={0} anchor_or_number_hits_min={1} quotes_non_cta={2}" -f $bgCjk, $bgHits, $(if ($bgRules.PSObject.Properties['quotes_must_not_hit_cta_stoplist']) { [bool]$bgRules.quotes_must_not_hit_cta_stoplist } else { $true }))
+            }
         }
         if ($bgGate -eq "FAIL") {
             $briefAnyFail = $true
@@ -970,6 +976,46 @@ foreach ($bg in $briefGateMetas) {
         Write-Output ("  {0}: FAIL (parse error: {1})" -f $bg.Label, $_)
         exit 1
     }
+}
+
+# ---------------------------------------------------------------------------
+# BRIEF_CONTENT_MINER OBSERVABILITY (soft; non-gating)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_CONTENT_MINER (obs):"
+$briefMinerMetaPath = Join-Path $repoRoot "outputs\brief_content_miner.meta.json"
+if (Test-Path $briefMinerMetaPath) {
+    try {
+        $bcm = Get-Content $briefMinerMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $bcmGate = if ($bcm.PSObject.Properties['gate_result']) { [string]$bcm.gate_result } else { "UNKNOWN" }
+        $bcmTotal = if ($bcm.PSObject.Properties['events_total']) { [int]$bcm.events_total } else { 0 }
+        $bcmStoplist = if ($bcm.PSObject.Properties['quote_stoplist_hits_count']) { [int]$bcm.quote_stoplist_hits_count } else { 0 }
+        $bcmQ2Fail = if ($bcm.PSObject.Properties['quote2_cta_fail_count']) { [int]$bcm.quote2_cta_fail_count } else { 0 }
+        Write-Output ("  gate_result               : {0}" -f $bcmGate)
+        Write-Output ("  events_total              : {0}" -f $bcmTotal)
+        Write-Output ("  quote_stoplist_hits_count : {0}" -f $bcmStoplist)
+        Write-Output ("  quote2_cta_fail_count     : {0}" -f $bcmQ2Fail)
+        if ($bcm.PSObject.Properties['events'] -and @($bcm.events).Count -gt 0) {
+            $bcmFirst = @($bcm.events)[0]
+            $bcmBullets = if ($bcmFirst.PSObject.Properties['bullets_count_each']) { $bcmFirst.bullets_count_each } else { $null }
+            Write-Output ("  sample_title              : {0}" -f $(if ($bcmFirst.PSObject.Properties['title']) { $bcmFirst.title } else { "" }))
+            Write-Output ("  sample_fulltext_len       : {0}" -f $(if ($bcmFirst.PSObject.Properties['fulltext_len']) { $bcmFirst.fulltext_len } else { 0 }))
+            Write-Output ("  sample_candidates_total   : {0}" -f $(if ($bcmFirst.PSObject.Properties['candidates_total']) { $bcmFirst.candidates_total } else { 0 }))
+            Write-Output ("  sample_stoplist_rejected  : {0}" -f $(if ($bcmFirst.PSObject.Properties['stoplist_rejected']) { $bcmFirst.stoplist_rejected } else { 0 }))
+            Write-Output ("  sample_quote2_is_cta      : {0}" -f $(if ($bcmFirst.PSObject.Properties['quote2_is_cta']) { $bcmFirst.quote2_is_cta } else { $false }))
+            if ($bcmBullets) {
+                Write-Output ("  sample_bullets_count_each : what={0} key={1} why={2}" -f `
+                    $(if ($bcmBullets.PSObject.Properties['what_happened']) { $bcmBullets.what_happened } else { 0 }), `
+                    $(if ($bcmBullets.PSObject.Properties['key_details']) { $bcmBullets.key_details } else { 0 }), `
+                    $(if ($bcmBullets.PSObject.Properties['why_it_matters']) { $bcmBullets.why_it_matters } else { 0 }))
+            }
+            Write-Output ("  sample_anchors_hit_count  : {0}" -f $(if ($bcmFirst.PSObject.Properties['anchors_hit_count']) { $bcmFirst.anchors_hit_count } else { 0 }))
+        }
+    } catch {
+        Write-Output ("  BRIEF_CONTENT_MINER: SKIP (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  BRIEF_CONTENT_MINER: SKIP (brief_content_miner.meta.json not found)"
 }
 
 # ---------------------------------------------------------------------------

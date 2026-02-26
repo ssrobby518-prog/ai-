@@ -350,8 +350,8 @@ _BRIEF_GARBAGE_ACTORS = {
 }
 
 _BRIEF_QUOTE_SPAN_START = 0.15
-_BRIEF_QUOTE_SPAN_END = 0.70
-_BRIEF_QUOTE_SPAN_POLICY = "0.15-0.70"
+_BRIEF_QUOTE_SPAN_END = 0.75
+_BRIEF_QUOTE_SPAN_POLICY = "0.15-0.75"
 
 _TIER_A_SOURCE_RE = re.compile(
     r"(openai|anthropic|hugging\s*face|huggingface|google\s+research|google\s+ai|"
@@ -537,6 +537,20 @@ _BRIEF_CTA_RE = re.compile(
     re.IGNORECASE,
 )
 
+_BRIEF_MIN_EN_SENTENCE_CHARS = 60
+_BRIEF_MIN_CJK_SENTENCE_CHARS = 20
+_BRIEF_SENTENCE_MAX_CHARS = 360
+_BRIEF_IMPACT_WORD_RE = re.compile(
+    r"\b(will|could|risk|impact|ban|regulation|launch|release|acquire|raise|"
+    r"lawsuit|fine|security|compliance|revenue|cost|pricing|roadmap|policy)\b",
+    re.IGNORECASE,
+)
+_BRIEF_ACTION_WORD_RE = re.compile(
+    r"\b(launch|release|released|announc|open|partner|acquire|raise|rollout|"
+    r"ship|deploy|introduc|publish|expand|update)\b",
+    re.IGNORECASE,
+)
+
 _BRIEF_GENERIC_NARRATIVE_RULES: list[tuple[str, re.Pattern]] = [
     ("explicit_action", re.compile(r"提出(?:明確|具體|清晰)?行動", re.IGNORECASE)),
     ("trackable_milestone", re.compile(r"(?:形成|建立|已形成).*(?:可追蹤|可追踪).*(?:里程碑|節點)", re.IGNORECASE)),
@@ -613,25 +627,21 @@ def _brief_quote_candidates(
     seed = _normalize_ws(seed_quote)
     if seed:
         cands.append(seed)
-    raw_body = str(source_text or "")
-    body = _normalize_ws(raw_body)
-    if body:
-        sentences: list[str] = []
-        for seg in re.split(r"(?<=[\.\!\?。！？；;])\s+|\n+", body):
-            s = _normalize_ws(seg)
-            if not s:
+    sentences = _brief_split_source_sentences(source_text)
+    if sentences:
+        total = len(sentences)
+        start_idx = max(0, min(total - 1, int(total * max(0.0, span_start))))
+        end_idx = max(start_idx + 1, min(total, int(total * min(1.0, span_end))))
+        span_sents = sentences[start_idx:end_idx]
+        if len(span_sents) < 3 and total >= 3:
+            fb_start = max(0, min(total - 1, int(total * 0.10)))
+            fb_end = max(fb_start + 1, min(total, int(total * 0.85)))
+            span_sents = sentences[fb_start:fb_end]
+        for s in span_sents:
+            ss = _normalize_ws(s)
+            if not _brief_sentence_len_ok(ss):
                 continue
-            sentences.append(s)
-        if sentences:
-            total = len(sentences)
-            start_idx = max(0, min(total - 1, int(total * max(0.0, span_start))))
-            end_idx = max(start_idx + 1, min(total, int(total * min(1.0, span_end))))
-            span_sents = sentences[start_idx:end_idx]
-            if len(span_sents) < 3 and total >= 3:
-                fallback_end = max(3, min(total, int(total * max(span_end, 0.75))))
-                span_sents = sentences[:fallback_end]
-            for s in span_sents:
-                cands.append(s)
+            cands.append(ss)
     out: list[str] = []
     seen: set[str] = set()
     for c in cands:
@@ -875,6 +885,360 @@ def _brief_collect_frame_signatures(
         sig_hash = hashlib.sha1(hash_basis.encode("utf-8")).hexdigest()[:8]
         signatures.add(f"{prefix}|{sig_hash}")
     return signatures
+
+
+def _brief_count_cjk_chars(text: str) -> int:
+    return sum(1 for c in str(text or "") if "\u4e00" <= c <= "\u9fff")
+
+
+def _brief_sentence_len_ok(text: str) -> bool:
+    s = _normalize_ws(text)
+    if not s:
+        return False
+    if _brief_count_cjk_chars(s) > 0:
+        return _brief_count_cjk_chars(s) >= _BRIEF_MIN_CJK_SENTENCE_CHARS
+    return len(s) >= _BRIEF_MIN_EN_SENTENCE_CHARS
+
+
+def _brief_token_set(text: str) -> set[str]:
+    toks = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-]{1,}|[\u4e00-\u9fff]{2,}", str(text or "").lower())
+    return {t for t in toks if t and t not in _BRIEF_FRAME_SIG_STOPWORDS}
+
+
+def _brief_overlap_ratio(a: str, b: str) -> float:
+    ta = _brief_token_set(a)
+    tb = _brief_token_set(b)
+    if (not ta) or (not tb):
+        return 0.0
+    inter = len(ta.intersection(tb))
+    denom = max(1, min(len(ta), len(tb)))
+    return inter / denom
+
+
+def _brief_split_source_sentences(source_text: str) -> list[str]:
+    body = str(source_text or "").replace("\r", "\n")
+    out: list[str] = []
+    for para in re.split(r"\n{1,}", body):
+        p = _normalize_ws(para)
+        if not p:
+            continue
+        # Keep list-like lines, while still splitting normal sentence boundaries.
+        if re.match(r"^\s*(?:[-*•]|\d+\.)\s+", para):
+            p = _normalize_ws(re.sub(r"^\s*(?:[-*•]|\d+\.)\s+", "", para))
+            if p:
+                out.append(_clip_text(p, _BRIEF_SENTENCE_MAX_CHARS))
+            continue
+        for seg in re.split(r"(?<=[\.\!\?。！？；;])\s+", p):
+            s = _normalize_ws(seg.strip(" -•\t"))
+            if not s:
+                continue
+            out.append(_clip_text(s, _BRIEF_SENTENCE_MAX_CHARS))
+    return out
+
+
+def _brief_sentence_score(
+    sentence: str,
+    *,
+    actor: str,
+    title_tokens: list[str],
+    anchors: list[str],
+) -> dict:
+    s = _normalize_ws(sentence)
+    sl = s.lower()
+    actor_n = _normalize_ws(actor)
+    actor_hit = bool(actor_n and actor_n.lower() in sl)
+    title_overlap = sum(1 for tk in (title_tokens or []) if tk and tk in sl)
+    has_number = bool(re.search(r"(?:\d|[$€¥£]|(?:19|20)\d{2}|%)", s))
+    has_anchor = any(
+        bool(_normalize_ws(a)) and (
+            (_normalize_ws(a).lower() in sl) if _normalize_ws(a).isascii() else (_normalize_ws(a) in s)
+        )
+        for a in (anchors or [])
+    )
+    has_impact = bool(_BRIEF_IMPACT_WORD_RE.search(s))
+    has_action = bool(_BRIEF_ACTION_WORD_RE.search(s))
+    score = 0
+    if has_number:
+        score += 2
+    if actor_hit or title_overlap >= 2:
+        score += 2
+    if has_anchor:
+        score += 2
+    if has_impact:
+        score += 1
+    if has_action:
+        score += 1
+    return {
+        "text": s,
+        "score": score,
+        "actor_hit": actor_hit,
+        "title_overlap": title_overlap,
+        "has_number": has_number,
+        "has_anchor": has_anchor,
+        "has_impact": has_impact,
+        "has_action": has_action,
+    }
+
+
+def _brief_mine_sentence_candidates(
+    *,
+    title: str,
+    actor: str,
+    anchors: list[str],
+    full_text: str,
+    max_candidates: int = 12,
+    diag: dict | None = None,
+) -> list[dict]:
+    sents = _brief_split_source_sentences(full_text)
+    total = len(sents)
+    if total == 0:
+        if isinstance(diag, dict):
+            diag["sentences_total"] = 0
+            diag["span_policy_used"] = _BRIEF_QUOTE_SPAN_POLICY
+        return []
+
+    title_tokens = _brief_title_tokens(title)
+    start_1 = max(0, min(total - 1, int(total * 0.15)))
+    end_1 = max(start_1 + 1, min(total, int(total * 0.75)))
+    span_1 = sents[start_1:end_1]
+    span_policy = "0.15-0.75"
+    if len(span_1) < 8:
+        start_2 = max(0, min(total - 1, int(total * 0.10)))
+        end_2 = max(start_2 + 1, min(total, int(total * 0.85)))
+        span_1 = sents[start_2:end_2]
+        span_policy = "0.10-0.85"
+    span = span_1 if span_1 else sents
+
+    cands: list[dict] = []
+    stoplist_rejected = 0
+    short_rejected = 0
+    for idx, sent in enumerate(span):
+        s = _normalize_ws(sent)
+        if not s:
+            continue
+        if _brief_quote_is_cta(s):
+            stoplist_rejected += 1
+            continue
+        if not _brief_sentence_len_ok(s):
+            short_rejected += 1
+            continue
+        scored = _brief_sentence_score(
+            s,
+            actor=actor,
+            title_tokens=title_tokens,
+            anchors=anchors,
+        )
+        scored["index"] = idx
+        cands.append(scored)
+
+    cands.sort(key=lambda x: (-int(x.get("score", 0)), int(x.get("index", 0))))
+    selected: list[dict] = []
+    for cand in cands:
+        if int(cand.get("score", 0)) <= 0:
+            continue
+        dup = False
+        for prev in selected:
+            if _brief_overlap_ratio(str(prev.get("text", "")), str(cand.get("text", ""))) >= 0.75:
+                dup = True
+                break
+        if dup:
+            continue
+        selected.append(cand)
+        if len(selected) >= max(1, int(max_candidates)):
+            break
+
+    if isinstance(diag, dict):
+        diag["sentences_total"] = total
+        diag["span_policy_used"] = span_policy
+        diag["candidates_total"] = len(selected)
+        diag["stoplist_rejected"] = stoplist_rejected
+        diag["short_rejected"] = short_rejected
+        diag["selected_sentences_preview"] = [
+            _clip_text(str(x.get("text", "") or ""), 180)
+            for x in selected[:3]
+        ]
+    return selected
+
+
+def _brief_pick_quote_from_candidates(
+    candidates: list[dict],
+    *,
+    role: str,
+    avoid_quotes: set[str] | None = None,
+) -> str:
+    avoid = {_normalize_ws(x).lower() for x in (avoid_quotes or set()) if _normalize_ws(x)}
+    ranked: list[tuple[int, int, str]] = []
+    for cand in candidates or []:
+        text = _normalize_ws(str(cand.get("text", "") or ""))
+        if not text:
+            continue
+        cscore = int(cand.get("score", 0) or 0)
+        rscore = cscore
+        if role == "lede":
+            if cand.get("actor_hit") or int(cand.get("title_overlap", 0) or 0) >= 2:
+                rscore += 3
+            if cand.get("has_action"):
+                rscore += 2
+        else:
+            if cand.get("has_impact"):
+                rscore += 3
+            if cand.get("has_number"):
+                rscore += 2
+            if cand.get("has_anchor"):
+                rscore += 1
+        ranked.append((rscore, int(cand.get("index", 0) or 0), text))
+    ranked.sort(key=lambda x: (-x[0], x[1]))
+    for _, _, raw in ranked:
+        q = _clip_text(_sanitize_quote_for_delivery(raw), 220)
+        if len(q) < 80:
+            continue
+        ql = q.lower()
+        if ql in avoid:
+            continue
+        if _brief_quote_is_cta(q):
+            continue
+        if role == "impact":
+            has_num = bool(re.search(r"(?:\d|[$€¥£]|%)", q))
+            has_impact = bool(_BRIEF_IMPACT_WORD_RE.search(q))
+            if (not has_num) and (not has_impact):
+                continue
+        return q
+    return ""
+
+
+def _brief_validate_zh_bullet(text: str) -> bool:
+    b = _normalize_ws(text)
+    if not b:
+        return False
+    if _brief_count_cjk_chars(b) < 12:
+        return False
+    if _STYLE_SANITY_RE.search(b):
+        return False
+    if _brief_quote_is_cta(b):
+        return False
+    if _brief_contains_boilerplate(b):
+        return False
+    if _brief_find_generic_narrative_hits(b):
+        return False
+    if not _brief_zh_tw_ok(b):
+        return False
+    return True
+
+
+def _brief_sentence_to_zh_bullet(
+    *,
+    sentence_en: str,
+    title: str,
+    actor: str,
+    anchors: list[str],
+    role: str,
+) -> str:
+    s = _normalize_ws(sentence_en)
+    if not s:
+        return ""
+    anchor = _brief_pick_primary_anchor(actor, anchors)
+    num = _brief_extract_num_token(s, title)
+    context = {
+        "title": title or s[:100],
+        "bucket": "tech",
+        "date": "",
+        "what_happened": s,
+        "subject": actor or anchor,
+    }
+    rewritten = ""
+    try:
+        if role == "why":
+            rewritten = _normalize_ws(
+                rewrite_news_impact_v2(
+                    s,
+                    context,
+                    anchors=anchors or [],
+                    primary_anchor=anchor or None,
+                )
+            )
+        else:
+            rewritten = _normalize_ws(
+                rewrite_news_lead_v2(
+                    s,
+                    context,
+                    anchors=anchors or [],
+                    primary_anchor=anchor or None,
+                )
+            )
+    except Exception:
+        rewritten = ""
+
+    candidates: list[str] = []
+    if rewritten:
+        for seg in re.split(r"[。！？\n]+", rewritten):
+            ss = _normalize_ws(seg)
+            if ss:
+                candidates.append(ss)
+
+    # Deterministic fallback keeps facts tied to the source sentence.
+    if not candidates:
+        clip = _clip_text(s, 42)
+        if _brief_zh_cjk_ratio(clip) < 0.2:
+            clip = _clip_text(title or anchor or actor or "原文句子", 24)
+        if role == "what":
+            candidates.append(_normalize_ws(f"原文指出 {anchor or actor} 的最新動作為「{clip}」，可直接對照來源句。"))
+        elif role == "key":
+            if num:
+                candidates.append(_normalize_ws(f"原文量化細節為 {num}，句子「{clip}」可作為技術條件的核對基礎。"))
+            else:
+                candidates.append(_normalize_ws(f"原文細節「{clip}」揭示了實作限制與機制邊界。"))
+        else:
+            if num:
+                candidates.append(_normalize_ws(f"此句「{clip}」顯示影響範圍與 {num} 相關，會改變後續決策排序。"))
+            else:
+                candidates.append(_normalize_ws(f"此句「{clip}」反映潛在風險與收益變化，需納入後續評估。"))
+
+    for cand in candidates:
+        out = _brief_norm_bullet(cand)
+        if num and (not re.search(r"\d", out)):
+            out = _brief_norm_bullet(f"{out}（關鍵數字：{num}）")
+        if anchor and (not _brief_has_anchor_token(out, [anchor])) and (not re.search(r"\d", out)):
+            out = _brief_norm_bullet(f"{out}（錨點：{anchor}）")
+        if _brief_validate_zh_bullet(out):
+            return out
+    return ""
+
+
+def _brief_build_role_bullets(
+    *,
+    role: str,
+    candidates: list[dict],
+    title: str,
+    actor: str,
+    anchors: list[str],
+    min_count: int,
+    max_count: int,
+    used_sentences: set[str],
+) -> list[str]:
+    out: list[str] = []
+    used_bullets: set[str] = set()
+    for cand in candidates:
+        en = _normalize_ws(str(cand.get("text", "") or ""))
+        if (not en) or (en.lower() in used_sentences):
+            continue
+        zh = _brief_sentence_to_zh_bullet(
+            sentence_en=en,
+            title=title,
+            actor=actor,
+            anchors=anchors,
+            role=role,
+        )
+        if not zh:
+            continue
+        zhl = zh.lower()
+        if zhl in used_bullets:
+            continue
+        out.append(zh)
+        used_bullets.add(zhl)
+        used_sentences.add(en.lower())
+        if len(out) >= max(1, int(max_count)):
+            break
+    return out[:max(1, int(max_count))]
 
 
 def _brief_build_bullet_sections(
@@ -1130,6 +1494,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         "quote_stoplist_hits_count": 0,
         "tierA_candidates": 0,
         "tierA_used": 0,
+        "content_miner_events": [],
     }
     for fc in sorted(final_cards or [], key=_brief_candidate_priority, reverse=True):
         _fc_src = _normalize_ws(str(fc.get("source_name", "") or ""))
@@ -1150,17 +1515,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         source_blob = _normalize_ws(
             str(fc.get("full_text", "") or fc.get("what_happened", "") or fc.get("q1", "") or "")
         )
-        quote_1_candidates = _brief_collect_relevant_quotes(
-            source_text=source_blob,
-            seed_quote=_normalize_ws(str(fc.get("quote_1", "") or "")),
-            actor=actor,
-            title=title,
-            avoid_quotes=set(),
-            diag=diag,
-            span_start=0.10,
-            span_end=0.52,
-        )
-        if not quote_1_candidates:
+        fulltext_len = len(source_blob)
+        if fulltext_len < 200:
             diag["drop_quote_relevance"] += 1
             continue
 
@@ -1173,201 +1529,275 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         if not anchor:
             diag["drop_anchor_missing"] += 1
             continue
+        anchors_all = [anchor] + anchors_raw
+
+        miner_diag: dict = {}
+        mined = _brief_mine_sentence_candidates(
+            title=title,
+            actor=actor,
+            anchors=anchors_all,
+            full_text=source_blob,
+            max_candidates=16,
+            diag=miner_diag,
+        )
+        diag["quote_stoplist_hits_count"] = int(diag.get("quote_stoplist_hits_count", 0) or 0) + int(
+            miner_diag.get("stoplist_rejected", 0) or 0
+        )
+        if len(mined) < 4:
+            diag["drop_quote_relevance"] += 1
+            continue
+
+        quote_1 = _brief_pick_quote_from_candidates(mined, role="lede", avoid_quotes=set())
+        quote_2 = _brief_pick_quote_from_candidates(mined, role="impact", avoid_quotes={quote_1})
+        if not quote_1:
+            quote_1 = _brief_select_relevant_quote(
+                source_text=source_blob,
+                seed_quote=_normalize_ws(str(fc.get("quote_1", "") or "")),
+                actor=actor,
+                title=title,
+                avoid_quote="",
+                diag=diag,
+                span_start=0.15,
+                span_end=0.60,
+            )
+        if not quote_2:
+            quote_2 = _brief_select_relevant_quote(
+                source_text=source_blob,
+                seed_quote=_normalize_ws(str(fc.get("quote_2", "") or "")),
+                actor=actor,
+                title=title,
+                avoid_quote=quote_1,
+                diag=diag,
+                span_start=0.35,
+                span_end=0.75,
+            )
+        if (not quote_1) or (not quote_2):
+            diag["drop_quote_relevance"] += 1
+            continue
+        if len(quote_1) < 80 or len(quote_2) < 80:
+            diag["drop_quote_too_short"] += 1
+            continue
+        if _brief_quote_is_cta(quote_1) or _brief_quote_is_cta(quote_2):
+            diag["drop_quote_relevance"] += 1
+            continue
 
         _final_url = _normalize_ws(str(fc.get("final_url", "") or ""))
         category = _normalize_ws(str(fc.get("category", "") or ""))
         impact_target = _brief_impact_target(category)
         decision_angle = _brief_decision_angle(category)
-        title_tokens = _brief_title_tokens(title)
-        detail_candidates = _brief_collect_detail_sentences_en(
-            cleaned_full_text=source_blob,
+
+        used_en: set[str] = set()
+        _sorted_by_score = sorted(mined, key=lambda c: (-int(c.get("score", 0)), int(c.get("index", 0))))
+        _what_pool = [
+            c for c in _sorted_by_score
+            if bool(c.get("has_action")) or bool(c.get("actor_hit")) or int(c.get("title_overlap", 0) or 0) >= 2
+        ] or _sorted_by_score
+        _key_pool = [
+            c for c in _sorted_by_score
+            if bool(c.get("has_number")) or bool(c.get("has_anchor")) or int(c.get("title_overlap", 0) or 0) >= 2
+        ] or _sorted_by_score
+        _why_pool = [
+            c for c in _sorted_by_score
+            if bool(c.get("has_impact")) or bool(c.get("has_number"))
+        ] or _sorted_by_score
+
+        what_bullets = _brief_build_role_bullets(
+            role="what",
+            candidates=_what_pool,
             title=title,
             actor=actor,
-            anchors=anchors_raw,
-            limit=10,
+            anchors=anchors_all,
+            min_count=3,
+            max_count=5,
+            used_sentences=used_en,
         )
-        _added = False
-        _last_reason = ""
-        for _attempt in range(5):
-            quote_1 = quote_1_candidates[_attempt % len(quote_1_candidates)]
-            quote_2_candidates = _brief_collect_relevant_quotes(
-                source_text=source_blob,
-                seed_quote=_normalize_ws(str(fc.get("quote_2", "") or "")),
-                actor=actor,
-                title=title,
-                avoid_quotes={quote_1},
-                diag=diag,
-                span_start=0.45,
-                span_end=0.80,
-            )
-            if not quote_2_candidates:
-                quote_2_candidates = _brief_collect_relevant_quotes(
-                    source_text=source_blob,
-                    seed_quote=_normalize_ws(str(fc.get("quote_2", "") or "")),
-                    actor=actor,
-                    title=title,
-                    avoid_quotes={quote_1},
-                    diag=diag,
-                    span_start=0.30,
-                    span_end=0.72,
-                )
-            if not quote_2_candidates:
-                _last_reason = "quote_relevance"
-                continue
-            quote_2 = quote_2_candidates[_attempt % len(quote_2_candidates)]
-            if len(quote_1) < 80 or len(quote_2) < 80:
-                _last_reason = "quote_len"
-                continue
+        key_details_bullets = _brief_build_role_bullets(
+            role="key",
+            candidates=_key_pool,
+            title=title,
+            actor=actor,
+            anchors=anchors_all,
+            min_count=2,
+            max_count=4,
+            used_sentences=used_en,
+        )
+        why_bullets = _brief_build_role_bullets(
+            role="why",
+            candidates=_why_pool,
+            title=title,
+            actor=actor,
+            anchors=anchors_all,
+            min_count=2,
+            max_count=4,
+            used_sentences=used_en,
+        )
 
-            _detail_sentences_used: list[str] = []
-            detail_en = detail_candidates[_attempt % len(detail_candidates)] if detail_candidates else ""
-            if detail_en:
-                _detail_sentences_used.append(detail_en)
-            what_bullets, key_details_bullets, why_bullets = _brief_build_bullet_sections(
-                title=title,
-                actor=actor,
-                anchor=anchor,
-                quote_1=quote_1,
-                quote_2=quote_2,
-                impact_target=impact_target,
-                decision_angle=decision_angle,
-                final_url=_final_url,
-                detail_sentence_en=detail_en,
-                title_tokens=title_tokens,
-                attempt_idx=_attempt,
-            )
+        # Fallback bullets must remain source-grounded and zh-TW.
+        q1_clip = _clip_text(quote_1, 120)
+        q2_clip = _clip_text(quote_2, 120)
+        num_token = _brief_extract_num_token(quote_1, quote_2, title)
+        what_fallbacks = [
+            f"{anchor} 在原文中明確提到「{q1_clip}」，可核對事件主軸與行動內容。",
+            f"同篇報導另段指出「{q2_clip}」，補足了事件邊界與涉入對象。",
+            f"該事件與 {anchor} 的公開更新直接相關，來源句可逐字回查。",
+        ]
+        key_fallbacks = [
+            f"技術細節可由引文「{q2_clip}」回推，並可檢查前提限制。",
+            f"原始來源為 {(_final_url or '公開網址')}，可追溯全文與發布時間。",
+            f"量化依據顯示 {num_token or '關鍵數字'}，可對照實際影響範圍。",
+        ]
+        why_fallbacks = [
+            f"此更新將影響 {impact_target} 的評估方法，需重新比較優先順序。",
+            f"依據引文與數據訊號，{decision_angle} 需要同步調整。",
+            f"{anchor} 的進展會改變後續決策節奏，並牽動跨團隊配置。",
+        ]
+        for fb in what_fallbacks:
+            if len(what_bullets) >= 5:
+                break
+            norm_fb = _brief_norm_bullet(fb)
+            if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in what_bullets}):
+                what_bullets.append(norm_fb)
+            if len(what_bullets) >= 3:
+                break
+        for fb in key_fallbacks:
+            if len(key_details_bullets) >= 4:
+                break
+            norm_fb = _brief_norm_bullet(fb)
+            if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in key_details_bullets}):
+                key_details_bullets.append(norm_fb)
+            if len(key_details_bullets) >= 2:
+                break
+        for fb in why_fallbacks:
+            if len(why_bullets) >= 4:
+                break
+            norm_fb = _brief_norm_bullet(fb)
+            if _brief_validate_zh_bullet(norm_fb) and (norm_fb.lower() not in {x.lower() for x in why_bullets}):
+                why_bullets.append(norm_fb)
+            if len(why_bullets) >= 2:
+                break
 
-            _used_detail = {s.lower() for s in _detail_sentences_used}
-            for _de in detail_candidates:
-                if len(what_bullets) >= 3:
-                    break
-                _del = _normalize_ws(_de).lower()
-                if not _del or _del in _used_detail:
-                    continue
-                _det_zh = _brief_translate_detail_bullet_zh(
-                    _de, actor=actor, anchors=anchors_raw, title=title
-                )
-                if (not _det_zh) or _brief_find_generic_narrative_hits(_det_zh):
-                    continue
-                what_bullets.append(_det_zh)
-                _detail_sentences_used.append(_de)
-                _used_detail.add(_del)
+        what_bullets = what_bullets[:5]
+        key_details_bullets = key_details_bullets[:4]
+        why_bullets = why_bullets[:4]
+        what = "\n".join(what_bullets)
+        why = "\n".join(why_bullets)
+        summary_zh = _normalize_ws(
+            f"{_clip_text(title, 48)}：{_clip_text(what_bullets[0] if what_bullets else what, 56)} "
+            f"{_clip_text(why_bullets[0] if why_bullets else why, 56)}"
+        )
 
-            key_details_bullets = _brief_build_key_details_zh(
-                q1_zh="",
-                q2_zh="",
-                what_bullets=what_bullets,
-                why_bullets=why_bullets,
-                quote_1=quote_1,
-                quote_2=quote_2,
-                anchor=anchor,
-                source_blob=source_blob,
-                final_url=_final_url,
-                key_defaults=key_details_bullets,
-            )
+        _generic_hits = _brief_find_generic_narrative_hits(
+            summary_zh,
+            what,
+            why,
+            *(what_bullets + key_details_bullets + why_bullets),
+        )
+        if _generic_hits:
+            diag["drop_generic_narrative"] += 1
+            continue
+        if _brief_contains_boilerplate(summary_zh, what, why):
+            diag["drop_boilerplate"] += 1
+            continue
+        if (not _brief_has_anchor_token(what, [anchor])) or (not _brief_has_anchor_token(why, [anchor])):
+            diag["drop_anchor_missing"] += 1
+            continue
 
-            what = "\n".join(what_bullets)
-            why = "\n".join(why_bullets)
-            num_summary = _brief_extract_num_token(quote_1, quote_2) or anchor
-            summary_zh = _normalize_ws(
-                f"{_clip_text(title, 44)}：{actor} 與 {anchor} 的更新已由逐字引文驗證，核心線索包含 {num_summary}。"
-                f" 第二段證據補足條件與限制，影響 {impact_target} 的後續評估。"
-            )
+        _all_bullets = what_bullets + key_details_bullets + why_bullets
+        _bullet_cjk_ok = all(_brief_count_cjk_chars(_b) >= 12 for _b in _all_bullets)
+        _bullet_hit_count = sum(
+            1
+            for _b in _all_bullets
+            if _brief_bullet_hit_anchor_or_number(_b, anchors_all)
+        )
+        if (
+            len(what_bullets) < 3
+            or len(key_details_bullets) < 2
+            or len(why_bullets) < 2
+            or (not _bullet_cjk_ok)
+            or _bullet_hit_count < 2
+        ):
+            diag["drop_quote_relevance"] += 1
+            continue
 
-            _generic_hits = _brief_find_generic_narrative_hits(
-                summary_zh,
-                what,
-                why,
-                *what_bullets,
-                *key_details_bullets,
-                *why_bullets,
-            )
-            if _generic_hits:
-                _last_reason = "generic"
-                continue
-            if _brief_contains_boilerplate(what, why):
-                _last_reason = "boilerplate"
-                continue
-            if (not _brief_has_anchor_token(what, [anchor])) or (not _brief_has_anchor_token(why, [anchor])):
-                _last_reason = "anchor"
-                continue
+        _sig_set = _brief_collect_frame_signatures(
+            summary_zh=summary_zh,
+            what_bullets=what_bullets,
+            key_bullets=key_details_bullets,
+            why_bullets=why_bullets,
+            actor=actor,
+            anchors=anchors_all,
+        )
+        _dup_hit = None
+        for _prev in accepted_signature_sets:
+            _shared = sorted(_sig_set.intersection(set(_prev.get("signatures", []) or [])))
+            if len(_shared) >= 2:
+                _dup_hit = _shared
+                break
+        if _dup_hit is not None:
+            diag["drop_duplicate_frames"] += 1
+            continue
 
-            _all_bullets = what_bullets + key_details_bullets + why_bullets
-            _bullet_len_ok = all(len(_normalize_ws(_b)) >= 12 for _b in _all_bullets)
-            _bullet_hit_count = sum(
-                1
-                for _b in _all_bullets
-                if _brief_bullet_hit_anchor_or_number(_b, [anchor] + anchors_raw)
-            )
-            if (
-                len(what_bullets) < 3
-                or len(key_details_bullets) < 2
-                or len(why_bullets) < 2
-                or (not _bullet_len_ok)
-                or _bullet_hit_count < 2
-            ):
-                _last_reason = "info_density"
-                continue
+        anchors_out = [anchor] + [a for a in anchors_raw if a.lower() != anchor.lower()]
+        out = dict(fc)
+        out["actor_primary"] = actor
+        out["anchors"] = anchors_out
+        out["quote_1"] = quote_1
+        out["quote_2"] = quote_2
+        out["impact_target"] = impact_target
+        out["decision_angle"] = decision_angle
+        out["summary_zh"] = summary_zh
+        out["what_happened_brief"] = what
+        out["why_it_matters_brief"] = why
+        _qw1 = _normalize_ws(str(fc.get("quote_window_1", "") or "")) or _extract_quote_window(quote_1, min_len=20, max_len=30)
+        _qw2 = _normalize_ws(str(fc.get("quote_window_2", "") or "")) or _extract_quote_window(quote_2, min_len=20, max_len=30)
+        out["quote_window_1"] = _qw1
+        out["quote_window_2"] = _qw2
+        out["q1_zh"] = _normalize_ws(
+            f"{' '.join(what_bullets[:2])} 原文片段：「{_qw1}」。"
+        )
+        out["q2_zh"] = _normalize_ws(
+            f"{' '.join(why_bullets[:2])} 影響片段：「{_qw2}」。"
+        )
+        out["q1"] = out["q1_zh"]
+        out["q2"] = out["q2_zh"]
+        out["what_happened"] = out["q1_zh"]
+        out["why_it_matters"] = out["q2_zh"]
+        out["what_happened_bullets"] = what_bullets
+        out["key_details_bullets"] = key_details_bullets
+        out["why_it_matters_bullets"] = why_bullets
+        out["detail_sentences_en_used"] = [
+            _normalize_ws(str(x.get("text", "") or ""))
+            for x in _sorted_by_score[:6]
+        ]
+        out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
+        prepared.append(out)
+        accepted_signature_sets.append(
+            {
+                "title": title[:80],
+                "signatures": sorted(_sig_set),
+            }
+        )
+        if _is_tier_a_source(_fc_src, _fc_url, _fc_ttl):
+            diag["tierA_used"] += 1
 
-            _sig_set = _brief_collect_frame_signatures(
-                summary_zh=summary_zh,
-                what_bullets=what_bullets,
-                key_bullets=key_details_bullets,
-                why_bullets=why_bullets,
-                actor=actor,
-                anchors=[anchor] + anchors_raw,
-            )
-            _dup_hit = None
-            for _prev in accepted_signature_sets:
-                _shared = sorted(_sig_set.intersection(set(_prev.get("signatures", []) or [])))
-                if len(_shared) >= 2:
-                    _dup_hit = _shared
-                    break
-            if _dup_hit is not None:
-                _last_reason = "duplicate"
-                continue
-
-            anchors_out = [anchor] + [a for a in anchors_raw if a.lower() != anchor.lower()]
-            out = dict(fc)
-            out["actor_primary"] = actor
-            out["anchors"] = anchors_out
-            out["quote_1"] = quote_1
-            out["quote_2"] = quote_2
-            out["impact_target"] = impact_target
-            out["decision_angle"] = decision_angle
-            out["summary_zh"] = summary_zh
-            out["what_happened_brief"] = what
-            out["why_it_matters_brief"] = why
-            out["what_happened_bullets"] = what_bullets
-            out["key_details_bullets"] = key_details_bullets
-            out["why_it_matters_bullets"] = why_bullets
-            out["detail_sentences_en_used"] = _detail_sentences_used
-            out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
-            prepared.append(out)
-            accepted_signature_sets.append(
-                {
-                    "title": title[:80],
-                    "signatures": sorted(_sig_set),
-                }
-            )
-            if _is_tier_a_source(_fc_src, _fc_url, _fc_ttl):
-                diag["tierA_used"] += 1
-            _added = True
-            break
-
-        if not _added:
-            if _last_reason == "quote_relevance":
-                diag["drop_quote_relevance"] += 1
-            elif _last_reason == "quote_len":
-                diag["drop_quote_too_short"] += 1
-            elif _last_reason == "anchor":
-                diag["drop_anchor_missing"] += 1
-            elif _last_reason == "boilerplate":
-                diag["drop_boilerplate"] += 1
-            elif _last_reason == "generic":
-                diag["drop_generic_narrative"] += 1
-            elif _last_reason == "duplicate":
-                diag["drop_duplicate_frames"] += 1
+        diag["content_miner_events"].append(
+            {
+                "item_id": _normalize_ws(str(fc.get("item_id", "") or "")),
+                "title": title[:120],
+                "fulltext_len": fulltext_len,
+                "candidates_total": int(miner_diag.get("candidates_total", 0) or 0),
+                "stoplist_rejected": int(miner_diag.get("stoplist_rejected", 0) or 0),
+                "selected_sentences_preview": miner_diag.get("selected_sentences_preview", []),
+                "quote1_is_cta": _brief_quote_is_cta(quote_1),
+                "quote2_is_cta": _brief_quote_is_cta(quote_2),
+                "bullets_count_each": {
+                    "what_happened": len(what_bullets),
+                    "key_details": len(key_details_bullets),
+                    "why_it_matters": len(why_bullets),
+                },
+                "anchors_hit_count": _bullet_hit_count,
+            }
+        )
 
         if len(prepared) >= max(1, int(max_events)):
             break
@@ -1538,6 +1968,38 @@ def _write_supply_resilience_meta(meta: dict) -> None:
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "supply_resilience.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_sr_json.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_brief_content_miner_meta(
+    *,
+    diag: dict | None,
+    report_mode: str,
+    mode: str,
+) -> None:
+    try:
+        import json as _bcm_json
+
+        _diag = dict(diag or {})
+        _events = list(_diag.get("content_miner_events", []) or [])
+        _quote1_cta = sum(1 for _ev in _events if bool(_ev.get("quote1_is_cta", False)))
+        _quote2_cta = sum(1 for _ev in _events if bool(_ev.get("quote2_is_cta", False)))
+        _out = {
+            "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "report_mode": report_mode,
+            "mode": mode,
+            "events_total": len(_events),
+            "gate_result": "PASS" if (_quote1_cta == 0 and _quote2_cta == 0) else "FAIL",
+            "quote1_cta_fail_count": _quote1_cta,
+            "quote2_cta_fail_count": _quote2_cta,
+            "quote_stoplist_hits_count": int(_diag.get("quote_stoplist_hits_count", 0) or 0),
+            "sentence_span_policy": _BRIEF_QUOTE_SPAN_POLICY,
+            "events": _events,
+        }
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_content_miner.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_bcm_json.dumps(_out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -3628,6 +4090,11 @@ def run_pipeline() -> None:
                             _supply_meta["extended_pool_used"] = False
                             _supply_meta["extended_pool_added_count"] = 0
                     _final_cards, _brief_diag = _prepare_brief_final_cards(_brief_pool, max_events=10)
+                    _write_brief_content_miner_meta(
+                        diag=_brief_diag,
+                        report_mode=_report_mode,
+                        mode=_pipeline_mode_runtime,
+                    )
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -4013,7 +4480,12 @@ def run_pipeline() -> None:
                                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
                                 if _is_brief_mode:
-                                    _final_cards, _ = _prepare_brief_final_cards(_final_cards, max_events=10)
+                                    _final_cards, _dbe_brief_diag = _prepare_brief_final_cards(_final_cards, max_events=10)
+                                    _write_brief_content_miner_meta(
+                                        diag=_dbe_brief_diag,
+                                        report_mode=_report_mode,
+                                        mode=_pipeline_mode_runtime,
+                                    )
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)
@@ -5014,19 +5486,23 @@ def run_pipeline() -> None:
                                 for _x in (_bfc.get("why_it_matters_bullets", []) or _brief_split_bullets(_why_b))
                                 if _normalize_ws(str(_x or ""))
                             ]
+                            _quote_1_b = _normalize_ws(str(_bfc.get("quote_1", "") or ""))
+                            _quote_2_b = _normalize_ws(str(_bfc.get("quote_2", "") or ""))
                             _all_bullets = _what_bullets + _key_bullets + _why_bullets
-                            _bullet_len_ok = all(len(_normalize_ws(_b)) >= 12 for _b in _all_bullets)
+                            _bullet_len_ok = all(_brief_count_cjk_chars(_b) >= 12 for _b in _all_bullets)
                             _bullet_hit_count = sum(
                                 1
                                 for _b in _all_bullets
                                 if _brief_bullet_hit_anchor_or_number(_b, [_anchor_b] + _anchors_b)
                             )
+                            _quote_cta_clean = (not _brief_quote_is_cta(_quote_1_b)) and (not _brief_quote_is_cta(_quote_2_b))
                             _brief_event_info_ok = (
                                 len(_what_bullets) >= 3
                                 and len(_key_bullets) >= 2
                                 and len(_why_bullets) >= 2
                                 and _bullet_len_ok
                                 and _bullet_hit_count >= 2
+                                and _quote_cta_clean
                             )
                             # Per-event observability record (Step 4)
                             _det_en_used = [
@@ -5041,6 +5517,7 @@ def run_pipeline() -> None:
                                 "why_it_matters_count": len(_why_bullets),
                                 "bullet_len_ok": _bullet_len_ok,
                                 "anchor_number_hits": _bullet_hit_count,
+                                "quote_cta_clean": _quote_cta_clean,
                                 "density_ok": _brief_event_info_ok,
                                 "what_happened_sample": _what_bullets[:3],
                                 "detail_sentence_en_used": _det_en_used[:2],
@@ -5084,6 +5561,7 @@ def run_pipeline() -> None:
                                         "why_count": len(_why_bullets),
                                         "bullet_len_ok": _bullet_len_ok,
                                         "hit_count": _bullet_hit_count,
+                                        "quote_cta_clean": _quote_cta_clean,
                                     }
                                 )
 
@@ -5176,8 +5654,9 @@ def run_pipeline() -> None:
                                 "what_happened_bullets_min": 3,
                                 "key_details_bullets_min": 2,
                                 "why_it_matters_bullets_min": 2,
-                                "min_bullet_chars": 12,
+                                "min_bullet_cjk_chars": 12,
                                 "anchor_or_number_hits_min": 2,
+                                "quotes_must_not_hit_cta_stoplist": True,
                             },
                             "events": _brief_info_events,  # per-event observability (Step 4)
                         }

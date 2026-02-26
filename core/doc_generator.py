@@ -1,4 +1,4 @@
-"""DOCX 總經理版科技趨勢簡報生成器 — Notion 風格極簡設計。
+﻿"""DOCX 總經理版科技趨勢簡報生成器 — Notion 風格極簡設計。
 
 極簡、留白、大標題。黑白灰為主色，#212838 深藍 + #E65A37 橘色 accent。
 Callout box（▌重點提示框）+ Divider 分隔線 + Notion 風格簡潔表格。
@@ -262,8 +262,13 @@ def _generate_brief_docx_only(
 
     doc = Document()
     style = doc.styles["Normal"]
-    style.font.name = "Calibri"
+    style.font.name = "Microsoft JhengHei"
     style.font.size = Pt(11)
+    try:
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft JhengHei")
+    except Exception:
+        pass
+
     try:
         # Keep one tiny embedded image so verify_run's media guard remains satisfied.
         marker_img = get_news_image("AI Brief Marker", "tech")
@@ -272,6 +277,10 @@ def _generate_brief_docx_only(
             doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.LEFT
     except Exception:
         pass
+
+    def _clip_quote(q: str, limit: int = 460) -> str:
+        qq = sanitize(str(q or ""))
+        return qq if len(qq) <= limit else qq[:limit].rstrip()
 
     for idx, p in enumerate(payloads, 1):
         if idx > 1:
@@ -286,25 +295,25 @@ def _generate_brief_docx_only(
         what_bullets = [sanitize(str(x or "")) for x in what_bullets if sanitize(str(x or ""))]
         key_bullets = [sanitize(str(x or "")) for x in key_bullets if sanitize(str(x or ""))]
         why_bullets = [sanitize(str(x or "")) for x in why_bullets if sanitize(str(x or ""))]
-        quote_1 = sanitize(str(p.get("quote_1", "") or ""))
-        quote_2 = sanitize(str(p.get("quote_2", "") or ""))
+        quote_1 = _clip_quote(str(p.get("quote_1", "") or ""))
+        quote_2 = _clip_quote(str(p.get("quote_2", "") or ""))
         final_url = sanitize(str(p.get("final_url", "") or ""))
         published_at = sanitize(str(p.get("published_at", "") or ""))
 
         _add_heading(doc, "標題", level=2)
         doc.add_paragraph(title)
 
-        _add_heading(doc, "發生了什麼", level=2)
+        _add_heading(doc, "發生什麼事", level=2)
         for b in (what_bullets if what_bullets else [what]):
-            doc.add_paragraph(b, style="List Bullet")
+            doc.add_paragraph(sanitize(b), style="List Bullet")
 
         _add_heading(doc, "關鍵細節", level=2)
         for b in (key_bullets if key_bullets else ["來源機制與限制條件以逐字證據為準。"]):
-            doc.add_paragraph(b, style="List Bullet")
+            doc.add_paragraph(sanitize(b), style="List Bullet")
 
-        _add_heading(doc, "為何重要", level=2)
+        _add_heading(doc, "為什麼重要", level=2)
         for b in (why_bullets if why_bullets else [why]):
-            doc.add_paragraph(b, style="List Bullet")
+            doc.add_paragraph(sanitize(b), style="List Bullet")
 
         _add_heading(doc, "證據", level=2)
         doc.add_paragraph(f"quote_1：{quote_1}")
@@ -1148,3 +1157,4 @@ def generate_not_ready_report_docx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     return output_path
+

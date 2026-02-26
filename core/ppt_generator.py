@@ -18,6 +18,7 @@ from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.enum.text import MSO_AUTO_SIZE, PP_ALIGN
+from pptx.oxml.xmlchemy import OxmlElement
 from pptx.util import Cm, Pt
 
 from core.content_strategy import (
@@ -318,24 +319,45 @@ def _is_brief_report_mode() -> bool:
     return _norm_key(os.environ.get("PIPELINE_REPORT_MODE", "")) == "brief"
 
 
+def _set_ppt_bullet(paragraph, enabled: bool) -> None:
+    pPr = paragraph._p.get_or_add_pPr()
+    for node in list(pPr):
+        if node.tag.endswith("buNone") or node.tag.endswith("buChar"):
+            pPr.remove(node)
+    if enabled:
+        bu = OxmlElement("a:buChar")
+        bu.set("char", "•")
+        pPr.append(bu)
+        paragraph.level = 0
+    else:
+        bu_none = OxmlElement("a:buNone")
+        pPr.append(bu_none)
+
+
 def _brief_add_field(slide, top_cm: float, label: str, lines: list[str], bullet_prefix: bool = True) -> None:
-    box = slide.shapes.add_textbox(Cm(1.2), Cm(top_cm), Cm(31.2), Cm(3.2))
+    box = slide.shapes.add_textbox(Cm(1.2), Cm(top_cm), Cm(31.2), Cm(3.0))
     tf = box.text_frame
     tf.word_wrap = True
+    tf.margin_left = Cm(0.12)
+    tf.margin_right = Cm(0.12)
+    tf.margin_top = Cm(0.05)
+    tf.margin_bottom = Cm(0.05)
     tf.clear()
     p0 = tf.paragraphs[0]
     p0.text = label
     p0.font.size = Pt(14)
     p0.font.bold = True
     p0.font.color.rgb = HIGHLIGHT_YELLOW
-    p0.line_spacing = 1.1
+    p0.line_spacing = 1.05
+    _set_ppt_bullet(p0, False)
     for line in lines:
         p = tf.add_paragraph()
         payload = safe_text(str(line), 300)
-        p.text = f"• {payload}" if bullet_prefix else payload
-        p.font.size = Pt(11)
+        p.text = payload
+        _set_ppt_bullet(p, bullet_prefix)
+        p.font.size = Pt(15 if bullet_prefix else 11)
         p.font.color.rgb = TEXT_WHITE
-        p.line_spacing = 1.15
+        p.line_spacing = 1.1
 
 
 def _brief_remove_all_picture_shapes(slide) -> int:
@@ -413,18 +435,17 @@ def _generate_brief_ppt_only(
         category = str(p.get("category", "") or "")
 
         _add_textbox(
-            slide, Cm(1.2), Cm(0.5), Cm(24.5), Cm(1.4),
-            title, font_size=20, bold=True, color=HIGHLIGHT_YELLOW,
+            slide, Cm(1.2), Cm(0.35), Cm(31.2), Cm(1.2),
+            title, font_size=26, bold=True, color=HIGHLIGHT_YELLOW,
         )
-        _brief_add_field(slide, 2.0, "標題", [title], bullet_prefix=False)
         _what_lines = [safe_text(str(x), 260) for x in (p.get("what_happened_bullets", []) or what.replace("\r", "\n").split("\n")) if str(x).strip()]
         _key_lines = [safe_text(str(x), 260) for x in (p.get("key_details_bullets", []) or key.replace("\r", "\n").split("\n")) if str(x).strip()]
         _why_lines = [safe_text(str(x), 260) for x in (p.get("why_it_matters_bullets", []) or why.replace("\r", "\n").split("\n")) if str(x).strip()]
-        _brief_add_field(slide, 4.1, "發生了什麼", _what_lines if _what_lines else [safe_text(what, 260)], bullet_prefix=True)
-        _brief_add_field(slide, 7.4, "關鍵細節", _key_lines if _key_lines else ["來源機制與限制條件以逐字證據為準。"], bullet_prefix=True)
-        _brief_add_field(slide, 10.7, "為何重要", _why_lines if _why_lines else [safe_text(why, 260)], bullet_prefix=True)
-        _brief_add_field(slide, 14.0, "證據", [f"quote_1：{quote_1}", f"quote_2：{quote_2}"], bullet_prefix=False)
-        _brief_add_field(slide, 16.3, "來源", [f"final_url：{final_url}", f"published_at：{published_at}"], bullet_prefix=False)
+        _brief_add_field(slide, 1.65, "發生什麼事", _what_lines if _what_lines else [safe_text(what, 260)], bullet_prefix=True)
+        _brief_add_field(slide, 5.45, "關鍵細節", _key_lines if _key_lines else ["來源機制與限制條件以逐字證據為準。"], bullet_prefix=True)
+        _brief_add_field(slide, 8.95, "為什麼重要", _why_lines if _why_lines else [safe_text(why, 260)], bullet_prefix=True)
+        _brief_add_field(slide, 12.45, "證據", [f"quote_1：{safe_text(quote_1, 330)}", f"quote_2：{safe_text(quote_2, 330)}"], bullet_prefix=False)
+        _brief_add_field(slide, 16.0, "來源", [f"final_url：{safe_text(final_url, 240)}", f"published_at：{safe_text(published_at, 80)}"], bullet_prefix=False)
 
     for slide in prs.slides:
         _brief_remove_all_picture_shapes(slide)

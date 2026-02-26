@@ -525,6 +525,12 @@ foreach ($bg in $vrBriefGateMetas) {
             $bgFail  = if ($bgMeta.PSObject.Properties['fail_count'])   { [int]$bgMeta.fail_count }   else { 0 }
             Write-Host ("  {0}: {1} (events_total={2} fail_count={3})" -f $bg.Label, $bgGate, $bgTotal, $bgFail) `
                 -ForegroundColor $(if ($bgGate -eq "PASS") { "Green" } else { "Red" })
+            if ($bg.Label -eq "BRIEF_INFO_DENSITY_HARD" -and $bgMeta.PSObject.Properties['rules']) {
+                $bgRules = $bgMeta.rules
+                $bgCjk = if ($bgRules.PSObject.Properties['min_bullet_cjk_chars']) { [int]$bgRules.min_bullet_cjk_chars } else { 12 }
+                $bgHits = if ($bgRules.PSObject.Properties['anchor_or_number_hits_min']) { [int]$bgRules.anchor_or_number_hits_min } else { 2 }
+                Write-Host ("     rules: min_bullet_cjk_chars={0} anchor_or_number_hits_min={1} quotes_non_cta={2}" -f $bgCjk, $bgHits, $(if ($bgRules.PSObject.Properties['quotes_must_not_hit_cta_stoplist']) { [bool]$bgRules.quotes_must_not_hit_cta_stoplist } else { $true }))
+            }
         }
         if ($bgGate -eq "FAIL") {
             $vrBriefAnyFail = $true
@@ -547,6 +553,37 @@ foreach ($bg in $vrBriefGateMetas) {
 }
 if ($vrBriefAnyFail) {
     exit 1
+}
+
+# ---------------------------------------------------------------------------
+# BRIEF_CONTENT_MINER OBSERVABILITY (soft; non-gating)
+# ---------------------------------------------------------------------------
+$vrBriefMinerPath = Join-Path $vrBriefRepoRoot "outputs\brief_content_miner.meta.json"
+Write-Host ""
+Write-Host "BRIEF_CONTENT_MINER (obs):" -ForegroundColor Yellow
+if (Test-Path $vrBriefMinerPath) {
+    try {
+        $vrBcm = Get-Content $vrBriefMinerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $vrBcmGate = if ($vrBcm.PSObject.Properties['gate_result']) { [string]$vrBcm.gate_result } else { "UNKNOWN" }
+        $vrBcmTotal = if ($vrBcm.PSObject.Properties['events_total']) { [int]$vrBcm.events_total } else { 0 }
+        $vrBcmStoplist = if ($vrBcm.PSObject.Properties['quote_stoplist_hits_count']) { [int]$vrBcm.quote_stoplist_hits_count } else { 0 }
+        $vrBcmQ2Fail = if ($vrBcm.PSObject.Properties['quote2_cta_fail_count']) { [int]$vrBcm.quote2_cta_fail_count } else { 0 }
+        Write-Host ("  gate_result               : {0}" -f $vrBcmGate)
+        Write-Host ("  events_total              : {0}" -f $vrBcmTotal)
+        Write-Host ("  quote_stoplist_hits_count : {0}" -f $vrBcmStoplist)
+        Write-Host ("  quote2_cta_fail_count     : {0}" -f $vrBcmQ2Fail)
+        if ($vrBcm.PSObject.Properties['events'] -and @($vrBcm.events).Count -gt 0) {
+            $vrBcmFirst = @($vrBcm.events)[0]
+            Write-Host ("  sample_title              : {0}" -f $(if ($vrBcmFirst.PSObject.Properties['title']) { $vrBcmFirst.title } else { "" }))
+            Write-Host ("  sample_fulltext_len       : {0}" -f $(if ($vrBcmFirst.PSObject.Properties['fulltext_len']) { $vrBcmFirst.fulltext_len } else { 0 }))
+            Write-Host ("  sample_candidates_total   : {0}" -f $(if ($vrBcmFirst.PSObject.Properties['candidates_total']) { $vrBcmFirst.candidates_total } else { 0 }))
+            Write-Host ("  sample_quote2_is_cta      : {0}" -f $(if ($vrBcmFirst.PSObject.Properties['quote2_is_cta']) { $vrBcmFirst.quote2_is_cta } else { $false }))
+        }
+    } catch {
+        Write-Host ("  BRIEF_CONTENT_MINER: SKIP (parse error: {0})" -f $_) -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  BRIEF_CONTENT_MINER: SKIP (brief_content_miner.meta.json not found)" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
