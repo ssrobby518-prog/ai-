@@ -1,4 +1,4 @@
-﻿"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
+"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
 import os
 import re
@@ -338,6 +338,11 @@ _BRIEF_BOILERPLATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Simplified Chinese character blacklist — any match = NOT zh-TW
+_SIMPLIFIED_ZH_RE = re.compile(
+    r"[这为发国时们说关见进现实产动话还经问应该对给让从么则导获总义变将区来没样过种几间后点确无开长书东语认风气电车门办设边]"
+)
+
 _BRIEF_GARBAGE_ACTORS = {
     "git", "true", "false", "none", "null", "na", "n/a", "4.0", "3.5", "1.0",
 }
@@ -381,6 +386,29 @@ def _brief_contains_boilerplate(*parts: str) -> bool:
     return bool(_BRIEF_BOILERPLATE_RE.search(joined))
 
 
+def _brief_zh_cjk_ratio(text: str) -> float:
+    """CJK char count / non-ASCII non-space char count.
+    Returns 0.0 when no non-ASCII chars present (pure ASCII / empty = not zh-TW)."""
+    cjk = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    non_ascii_non_space = sum(1 for c in text if ord(c) > 127 and not c.isspace())
+    if non_ascii_non_space == 0:
+        return 0.0
+    return cjk / non_ascii_non_space
+
+
+def _brief_zh_tw_ok(text: str) -> bool:
+    """True if text is zh-TW: CJK ratio >= threshold and no simplified-Chinese chars."""
+    try:
+        min_ratio = float(os.environ.get("BRIEF_ZH_TW_MIN_CJK", "0.6"))
+    except (ValueError, TypeError):
+        min_ratio = 0.6
+    if _brief_zh_cjk_ratio(text) < min_ratio:
+        return False
+    if _SIMPLIFIED_ZH_RE.search(text):
+        return False
+    return True
+
+
 def _brief_has_anchor_token(text: str, anchors: list[str]) -> bool:
     src = _normalize_ws(text)
     if not src:
@@ -415,32 +443,32 @@ def _brief_pick_primary_anchor(actor: str, anchors: list[str]) -> str:
 def _brief_impact_target(category: str) -> str:
     cat = _normalize_ws(category).lower()
     if cat == "product":
-        return "product roadmap and release timing"
+        return "產品藍圖與上市時程"
     if cat == "business":
-        return "budget allocation, GTM priority, and risk posture"
-    return "model delivery, engineering capacity, and infra planning"
+        return "預算配置、市場策略與風險管控"
+    return "模型交付、工程產能與基礎架構規劃"
 
 
 def _brief_decision_angle(category: str) -> str:
     cat = _normalize_ws(category).lower()
     if cat == "product":
-        return "decide whether to ship, defer, or split the release scope this week"
+        return "本週是否出貨、延期或拆分發布範圍"
     if cat == "business":
-        return "decide whether to reallocate spend and reprioritize go-to-market now"
-    return "decide whether to accelerate deployment or keep current architecture"
+        return "是否立即重新調配預算並調整市場優先順序"
+    return "是否加速部署或維持現有架構"
 
 
 def _build_brief_what_happened(title: str, actor: str, anchor: str) -> str:
-    line1 = _normalize_ws(f"{actor} announced {title}, anchored on {anchor}.")
-    line2 = _normalize_ws(f"The update ties actor action and object to a concrete anchor: {anchor}.")
+    line1 = _normalize_ws(f"{actor} 宣告重大進展，核心錨點確立為「{anchor}」。")
+    line2 = "此次行動為人工智慧產業帶來可量測的關鍵訊號，具體里程碑已形成。"
     return f"{line1}\n{line2}"
 
 
 def _build_brief_why_it_matters(category: str, anchor: str) -> str:
     target = _brief_impact_target(category)
     angle = _brief_decision_angle(category)
-    line1 = _normalize_ws(f"This can shift {target}; the anchor is {anchor}.")
-    line2 = _normalize_ws(f"Decision angle: {angle}, validated against {anchor}.")
+    line1 = _normalize_ws(f"此事直接衝擊「{target}」，關鍵依據錨點為「{anchor}」。")
+    line2 = _normalize_ws(f"核心決策：{angle}，方向明確。")
     return f"{line1}\n{line2}"
 
 
@@ -482,8 +510,10 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
 
         title = _normalize_ws(str(fc.get("title", "") or ""))
         category = _normalize_ws(str(fc.get("category", "") or ""))
-        what = _build_brief_what_happened(title, actor, anchor)
-        why = _build_brief_why_it_matters(category, anchor)
+        _q1_zh = _normalize_ws(str(fc.get("q1_zh", "") or ""))
+        _q2_zh = _normalize_ws(str(fc.get("q2_zh", "") or ""))
+        what = _q1_zh if _brief_zh_tw_ok(_q1_zh) else _build_brief_what_happened(title, actor, anchor)
+        why = _q2_zh if _brief_zh_tw_ok(_q2_zh) else _build_brief_why_it_matters(category, anchor)
 
         if _brief_contains_boilerplate(what, why):
             diag["drop_boilerplate"] += 1
@@ -3801,6 +3831,7 @@ def run_pipeline() -> None:
                 #   BRIEF_MIN_EVENTS_HARD       : ai_selected_events in [min, 10]
                 #   BRIEF_NO_BOILERPLATE_HARD   : no banned boilerplate in What/Why
                 #   BRIEF_ANCHOR_REQUIRED_HARD  : What/Why both contain anchor
+                #   BRIEF_ZH_TW_HARD            : What/Why CJK ratio >= 0.6, no simplified chars
                 # ---------------------------------------------------------------
                 if _is_brief_mode:
                     try:
@@ -3823,6 +3854,7 @@ def run_pipeline() -> None:
 
                         _brief_bp_fail: list[dict] = []
                         _brief_anchor_fail: list[dict] = []
+                        _brief_zh_fail: list[dict] = []
                         for _bfc in _brief_cards:
                             _title_b = str(_bfc.get("title", "") or "")[:80]
                             _what_b = _normalize_ws(str(_bfc.get("what_happened_brief", "") or _bfc.get("q1", "") or ""))
@@ -3852,6 +3884,16 @@ def run_pipeline() -> None:
                                     }
                                 )
 
+                            if (not _brief_zh_tw_ok(_what_b)) or (not _brief_zh_tw_ok(_why_b)):
+                                _brief_zh_fail.append(
+                                    {
+                                        "title": _title_b,
+                                        "what_cjk_ratio": round(_brief_zh_cjk_ratio(_what_b), 3),
+                                        "why_cjk_ratio": round(_brief_zh_cjk_ratio(_why_b), 3),
+                                        "reason": "zh_tw_check_fail",
+                                    }
+                                )
+
                         _brief_bp_meta = {
                             "gate_result": "PASS" if (len(_brief_bp_fail) == 0) else "FAIL",
                             "events_total": _brief_total,
@@ -3874,10 +3916,22 @@ def run_pipeline() -> None:
                             encoding="utf-8",
                         )
 
+                        _brief_zh_meta = {
+                            "gate_result": "PASS" if (len(_brief_zh_fail) == 0) else "FAIL",
+                            "events_total": _brief_total,
+                            "fail_count": len(_brief_zh_fail),
+                            "failing_events": _brief_zh_fail,
+                        }
+                        (Path(settings.PROJECT_ROOT) / "outputs" / "brief_zh_tw_hard.meta.json").write_text(
+                            _brief_json.dumps(_brief_zh_meta, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+
                         _brief_any_fail = (
                             _brief_min_meta["gate_result"] == "FAIL"
                             or _brief_bp_meta["gate_result"] == "FAIL"
                             or _brief_anchor_meta["gate_result"] == "FAIL"
+                            or _brief_zh_meta["gate_result"] == "FAIL"
                         )
                         if _brief_any_fail:
                             _brief_gate = "BRIEF_MIN_EVENTS_HARD"
@@ -3888,6 +3942,9 @@ def run_pipeline() -> None:
                             if _brief_anchor_meta["gate_result"] == "FAIL":
                                 _brief_gate = "BRIEF_ANCHOR_REQUIRED_HARD"
                                 _brief_detail = f"anchor_fail_count={len(_brief_anchor_fail)}"
+                            if _brief_zh_meta["gate_result"] == "FAIL":
+                                _brief_gate = "BRIEF_ZH_TW_HARD"
+                                _brief_detail = f"zh_tw_fail_count={len(_brief_zh_fail)}"
 
                             (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").write_text(
                                 "# NOT_READY\n\n"
@@ -3895,7 +3952,8 @@ def run_pipeline() -> None:
                                 f"gate: {_brief_gate}\n"
                                 f"fail_reason: {_brief_detail}\n"
                                 f"counts: events_total={_brief_total} min_required={_brief_min_events} "
-                                f"boilerplate_fail={len(_brief_bp_fail)} anchor_fail={len(_brief_anchor_fail)}\n",
+                                f"boilerplate_fail={len(_brief_bp_fail)} anchor_fail={len(_brief_anchor_fail)} "
+                                f"zh_tw_fail={len(_brief_zh_fail)}\n",
                                 encoding="utf-8",
                             )
                             for _brief_art in ("executive_report.pptx", "executive_report.docx"):
@@ -3903,7 +3961,7 @@ def run_pipeline() -> None:
                             log.error("%s FAIL — %s", _brief_gate, _brief_detail)
                         else:
                             log.info(
-                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0",
+                                "BRIEF_GATES: PASS min_events=%d total=%d boilerplate_fail=0 anchor_fail=0 zh_tw_fail=0",
                                 _brief_min_events, _brief_total,
                             )
                     except Exception as _brief_gate_exc:

@@ -907,7 +907,8 @@ Write-Output "BRIEF HARD GATES:"
 $briefGateMetas = @(
     @{ Label = "BRIEF_MIN_EVENTS_HARD";      File = "brief_min_events_hard.meta.json" },
     @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
-    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" }
+    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" },
+    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" }
 )
 foreach ($bg in $briefGateMetas) {
     $bgPath = Join-Path $repoRoot ("outputs\" + $bg.File)

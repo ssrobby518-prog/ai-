@@ -482,13 +482,15 @@ if ($densityRaw) {
 #   BRIEF_MIN_EVENTS_HARD       : ai_selected_events in [5, 10]
 #   BRIEF_NO_BOILERPLATE_HARD   : no boilerplate in What happened / Why it matters
 #   BRIEF_ANCHOR_REQUIRED_HARD  : both What happened and Why it matters contain anchor
+#   BRIEF_ZH_TW_HARD            : What/Why CJK ratio >= 0.6, no simplified Chinese chars
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "BRIEF HARD GATES:" -ForegroundColor Yellow
 $vrBriefGateMetas = @(
     @{ Label = "BRIEF_MIN_EVENTS_HARD";      File = "brief_min_events_hard.meta.json" },
     @{ Label = "BRIEF_NO_BOILERPLATE_HARD";  File = "brief_no_boilerplate_hard.meta.json" },
-    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" }
+    @{ Label = "BRIEF_ANCHOR_REQUIRED_HARD"; File = "brief_anchor_required_hard.meta.json" },
+    @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" }
 )
 $vrBriefRepoRoot = Split-Path -Parent $PSScriptRoot
 foreach ($bg in $vrBriefGateMetas) {
