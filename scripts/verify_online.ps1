@@ -380,13 +380,14 @@ if (Test-Path $execSelMetaPath) {
         $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
 
         # Gate result label — computed always; used by suppressed output and exit logic below
-        $_kpiGate = if (-not $anyFail) { "PASS" } elseif ($effectiveMode -eq "demo") { "WARN-OK" } else { "FAIL" }
+        $kpi_result_internal = if (-not $anyFail) { "PASS" } elseif ($effectiveMode -eq "demo") { "WARN-OK" } else { "FAIL" }
+        $kpi_affects_exit = if ($reportMode -eq "brief") { $false } else { $true }
 
         if ($reportMode -eq "brief") {
             # brief mode: KPI bucket details suppressed — BRIEF_* gates are the acceptance criteria
             Write-Output ""
             Write-Output "EXEC KPI GATES: SUPPRESSED (report_mode=brief; acceptance=BRIEF_* gates)"
-            Write-Output ("  kpi_result_internal = {0}" -f $_kpiGate)
+            Write-Output ("  kpi_result_internal = {0}" -f $kpi_result_internal)
         } else {
             Write-Output ""
             Write-Output ("EXEC KPI GATES (mode={0}):" -f $effectiveMode)
@@ -431,11 +432,7 @@ if (Test-Path $execSelMetaPath) {
         }
 
         # Exit code logic — always runs regardless of output suppression (gate behavior unchanged)
-        if (-not $anyFail) {
-            # PASS — no action needed
-        } elseif ($effectiveMode -eq "demo") {
-            # WARN-OK — non-fatal, no exit 1
-        } else {
+        if ($kpi_affects_exit -and $kpi_result_internal -eq "FAIL") {
             exit 1
         }
     } catch {
