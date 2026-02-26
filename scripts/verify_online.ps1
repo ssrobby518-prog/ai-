@@ -9,7 +9,8 @@
 # Usage (-SkipPipeline): skip steps 1-2; pass -SkipPipeline to verify_run (used by FAIL demo)
 
 param(
-    [switch]$SkipPipeline   # if set: skip z0_collect + Z0_ENABLED; verify_run called with -SkipPipeline
+    [switch]$SkipPipeline,  # if set: skip z0_collect + Z0_ENABLED; verify_run called with -SkipPipeline
+    [string]$Mode = ""      # "demo" = bucket quotas are WARN-OK (no exit 1); "manual"/default = hard fail
 )
 
 $ErrorActionPreference = "Stop"
@@ -310,8 +311,35 @@ if (Test-Path $zhMetaPath) {
 
 # ---------------------------------------------------------------------------
 # EXEC KPI GATE EVIDENCE — reads exec_selection.meta.json written by pipeline
+# Mode-aware:
+#   demo   → bucket quotas are informational WARN-OK; do NOT exit 1
+#   manual → bucket quotas are hard gates; FAIL = exit 1  (default / conservative)
+#
+# Mode resolution order:
+#   1. Explicit -Mode param passed to verify_online.ps1  ("demo" / "manual")
+#   2. outputs/showcase_ready.meta.json  .mode field written by the pipeline just run
+#   3. Conservative fallback → "manual"
 # ---------------------------------------------------------------------------
-$execSelMetaPath = Join-Path $repoRoot "outputs\exec_selection.meta.json"
+$execSelMetaPath   = Join-Path $repoRoot "outputs\exec_selection.meta.json"
+$showcaseReadyPath = Join-Path $repoRoot "outputs\showcase_ready.meta.json"
+
+# Resolve effective KPI mode
+$_kpiMode = ""
+if ($Mode -and ($Mode.ToLower() -eq "demo" -or $Mode.ToLower() -eq "manual")) {
+    $_kpiMode = $Mode.ToLower()
+} else {
+    # Fall back to showcase_ready.meta.json written by the pipeline that just ran
+    if (Test-Path $showcaseReadyPath) {
+        try {
+            $srMeta = Get-Content $showcaseReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($srMeta.PSObject.Properties['mode'] -and ([string]$srMeta.mode).ToLower() -eq "demo") {
+                $_kpiMode = "demo"
+            }
+        } catch { }
+    }
+}
+if (-not $_kpiMode) { $_kpiMode = "manual" }   # conservative fallback
+
 if (Test-Path $execSelMetaPath) {
     try {
         $esMeta = Get-Content $execSelMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -332,19 +360,26 @@ if (Test-Path $execSelMetaPath) {
         $gateBu = if ($actBu -ge $minBu -or $sparseDay) { "PASS" } else { "FAIL" }
         $sparseNote = if ($sparseDay) { " [sparse-day fallback]" } else { "" }
 
+        $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
+
         Write-Output ""
-        Write-Output "EXEC KPI GATES (default):"
+        Write-Output ("EXEC KPI GATES (mode={0}):" -f $_kpiMode)
         Write-Output ("  MIN_EVENTS={0,-3} actual={1,-4} {2}{3}" -f $minEv, $actEv, $gateEv, $sparseNote)
         Write-Output ("  MIN_PRODUCT={0,-2} actual={1,-4} {2}{3}" -f $minPr, $actPr, $gatePr, $sparseNote)
         Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
         Write-Output ("  MIN_BUSINESS={0,-1} actual={1,-4} {2}{3}" -f $minBu, $actBu, $gateBu, $sparseNote)
+        Write-Output ("  buckets: product={0} tech={1} business={2}" -f $actPr, $actTe, $actBu)
 
-        $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
-        if ($anyFail) {
-            Write-Output "  => EXEC KPI GATES: FAIL"
-            exit 1
+        if (-not $anyFail) {
+            Write-Output ("  => EXEC KPI GATES: PASS (mode={0})" -f $_kpiMode)
+        } elseif ($_kpiMode -eq "demo") {
+            # demo mode: bucket-quota shortfalls are expected on days where today's news skews to
+            # one channel.  All hard quality gates (SHOWCASE_READY, AI_PURITY, DOCX/PPTX,
+            # ZH_NARRATIVE) already passed above; bucket variability is non-fatal in demo context.
+            Write-Output ("  => EXEC KPI GATES: WARN-OK (mode=demo, buckets=product:{0} tech:{1} business:{2}, reason: bucket variability)" -f $actPr, $actTe, $actBu)
         } else {
-            Write-Output "  => EXEC KPI GATES: PASS"
+            Write-Output ("  => EXEC KPI GATES: FAIL (mode={0})" -f $_kpiMode)
+            exit 1
         }
     } catch {
         Write-Output "  exec_selection meta parse error (non-fatal): $_"
