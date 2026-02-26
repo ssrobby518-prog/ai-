@@ -323,6 +323,17 @@ if (Test-Path $zhMetaPath) {
 $execSelMetaPath   = Join-Path $repoRoot "outputs\exec_selection.meta.json"
 $showcaseReadyPath = Join-Path $repoRoot "outputs\showcase_ready.meta.json"
 
+# Resolve report_mode (brief suppresses KPI bucket details; BRIEF_* gates are the acceptance criteria)
+# Priority: LAST_RUN_SUMMARY.txt report_mode field > fallback "full"
+$reportMode = "full"
+$_lrsPath = Join-Path $repoRoot "outputs\LAST_RUN_SUMMARY.txt"
+if (Test-Path $_lrsPath) {
+    try {
+        $lrsContent = Get-Content $_lrsPath -Raw -Encoding UTF8
+        if ($lrsContent -match '(?m)^report_mode\s*=\s*(\S+)') { $reportMode = $Matches[1].Trim().ToLower() }
+    } catch { }
+}
+
 # Resolve meta mode and effective mode
 $_metaMode = ""
 if (Test-Path $showcaseReadyPath) {
@@ -368,24 +379,41 @@ if (Test-Path $execSelMetaPath) {
 
         $anyFail = $gateEv -eq "FAIL" -or $gatePr -eq "FAIL" -or $gateTe -eq "FAIL" -or $gateBu -eq "FAIL"
 
-        Write-Output ""
-        Write-Output ("EXEC KPI GATES (mode={0}):" -f $effectiveMode)
-        Write-Output ("  effective_mode_for_kpi = {0}{1}" -f $effectiveMode, $(if ($Mode -and $Mode -ne $_metaMode -and $_metaMode -ne "") { " (CLI override)" } elseif ($Mode -and $_metaMode -eq "") { " (CLI override)" } else { "" }))
-        Write-Output ("  MIN_EVENTS={0,-3} actual={1,-4} {2}{3}" -f $minEv, $actEv, $gateEv, $sparseNote)
-        Write-Output ("  MIN_PRODUCT={0,-2} actual={1,-4} {2}{3}" -f $minPr, $actPr, $gatePr, $sparseNote)
-        Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
-        Write-Output ("  MIN_BUSINESS={0,-1} actual={1,-4} {2}{3}" -f $minBu, $actBu, $gateBu, $sparseNote)
-        Write-Output ("  buckets: product={0} tech={1} business={2}" -f $actPr, $actTe, $actBu)
+        # Gate result label — computed always; used by suppressed output and exit logic below
+        $_kpiGate = if (-not $anyFail) { "PASS" } elseif ($effectiveMode -eq "demo") { "WARN-OK" } else { "FAIL" }
 
-        if (-not $anyFail) {
-            Write-Output ("  => EXEC KPI GATES: PASS (mode={0})" -f $effectiveMode)
-        } elseif ($effectiveMode -eq "demo") {
-            # demo mode: bucket-quota shortfalls are expected on days where today's news skews to
-            # one channel.  All hard quality gates (SHOWCASE_READY, AI_PURITY, DOCX/PPTX,
-            # ZH_NARRATIVE) already passed above; bucket variability is non-fatal in demo context.
-            Write-Output ("  => EXEC KPI GATES: WARN-OK (mode=demo, buckets=product:{0} tech:{1} business:{2}, reason: bucket variability)" -f $actPr, $actTe, $actBu)
+        if ($reportMode -eq "brief") {
+            # brief mode: KPI bucket details suppressed — BRIEF_* gates are the acceptance criteria
+            Write-Output ""
+            Write-Output "EXEC KPI GATES: SUPPRESSED (report_mode=brief; acceptance=BRIEF_* gates)"
+            Write-Output ("  kpi_result_internal = {0}" -f $_kpiGate)
         } else {
-            Write-Output ("  => EXEC KPI GATES: FAIL (mode={0})" -f $effectiveMode)
+            Write-Output ""
+            Write-Output ("EXEC KPI GATES (mode={0}):" -f $effectiveMode)
+            Write-Output ("  effective_mode_for_kpi = {0}{1}" -f $effectiveMode, $(if ($Mode -and $Mode -ne $_metaMode -and $_metaMode -ne "") { " (CLI override)" } elseif ($Mode -and $_metaMode -eq "") { " (CLI override)" } else { "" }))
+            Write-Output ("  MIN_EVENTS={0,-3} actual={1,-4} {2}{3}" -f $minEv, $actEv, $gateEv, $sparseNote)
+            Write-Output ("  MIN_PRODUCT={0,-2} actual={1,-4} {2}{3}" -f $minPr, $actPr, $gatePr, $sparseNote)
+            Write-Output ("  MIN_TECH={0,-4} actual={1,-4} {2}{3}" -f $minTe, $actTe, $gateTe, $sparseNote)
+            Write-Output ("  MIN_BUSINESS={0,-1} actual={1,-4} {2}{3}" -f $minBu, $actBu, $gateBu, $sparseNote)
+            Write-Output ("  buckets: product={0} tech={1} business={2}" -f $actPr, $actTe, $actBu)
+            if (-not $anyFail) {
+                Write-Output ("  => EXEC KPI GATES: PASS (mode={0})" -f $effectiveMode)
+            } elseif ($effectiveMode -eq "demo") {
+                # demo mode: bucket-quota shortfalls are expected on days where today's news skews to
+                # one channel.  All hard quality gates (SHOWCASE_READY, AI_PURITY, DOCX/PPTX,
+                # ZH_NARRATIVE) already passed above; bucket variability is non-fatal in demo context.
+                Write-Output ("  => EXEC KPI GATES: WARN-OK (mode=demo, buckets=product:{0} tech:{1} business:{2}, reason: bucket variability)" -f $actPr, $actTe, $actBu)
+            } else {
+                Write-Output ("  => EXEC KPI GATES: FAIL (mode={0})" -f $effectiveMode)
+            }
+        }
+
+        # Exit code logic — always runs regardless of output suppression (gate behavior unchanged)
+        if (-not $anyFail) {
+            # PASS — no action needed
+        } elseif ($effectiveMode -eq "demo") {
+            # WARN-OK — non-fatal, no exit 1
+        } else {
             exit 1
         }
     } catch {
