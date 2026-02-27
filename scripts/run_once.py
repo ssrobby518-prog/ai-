@@ -2692,10 +2692,10 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         _q1_body = _normalize_ws(" ".join(what_bullets[:2])).replace("\"", "\"").replace("\"", "\"")
         _q2_body = _normalize_ws(" ".join(why_bullets[:2])).replace("\"", "\"").replace("\"", "\"")
         out["q1_zh"] = _normalize_ws(
-            f"{_q1_header} {_q1_body} Source snippet: \"{_qw1}\"."
+            f"{_q1_header} {_q1_body} Source snippet: 「{_qw1}」。"
         )
         out["q2_zh"] = _normalize_ws(
-            f"{_q2_header} {_q2_body} Impact snippet: \"{_qw2}\"."
+            f"{_q2_header} {_q2_body} Impact snippet: 「{_qw2}」。"
         )
         out["q1"] = out["q1_zh"]
         out["q2"] = out["q2_zh"]
@@ -4448,10 +4448,10 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
             _anchor_for_zh = _normalize_claude_name(actor)
 
         q1_zh = _normalize_ws(
-            f"{actor} source snippet \"{quote_window_1}\" supports title {title} and anchor {_anchor_for_zh}."
+            f"{actor} source snippet 「{quote_window_1}」 supports title {title} and anchor {_anchor_for_zh}."
         )
         q2_zh = _normalize_ws(
-            f"Impact snippet \"{quote_window_2}\" indicates downstream effects for {_anchor_for_zh}."
+            f"Impact snippet 「{quote_window_2}」 indicates downstream effects for {_anchor_for_zh}."
         )
 
         _zh_ok, _zh_reasons = validate_zh_card_fields(
@@ -4459,10 +4459,10 @@ def _build_final_cards(event_cards: list[EduNewsCard]) -> list[dict]:
         )
         if not _zh_ok:
             q1_zh = _normalize_ws(
-                f"{actor} provides snippet \"{quote_window_1}\" for source trace and anchor {_anchor_for_zh}."
+                f"{actor} provides snippet 「{quote_window_1}」 for source trace and anchor {_anchor_for_zh}."
             )
             q2_zh = _normalize_ws(
-                f"Snippet \"{quote_window_2}\" summarizes impact scope around {_anchor_for_zh}."
+                f"Snippet 「{quote_window_2}」 summarizes impact scope around {_anchor_for_zh}."
             )
 
         # If rewrite still violates hard style/quote rules after retries, drop this event.
@@ -5488,12 +5488,12 @@ def run_pipeline() -> None:
                     if _bq1_i:
                         _q1_cur = str(_cp_qi.get("q1_event_2sent_zh", "") or "").strip()
                         _cp_qi["q1_event_2sent_zh"] = (
-                            _q1_cur + " Source snippet: \"" + _bq1_i[:200] + "\"."
+                            _q1_cur + " Source snippet: 「" + _bq1_i[:200] + "」。"
                         ).strip()
                     if _bq2_i:
                         _q2_cur = str(_cp_qi.get("q2_impact_2sent_zh", "") or "").strip()
                         _cp_qi["q2_impact_2sent_zh"] = (
-                            _q2_cur + " Impact snippet: \"" + _bq2_i[:200] + "\"."
+                            _q2_cur + " Impact snippet: 「" + _bq2_i[:200] + "」。"
                         ).strip()
                     _qi_injected += 1
                 log.info("PH_SUPP quote injection: injected into %d canonical payloads", _qi_injected)
@@ -5942,10 +5942,10 @@ def run_pipeline() -> None:
                                 from utils.canonical_narrative import get_canonical_payload as _dbe_gcp
                                 _cp_dbe = _dbe_gcp(_dbe_card)
                                 _cp_dbe["q1_event_2sent_zh"] = (
-                                    "Source snippet: \"" + _dbe_bq1[:200] + "\"."
+                                    "Source snippet: 「" + _dbe_bq1[:200] + "」。"
                                 ).strip()
                                 _cp_dbe["q2_impact_2sent_zh"] = (
-                                    "Impact snippet: \"" + _dbe_bq2[:200] + "\"."
+                                    "Impact snippet: 「" + _dbe_bq2[:200] + "」。"
                                 ).strip()
                                 _cp_dbe["primary_anchor"] = _dbe_primary_anchor
                                 _cp_dbe["anchors"] = list(_dbe_anchor_candidates)
@@ -7914,4 +7914,3 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         run_pipeline()
-
