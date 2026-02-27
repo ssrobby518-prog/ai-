@@ -65,10 +65,14 @@ if ($crlfFiles.Count -gt 0) {
 }
 
 # --- 3. Check for UTF-8 BOM ---
-Write-Host "`n[3/3] Scanning for UTF-8 BOM markers..." -ForegroundColor Yellow
+# .ps1 files are exempt: Windows PowerShell 5.x requires UTF-8 BOM to correctly
+# read files that contain non-ASCII characters (em dashes, arrows, CJK, etc.).
+# Python/JSON/YAML/TOML/MD/INI/SH/TXT files must NOT have BOM.
+Write-Host "`n[3/3] Scanning for UTF-8 BOM markers (exempting .ps1)..." -ForegroundColor Yellow
 $bomFiles = @()
+$bomExtensions = @("*.py", "*.md", "*.yml", "*.yaml", "*.toml", "*.json", "*.cfg", "*.ini", "*.sh", "*.txt")
 
-foreach ($ext in $extensions) {
+foreach ($ext in $bomExtensions) {
     $files = git ls-files -- $ext 2>$null
     foreach ($f in $files) {
         if (-not $f) { continue }
