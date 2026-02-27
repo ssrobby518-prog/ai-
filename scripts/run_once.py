@@ -2471,6 +2471,39 @@ def _write_brief_event_sentence_meta(prepared: list[dict]) -> None:
         pass
 
 
+def _backfill_brief_fact_candidates(prepared: list[dict], min_candidates: int = 6) -> None:
+    """Ensure each brief card has a usable fact_candidates pool for hard-gate mapping."""
+    for fc in (prepared or []):
+        try:
+            existing = [
+                _normalize_ws(str(x or ""))
+                for x in (fc.get("fact_candidates", []) or [])
+                if _normalize_ws(str(x or ""))
+            ]
+            if len(existing) >= min_candidates:
+                continue
+            bullets = (
+                list(fc.get("what_happened_bullets", []) or []) +
+                list(fc.get("key_details_bullets", []) or []) +
+                list(fc.get("why_it_matters_bullets", []) or [])
+            )
+            seen = {x.lower() for x in existing}
+            for b in bullets:
+                bb = _normalize_ws(str(b or ""))
+                if len(bb) < 12:
+                    continue
+                k = bb.lower()
+                if k in seen:
+                    continue
+                existing.append(bb)
+                seen.add(k)
+                if len(existing) >= min_candidates:
+                    break
+            fc["fact_candidates"] = existing
+        except Exception:
+            continue
+
+
 def _write_brief_fact_candidates_hard_meta(prepared: list[dict]) -> None:
     """Write brief_fact_candidates_hard.meta.json.
 
@@ -4858,6 +4891,7 @@ def run_pipeline() -> None:
                     _write_brief_no_audit_speak_meta(_final_cards)
                     _write_brief_fact_sentence_meta(_final_cards)
                     _write_brief_event_sentence_meta(_final_cards)
+                    _backfill_brief_fact_candidates(_final_cards)
                     _write_brief_fact_candidates_hard_meta(_final_cards)
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
@@ -5282,6 +5316,7 @@ def run_pipeline() -> None:
                                     _write_brief_no_audit_speak_meta(_final_cards)
                                     _write_brief_fact_sentence_meta(_final_cards)
                                     _write_brief_event_sentence_meta(_final_cards)
+                                    _backfill_brief_fact_candidates(_final_cards)
                                     _write_brief_fact_candidates_hard_meta(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
