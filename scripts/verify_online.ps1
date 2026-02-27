@@ -334,6 +334,10 @@ if (-not $env:EXEC_MIN_BUSINESS) { $env:EXEC_MIN_BUSINESS = "2" }
 Write-Output "[verify_online] EXEC KPI gates: MIN_EVENTS=$($env:EXEC_MIN_EVENTS) MIN_PRODUCT=$($env:EXEC_MIN_PRODUCT) MIN_TECH=$($env:EXEC_MIN_TECH) MIN_BUSINESS=$($env:EXEC_MIN_BUSINESS)"
 
 # ---- Step 3: Run verify_run.ps1 ----
+# Pass run_id so run_once.py writes it into supply_fallback.meta.json and latest_brief.md
+$env:PIPELINE_RUN_ID       = $_voRunId
+$env:PIPELINE_TRIGGERED_BY = "verify_online.ps1"
+
 Write-Output "[3/3] Running verify_run.ps1 (offline, reads Z0 JSONL)..."
 Write-Output ""
 if ($SkipPipeline) {
@@ -343,11 +347,13 @@ if ($SkipPipeline) {
 }
 $exitCode = $LASTEXITCODE
 
-$env:Z0_ENABLED        = $null
-$env:EXEC_MIN_EVENTS   = $null
-$env:EXEC_MIN_PRODUCT  = $null
-$env:EXEC_MIN_TECH     = $null
-$env:EXEC_MIN_BUSINESS = $null
+$env:Z0_ENABLED            = $null
+$env:EXEC_MIN_EVENTS       = $null
+$env:EXEC_MIN_PRODUCT      = $null
+$env:EXEC_MIN_TECH         = $null
+$env:EXEC_MIN_BUSINESS     = $null
+$env:PIPELINE_RUN_ID       = $null
+$env:PIPELINE_TRIGGERED_BY = $null
 
 if ($exitCode -ne 0) {
     Write-Output "[verify_online] verify_run.ps1 FAILED (exit $exitCode)."
