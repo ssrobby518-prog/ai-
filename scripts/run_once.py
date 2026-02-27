@@ -5612,12 +5612,30 @@ def run_pipeline() -> None:
 
                     _docx_canon = Path(settings.PROJECT_ROOT) / "outputs" / "executive_report.docx"
                     _pptx_canon = Path(settings.PROJECT_ROOT) / "outputs" / "executive_report.pptx"
+                    # When Word/PowerPoint locks the canonical file, _generate_brief_*_only
+                    # falls back to *_brief.* (new content) + os.utime on canonical (timestamp
+                    # only, old content).  Evaluate against the newer alt file so the sync
+                    # check reads actual new data rather than stale locked content.
+                    _docx_brief_alt = Path(settings.PROJECT_ROOT) / "outputs" / "executive_report_brief.docx"
+                    _pptx_brief_alt = Path(settings.PROJECT_ROOT) / "outputs" / "executive_report_brief.pptx"
+                    _docx_eval_path = _docx_canon
+                    _pptx_eval_path = _pptx_canon
+                    if _docx_brief_alt.exists() and (
+                        not _docx_canon.exists()
+                        or _docx_brief_alt.stat().st_mtime > _docx_canon.stat().st_mtime + 30
+                    ):
+                        _docx_eval_path = _docx_brief_alt
+                    if _pptx_brief_alt.exists() and (
+                        not _pptx_canon.exists()
+                        or _pptx_brief_alt.stat().st_mtime > _pptx_canon.stat().st_mtime + 30
+                    ):
+                        _pptx_eval_path = _pptx_brief_alt
                     _final_cards_eval = list(_final_cards or [])
 
                     _deliverable_meta = _evaluate_exec_deliverable_docx_pptx_hard(
                         final_cards=_final_cards_eval,
-                        docx_path=_docx_canon,
-                        pptx_path=_pptx_canon,
+                        docx_path=_docx_eval_path,
+                        pptx_path=_pptx_eval_path,
                     )
                     _deliverable_meta["generated_at"] = _gate_dt.now(_gate_tz.utc).isoformat()
 
