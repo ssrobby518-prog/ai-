@@ -1,4 +1,4 @@
-﻿"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
+"""Run the full pipeline once: Ingest -> Process -> Store -> Deliver."""
 
 import hashlib
 import os

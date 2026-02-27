@@ -1,4 +1,4 @@
-﻿"""PPTX CEO Motion Slides — Dark Theme 簡報生成器。
+"""PPTX CEO Motion Slides — Dark Theme 簡報生成器。
 
 深色背景、黃色高亮、白色內文。
 每則新聞兩頁：Page 1 WHAT HAPPENED + Page 2 WHY IT MATTERS (Q&A)。

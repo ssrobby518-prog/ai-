@@ -1,4 +1,4 @@
-﻿# verify_online.ps1 — Z0 collect (online) then verify pipeline (offline read)
+# verify_online.ps1 — Z0 collect (online) then verify pipeline (offline read)
 #
 # Steps:
 #   1) Run z0_collect.ps1  (goes online, writes data/raw/z0/latest.jsonl)
