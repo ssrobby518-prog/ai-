@@ -1019,7 +1019,7 @@ if (Test-Path $execDelivMetaOnlinePath) {
             $edLogPath = Join-Path $repoRoot "logs\app.log"
             if (Test-Path $edLogPath) {
                 try {
-                    $edHasWin32NonFatal = [bool](Select-String -Path $edLogPath -Pattern "EXEC_DELIVERABLE_DOCX_PPTX_HARD check failed \(non-fatal\): \[WinError 32\]" -SimpleMatch | Select-Object -Last 1)
+                    $edHasWin32NonFatal = [bool](Select-String -Path $edLogPath -Pattern "EXEC_DELIVERABLE_DOCX_PPTX_HARD check failed (non-fatal): [WinError 32]" -SimpleMatch | Select-Object -Last 1)
                 } catch { }
             }
             if ($edHasWin32NonFatal -and $edDocxOk -and $edPptxOk) {
