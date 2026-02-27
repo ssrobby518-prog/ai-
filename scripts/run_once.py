@@ -5605,12 +5605,30 @@ def run_pipeline() -> None:
                         )
                         # Q2_BINDING: first 50 chars of quote_2 must appear in q2_text
                         _dod_q2bind = bool(_bq2_d_n) and (_bq2_d_n[:50] in _q2_d_n)
+                        _generic_actor_tokens = {
+                            "show", "hn", "news", "update", "release", "report", "article", "post", "today",
+                            "latest", "breaking", "thread",
+                        }
+                        _actor_anchor_d = _primary_anchor_d.strip()
+                        _actor_anchor_l = _actor_anchor_d.lower()
+                        if (
+                            (not _actor_anchor_d)
+                            or (len(_actor_anchor_d) < 3)
+                            or _actor_anchor_l.isdigit()
+                            or (_actor_anchor_l in _generic_actor_tokens)
+                        ):
+                            for _tok in _re_dod.findall(r"[A-Za-z][A-Za-z0-9+._-]{2,}", _title_d):
+                                _tok_l = _tok.lower()
+                                if _tok_l in _generic_actor_tokens:
+                                    continue
+                                _actor_anchor_d = _tok
+                                break
                         # ACTOR_BINDING: primary_anchor in quote_1 (injection re-selected it);
                         # fallback to quote_2 or what_happened; case-insensitive
                         _wh_d_actor = str(getattr(_cc_dod, "what_happened", "") or "")
-                        _pa_ci = _primary_anchor_d.lower()
+                        _pa_ci = _actor_anchor_d.lower()
                         _dod_actor_bind = (
-                            (not _primary_anchor_d)
+                            (not _actor_anchor_d)
                             or (_pa_ci in _bq1_d.lower())
                             or (_pa_ci in _bq2_d.lower())
                             or (_pa_ci in _wh_d_actor.lower())
