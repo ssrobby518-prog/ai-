@@ -2487,9 +2487,11 @@ def _generate_brief_md(prepared: list[dict], run_id: str, mode: str, report_mode
         _run_archive = _out_dir / "runs" / run_id
         _run_archive.mkdir(parents=True, exist_ok=True)
         (_run_archive / "brief.md").write_text(_md_text, encoding="utf-8")
-        log.info("Generated outputs/latest_brief.md (%d events)", _evt_count)
+        import logging as _bmd_log
+        _bmd_log.getLogger("ai_intel").info("Generated outputs/latest_brief.md (%d events)", _evt_count)
     except Exception as _bmd_exc:
-        log.warning("latest_brief.md generation failed (non-fatal): %s", _bmd_exc)
+        import logging as _bmd_log2
+        _bmd_log2.getLogger("ai_intel").warning("latest_brief.md generation failed (non-fatal): %s", _bmd_exc)
 
 
 def _sanitize_quote_for_delivery(text: str) -> str:
