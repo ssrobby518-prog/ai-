@@ -1249,7 +1249,14 @@ Invoke-MetaGate -Label "BRIEF_FACT_SENTENCE_HARD" -MetaFile "brief_fact_sentence
 }
 
 Write-Host ""
-Write-Host "AI_PURITY_GATES: 10/10 PASS" -ForegroundColor Green
+Write-Host "[AI Purity Gate] BRIEF_EVENT_SENTENCE_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_EVENT_SENTENCE_HARD" -MetaFile "brief_event_sentence_hard.meta.json" -InfoBuilder {
+    param($d)
+    "total_events=$((Get-MetaInt $d 'total_events' 0)) events_below_threshold=$((Get-MetaInt $d 'events_below_threshold' 0))"
+}
+
+Write-Host ""
+Write-Host "AI_PURITY_GATES: 11/11 PASS" -ForegroundColor Green
 
 # FULLTEXT_FIDELITY OBSERVATION (non-fatal) — reads fulltext_fidelity.meta.json
 $fidelityMetaPath = Join-Path $PSScriptRoot "..\outputs\fulltext_fidelity.meta.json"

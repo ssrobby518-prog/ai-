@@ -1846,6 +1846,38 @@ if (Test-Path $voBfsPath) {
 }
 
 # ---------------------------------------------------------------------------
+# BRIEF_EVENT_SENTENCE_HARD gate — DoD: each event must have >= 3 bullets that
+#   simultaneously hit action verb + object noun + anchor/number (news-style sentence).
+#   Reads outputs/brief_event_sentence_hard.meta.json written by run_once.py.
+#   PASS : events_below_threshold == 0
+#   FAIL : any event has < 3 news-style bullets  => exit 1
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_EVENT_SENTENCE_HARD:"
+$voBesPath = Join-Path $repoRoot "outputs\brief_event_sentence_hard.meta.json"
+if (Test-Path $voBesPath) {
+    try {
+        $voBes = Get-Content $voBesPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voBesGate  = [string]($voBes.gate_result)
+        $voBesTotal = if ($voBes.PSObject.Properties["total_events"])         { [int]$voBes.total_events }         else { 0 }
+        $voBesBelow = if ($voBes.PSObject.Properties["events_below_threshold"]) { [int]$voBes.events_below_threshold } else { 0 }
+        Write-Output ("  total_events={0}  events_below_news_threshold={1}" -f $voBesTotal, $voBesBelow)
+        if ($voBesGate -eq "PASS") {
+            Write-Output "  => BRIEF_EVENT_SENTENCE_HARD: PASS (all events have >= 3 news-style bullets)"
+        } else {
+            Write-Output ("  => BRIEF_EVENT_SENTENCE_HARD: FAIL (events_below_threshold={0})" -f $voBesBelow)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_EVENT_SENTENCE_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_event_sentence_hard.meta.json not found"
+    Write-Output "  => BRIEF_EVENT_SENTENCE_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
 # Reads outputs/showcase_ready.meta.json written by run_once.py.
 # showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)

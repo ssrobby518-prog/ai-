@@ -576,6 +576,37 @@ _BRIEF_ACTION_WORD_RE = re.compile(
     re.IGNORECASE,
 )
 
+# BRIEF_EVENT_SENTENCE_HARD: strong ZH+EN action verbs (news verbs, not reporting verbs)
+_BRIEF_EVENT_ACTION_RE = re.compile(
+    # Strong ZH news verbs
+    r"宣[布佈]|推出|發[布佈]|上線|開[源放]|收購|併購|募資|部署|升級|擴[展充]|整合|合作|"
+    r"封禁|批准|採用|引入|超越|突破|削減|裁員|融資|展示|拓展|加[劇速]|促使|"
+    r"改[變善]|影響|帶動|牽動|更新|強化|優化|啟[動用]|停[用止]|降低|提[升高]|"
+    r"實現|達到|推進|推動|發現|揭露|揭示|披露|透露|說明|呈現|"
+    # EN news verbs
+    r"\b(launch|release[sd]?|announc[eding]+|deploy[ed]*|acqui[re]+d?|rais[e]|ban|"
+    r"ship|expand|updat[e]|introduc[eding]+|publish|train[ing]*|integrat[eding]+|"
+    r"partner|merge|fund|cut|block|approv[eding]+|adopt[eding]+|clos[e]|halt|reduc|"
+    r"increas|improv|complet|end[ing]*|consider|designat|build[s]?|pick[s]?|"
+    r"choose[s]?|select)\b",
+    re.IGNORECASE,
+)
+
+# BRIEF_EVENT_SENTENCE_HARD: ZH+EN object nouns (tech/AI/business objects)
+_BRIEF_EVENT_OBJECT_RE = re.compile(
+    # ZH objects
+    r"模型|工具|平台|框架|資料[集庫]|基準|系統|產品|功能|服務|版本|晶片|架構|"
+    r"推理|微調|應用|場景|技術|多模態|語言模型|效能|評測|"
+    r"投資|市場|融資|合作|決策|競爭|格局|迭代|員工|裁員|政策|風險|"
+    # EN objects
+    r"\b(model|models|agent|tool|tools|platform|framework|dataset|benchmark|system|"
+    r"product|products|feature|service|services|version|chip|algorithm|architecture|"
+    r"inference|training|vector|prompt|API|GPU|LLM|parameter|performance|pipeline|"
+    r"solution|solutions|capabilit|categor|investment|partner|partnership|funding|"
+    r"contract|market|competition|custom|employee|workforce)\b",
+    re.IGNORECASE,
+)
+
 _BRIEF_GENERIC_NARRATIVE_RULES: list[tuple[str, re.Pattern]] = [
     ("explicit_action", re.compile(r"提出(?:明確|具體|清晰)?行動", re.IGNORECASE)),
     ("trackable_milestone", re.compile(r"(?:形成|建立|已形成).*(?:可追蹤|可追踪).*(?:里程碑|節點)", re.IGNORECASE)),
@@ -877,6 +908,15 @@ def _brief_bullet_hit_anchor_or_number(text: str, anchors: list[str]) -> bool:
         elif an in t:
             return True
     return False
+
+
+def _brief_bullet_is_event_sentence(text: str, anchors: list[str]) -> bool:
+    """Return True if bullet looks like a news sentence: action verb + object noun + anchor/number."""
+    return (
+        bool(_BRIEF_EVENT_ACTION_RE.search(text))
+        and bool(_BRIEF_EVENT_OBJECT_RE.search(text))
+        and _brief_bullet_hit_anchor_or_number(text, anchors)
+    )
 
 
 def _brief_find_generic_narrative_hits(*parts: str) -> list[dict]:
@@ -2254,6 +2294,44 @@ def _write_brief_fact_sentence_meta(prepared: list[dict]) -> None:
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_fact_sentence_hard.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_bfs_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_brief_event_sentence_meta(prepared: list[dict]) -> None:
+    """Write brief_event_sentence_hard.meta.json.
+    PASS when each event has >= 3 bullets that simultaneously hit:
+      action verb + object noun + anchor/number.
+    """
+    try:
+        import json as _bes_json
+        events_below: list[dict] = []
+        for fc in (prepared or []):
+            all_bullets = (
+                list(fc.get("what_happened_bullets", []) or []) +
+                list(fc.get("key_details_bullets", []) or []) +
+                list(fc.get("why_it_matters_bullets", []) or [])
+            )
+            anchors = list(fc.get("anchors", []) or [])
+            news_hits = sum(
+                1 for b in all_bullets if _brief_bullet_is_event_sentence(b, anchors)
+            )
+            if news_hits < 3:
+                events_below.append({
+                    "title": _normalize_ws(str(fc.get("title", "") or ""))[:80],
+                    "news_sentence_hits": news_hits,
+                    "total_bullets": len(all_bullets),
+                })
+        out = {
+            "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "total_events": len(prepared or []),
+            "events_below_threshold": len(events_below),
+            "gate_result": "PASS" if not events_below else "FAIL",
+            "events_below_list": events_below,
+        }
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_event_sentence_hard.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_bes_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -4351,6 +4429,7 @@ def run_pipeline() -> None:
                     )
                     _write_brief_no_audit_speak_meta(_final_cards)
                     _write_brief_fact_sentence_meta(_final_cards)
+                    _write_brief_event_sentence_meta(_final_cards)
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -4744,6 +4823,7 @@ def run_pipeline() -> None:
                                     )
                                     _write_brief_no_audit_speak_meta(_final_cards)
                                     _write_brief_fact_sentence_meta(_final_cards)
+                                    _write_brief_event_sentence_meta(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)
