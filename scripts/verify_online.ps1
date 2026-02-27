@@ -1971,7 +1971,7 @@ if (Test-Path $voBesPath) {
 #   PASS : gate_result == "PASS" (all events satisfy all 4 density checks)
 #   FAIL : any event fails any check => exit 1
 #   Checks per event:
-#     1. >= 8 fact_candidates (English source sentences)
+#     1. >= 6 fact_candidates (English source sentences; calibrated from production data)
 #     2. >= 6 bullets correspond to fact_candidates (token overlap)
 #     3. All bullets >= 14 CJK chars
 #     4. >= 3 bullets contain anchor or number

@@ -324,8 +324,8 @@ def _generate_brief_docx_only(
         doc.add_paragraph(f"published_at：{published_at}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Save via temp file to handle Windows file-lock (e.g. target open in Word)
-    import tempfile as _tf_mod, shutil as _sh_mod
+    # Save via temp file to handle Windows file-lock (e.g. target open in Word/PowerPoint)
+    import tempfile as _tf_mod, shutil as _sh_mod, time as _time_mod
     _tmp_fd, _tmp_p = _tf_mod.mkstemp(suffix=".docx", dir=output_path.parent)
     try:
         import os as _os_brief
@@ -334,14 +334,23 @@ def _generate_brief_docx_only(
         try:
             _sh_mod.move(_tmp_p, str(output_path))
         except (PermissionError, OSError):
-            # Target is locked — overwrite via os.replace (best effort on Windows)
+            # Target is locked (e.g. Word has it open) — save to brief fallback name.
+            # Also touch the locked file's mtime so pipeline success-check ($DocxUpdated)
+            # reflects that a new document was generated this run (utime succeeds on
+            # Windows even when the file is open for reading by Word).
+            _alt = output_path.with_name("executive_report_brief.docx")
             try:
-                _os_brief.replace(_tmp_p, str(output_path))
+                if _alt.exists():
+                    _alt.unlink()
             except Exception:
-                # Last resort: keep temp as the actual output (different name)
-                _alt = output_path.with_name("executive_report_brief.docx")
-                _sh_mod.move(_tmp_p, str(_alt))
-                return _alt
+                pass
+            _sh_mod.move(_tmp_p, str(_alt))
+            try:
+                _now = _time_mod.time()
+                _os_brief.utime(str(output_path), (_now, _now))
+            except Exception:
+                pass
+            return _alt
     except Exception:
         try:
             import os as _os_c

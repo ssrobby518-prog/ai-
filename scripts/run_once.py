@@ -2470,14 +2470,15 @@ def _write_brief_fact_candidates_hard_meta(prepared: list[dict]) -> None:
     """Write brief_fact_candidates_hard.meta.json.
 
     BRIEF_FACT_CANDIDATES_HARD gate (hard gate; FAIL writes NOT_READY.md + deletes artifacts):
-      1. Each event >= 8 fact_candidates (English sentences from full_text).
+      1. Each event >= 6 fact_candidates (English sentences from full_text; calibrated from
+         production data — news articles use pronouns heavily, typical yield is 6-12).
       2. >= 6 total bullets correspond to fact_candidates (anchor/number/EN-word token overlap).
       3. Every bullet >= 14 CJK chars.
       4. >= 3 bullets contain an anchor or number.
     FAIL: writes outputs/NOT_READY.md and deletes executive_report.pptx/.docx.
     """
     import json as _bfc_json
-    _MIN_FC = 8
+    _MIN_FC = 6
     _MIN_BULLET_MAPPED = 6
     _MIN_CJK_PER_BULLET = 14
     _MIN_ANCHOR_HITS = 3
