@@ -229,6 +229,7 @@ $execAltPaths = @{
     "PPTX" = @("outputs\executive_report_brief.pptx")
 }
 $binPass = $true
+$resolvedExecPaths = @{}
 
 foreach ($ef in $execFiles) {
     $resolvedPath = $ef.Path
@@ -244,6 +245,7 @@ foreach ($ef in $execFiles) {
     }
 
     if (Test-Path $resolvedPath) {
+        $resolvedExecPaths[$ef.Name] = $resolvedPath
         $info = Get-Item $resolvedPath
         $pathTag = if ($usedAltPath) { " [ALT_PATH]" } else { "" }
         Write-Host ("  {0}: {1} ({2} bytes, {3}){4}" -f $ef.Name, $info.FullName, $info.Length, $info.LastWriteTime, $pathTag) -ForegroundColor Green
@@ -267,6 +269,11 @@ if (-not $binPass) {
     exit 1
 }
 Write-Host "  Executive output check passed." -ForegroundColor Green
+
+$docxPathForChecks = if ($resolvedExecPaths.ContainsKey("DOCX")) { $resolvedExecPaths["DOCX"] } else { "outputs\executive_report.docx" }
+$pptxPathForChecks = if ($resolvedExecPaths.ContainsKey("PPTX")) { $resolvedExecPaths["PPTX"] } else { "outputs\executive_report.pptx" }
+$docxPathForPy = $docxPathForChecks -replace '\\', '/'
+$pptxPathForPy = $pptxPathForChecks -replace '\\', '/'
 
 # 9) Executive Output v3 guard ??banned words + embedded images
 Write-Host "`n[9/9] Executive Output v3 guard..." -ForegroundColor Yellow
@@ -310,7 +317,7 @@ if ((Test-Path "outputs\notion_page.md") -or -not $vrSparseDay) {
 $docxText = & $py -c "
 import re
 from docx import Document
-doc = Document('outputs/executive_report.docx')
+doc = Document(r'''$docxPathForPy''')
 raw = ' '.join(p.text for p in doc.paragraphs)
 for t in doc.tables:
     for row in t.rows:
@@ -333,7 +340,7 @@ if ($docxText) {
 $pptxText = & $py -c "
 import re
 from pptx import Presentation
-prs = Presentation('outputs/executive_report.pptx')
+prs = Presentation(r'''$pptxPathForPy''')
 raw = ''
 for slide in prs.slides:
     for shape in slide.shapes:
@@ -358,14 +365,14 @@ if ($pptxText) {
 }
 
 # Count event cards for context (event cards need per-card images; zero events still need banner)
-$eventCardCount = & $py -c "from docx import Document; doc = Document('outputs/executive_report.docx'); print(sum(1 for p in doc.paragraphs if p.text.lstrip().startswith(chr(31532))))" 2>$null
+$eventCardCount = & $py -c "from docx import Document; doc = Document(r'''$docxPathForPy'''); print(sum(1 for p in doc.paragraphs if p.text.lstrip().startswith(chr(31532))))" 2>$null
 $eventCards = if ($eventCardCount) { [int]$eventCardCount } else { 0 }
 Write-Host "  Event cards detected: $eventCards"
 
 # DOCX must always have at least 1 embedded image (banner on cover or per-card images)
 $docxHasImage = & $py -c "
 import zipfile, sys
-with zipfile.ZipFile('outputs/executive_report.docx') as z:
+with zipfile.ZipFile(r'''$docxPathForPy''') as z:
     media = [n for n in z.namelist() if n.startswith('word/media/')]
     print(len(media))
 " 2>$null
@@ -387,7 +394,7 @@ if ($isBriefModeVr) {
 } else {
     $pptxHasImage = & $py -c "
 import zipfile, sys
-with zipfile.ZipFile('outputs/executive_report.pptx') as z:
+with zipfile.ZipFile(r'''$pptxPathForPy''') as z:
     media = [n for n in z.namelist() if n.startswith('ppt/media/')]
     print(len(media))
 " 2>$null
@@ -522,7 +529,8 @@ $vrBriefGateMetas = @(
     @{ Label = "BRIEF_INFO_DENSITY_HARD";    File = "brief_info_density_hard.meta.json" },
     @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" },
     @{ Label = "BRIEF_NO_GENERIC_NARRATIVE_HARD"; File = "brief_no_generic_narrative_hard.meta.json" },
-    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" }
+    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" },
+    @{ Label = "BRIEF_FACT_PACK_HARD";            File = "brief_fact_pack_hard.meta.json" }
 )
 $vrBriefRepoRoot = Split-Path -Parent $PSScriptRoot
 $vrBriefAnyFail = $false
@@ -1284,7 +1292,14 @@ Invoke-MetaGate -Label "BRIEF_FACT_CANDIDATES_HARD" -MetaFile "brief_fact_candid
 }
 
 Write-Host ""
-Write-Host "AI_PURITY_GATES: 12/12 PASS" -ForegroundColor Green
+Write-Host "[AI Purity Gate] BRIEF_FACT_PACK_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_FACT_PACK_HARD" -MetaFile "brief_fact_pack_hard.meta.json" -InfoBuilder {
+    param($d)
+    "total_events=$((Get-MetaInt $d 'total_events' 0)) fail_count=$((Get-MetaInt $d 'fail_count' 0))"
+}
+
+Write-Host ""
+Write-Host "AI_PURITY_GATES: 13/13 PASS" -ForegroundColor Green
 
 # FULLTEXT_FIDELITY OBSERVATION (non-fatal) — reads fulltext_fidelity.meta.json
 $fidelityMetaPath = Join-Path $PSScriptRoot "..\outputs\fulltext_fidelity.meta.json"

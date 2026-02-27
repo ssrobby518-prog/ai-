@@ -1093,7 +1093,8 @@ $briefGateMetas = @(
     @{ Label = "BRIEF_INFO_DENSITY_HARD";    File = "brief_info_density_hard.meta.json" },
     @{ Label = "BRIEF_ZH_TW_HARD";           File = "brief_zh_tw_hard.meta.json" },
     @{ Label = "BRIEF_NO_GENERIC_NARRATIVE_HARD"; File = "brief_no_generic_narrative_hard.meta.json" },
-    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" }
+    @{ Label = "BRIEF_NO_DUPLICATE_FRAMES_HARD";  File = "brief_no_duplicate_frames_hard.meta.json" },
+    @{ Label = "BRIEF_FACT_PACK_HARD";            File = "brief_fact_pack_hard.meta.json" }
 )
 $briefAnyFail = $false
 foreach ($bg in $briefGateMetas) {
@@ -2114,6 +2115,37 @@ if (Test-Path $voBfcPath) {
 } else {
     Write-Output "  brief_fact_candidates_hard.meta.json not found"
     Write-Output "  => BRIEF_FACT_CANDIDATES_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# BRIEF_FACT_PACK_HARD gate — anti-template hard gate.
+#   Reads outputs/brief_fact_pack_hard.meta.json written by run_once.py.
+#   PASS : gate_result == "PASS"
+#   FAIL : gate_result == "FAIL" or meta missing => exit 1
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_FACT_PACK_HARD:"
+$voBfpPath = Join-Path $repoRoot "outputs\brief_fact_pack_hard.meta.json"
+if (Test-Path $voBfpPath) {
+    try {
+        $voBfp      = Get-Content $voBfpPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voBfpGate  = [string]($voBfp.gate_result)
+        $voBfpTotal = if ($voBfp.PSObject.Properties["total_events"]) { [int]$voBfp.total_events } else { 0 }
+        $voBfpFail  = if ($voBfp.PSObject.Properties["fail_count"]) { [int]$voBfp.fail_count } else { 0 }
+        Write-Output ("  total_events={0}  fail_count={1}" -f $voBfpTotal, $voBfpFail)
+        if ($voBfpGate -eq "PASS") {
+            Write-Output ("  => BRIEF_FACT_PACK_HARD: PASS (all {0} events passed fact-pack checks)" -f $voBfpTotal)
+        } else {
+            Write-Output ("  => BRIEF_FACT_PACK_HARD: FAIL (fail_count={0})" -f $voBfpFail)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_FACT_PACK_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_fact_pack_hard.meta.json not found"
+    Write-Output "  => BRIEF_FACT_PACK_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
     exit 1
 }
 
