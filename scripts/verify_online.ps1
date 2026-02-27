@@ -1332,6 +1332,34 @@ Write-Output ""
 Write-Output "EXEC_NARRATIVE_FIDELITY_HARD:"
 $enf_fail   = $false
 $enf_detail = @()
+$enfEventsChecked = 0
+
+# Scope fidelity checks to actually selected delivery events.
+$enfSelectedIds = @{}
+$enfSelectedUrls = @{}
+$enfSelectedTitles = @{}
+$enfSelectionMetaPath = Join-Path $repoRoot "outputs\exec_selection.meta.json"
+if (Test-Path $enfSelectionMetaPath) {
+    try {
+        $enfSelMeta = Get-Content $enfSelectionMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($enfSelMeta.PSObject.Properties['events'] -and $enfSelMeta.events) {
+            foreach ($enfSel in $enfSelMeta.events) {
+                $sid = "$($enfSel.item_id)".Trim()
+                if (-not [string]::IsNullOrWhiteSpace($sid)) { $enfSelectedIds[$sid] = $true }
+                $surl = "$($enfSel.final_url)".Trim().ToLowerInvariant()
+                if (-not [string]::IsNullOrWhiteSpace($surl)) { $enfSelectedUrls[$surl] = $true }
+                $stitle = "$($enfSel.title)".Trim().ToLowerInvariant()
+                if (-not [string]::IsNullOrWhiteSpace($stitle)) { $enfSelectedTitles[$stitle] = $true }
+            }
+        }
+    } catch {
+        Write-Output ("  exec_selection scope parse error (non-fatal): {0}" -f $_)
+    }
+}
+$enfUseSelectionScope = (($enfSelectedIds.Count + $enfSelectedUrls.Count + $enfSelectedTitles.Count) -gt 0)
+if ($enfUseSelectionScope) {
+    Write-Output ("  selected_scope: enabled (ids={0} urls={1} titles={2})" -f $enfSelectedIds.Count, $enfSelectedUrls.Count, $enfSelectedTitles.Count)
+}
 
 # --- A) Per-event DoD checks from meta.json ---
 if (Test-Path $enqMetaOnlinePath) {
@@ -1340,6 +1368,17 @@ if (Test-Path $enqMetaOnlinePath) {
         $enfFidelityKeys = @("ACTOR_BINDING","STYLE_SANITY","NAMING","AI_RELEVANCE")
         if ($enfMeta.PSObject.Properties['events'] -and $enfMeta.events) {
             foreach ($enfEv in $enfMeta.events) {
+                if ($enfUseSelectionScope) {
+                    $eid = "$($enfEv.item_id)".Trim()
+                    $eurl = "$($enfEv.final_url)".Trim().ToLowerInvariant()
+                    $etitle = "$($enfEv.title)".Trim().ToLowerInvariant()
+                    $isSelected = $false
+                    if (-not [string]::IsNullOrWhiteSpace($eid) -and $enfSelectedIds.ContainsKey($eid)) { $isSelected = $true }
+                    if (-not $isSelected -and -not [string]::IsNullOrWhiteSpace($eurl) -and $enfSelectedUrls.ContainsKey($eurl)) { $isSelected = $true }
+                    if (-not $isSelected -and -not [string]::IsNullOrWhiteSpace($etitle) -and $enfSelectedTitles.ContainsKey($etitle)) { $isSelected = $true }
+                    if (-not $isSelected) { continue }
+                }
+                $enfEventsChecked++
                 if ($enfEv.PSObject.Properties['dod'] -and $enfEv.dod) {
                     foreach ($enfKey in $enfFidelityKeys) {
                         $enfVal = $null
@@ -1361,6 +1400,7 @@ if (Test-Path $enqMetaOnlinePath) {
 } else {
     Write-Output "  exec_news_quality.meta.json absent - skipping per-event DoD check"
 }
+Write-Output ("  events_checked_for_fidelity: {0}" -f $enfEventsChecked)
 
 # --- B) Document scan for STYLE_SANITY + NAMING (pure-ASCII Unicode escapes) ---
 # \u5f15\u767c = invfa, \u95dc\u6ce8 = guanzhu, etc.
