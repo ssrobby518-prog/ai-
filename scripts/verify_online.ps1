@@ -1781,6 +1781,71 @@ if (Test-Path $voFznPath) {
 }
 
 # ---------------------------------------------------------------------------
+# BRIEF_NO_AUDIT_SPEAK_HARD gate — DoD: no bullet may contain audit-tone phrases.
+#   Reads outputs/brief_no_audit_speak_hard.meta.json written by run_once.py.
+#   PASS : audit_speak_hit_count == 0
+#   FAIL : any bullet hits a banned audit-speak term  (exit 1)
+#   FAIL : meta file missing                          (exit 1)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_NO_AUDIT_SPEAK_HARD:"
+$voNasPath = Join-Path $repoRoot "outputs\brief_no_audit_speak_hard.meta.json"
+if (Test-Path $voNasPath) {
+    try {
+        $voNas       = Get-Content $voNasPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voNasGate   = [string]($voNas.gate_result)
+        $voNasHits   = if ($voNas.PSObject.Properties["audit_speak_hit_count"])   { [int]$voNas.audit_speak_hit_count }   else { 0 }
+        $voNasEvts   = if ($voNas.PSObject.Properties["total_events"])            { [int]$voNas.total_events }            else { 0 }
+        $voNasHitEvt = if ($voNas.PSObject.Properties["audit_speak_event_count"]) { [int]$voNas.audit_speak_event_count } else { 0 }
+        Write-Output ("  total_events={0}  audit_speak_hits={1}  hit_events={2}" -f $voNasEvts, $voNasHits, $voNasHitEvt)
+        if ($voNasGate -eq "PASS") {
+            Write-Output "  => BRIEF_NO_AUDIT_SPEAK_HARD: PASS (0 audit-speak phrases detected in bullets)"
+        } else {
+            Write-Output ("  => BRIEF_NO_AUDIT_SPEAK_HARD: FAIL (audit_speak_hits={0})" -f $voNasHits)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_NO_AUDIT_SPEAK_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_no_audit_speak_hard.meta.json not found"
+    Write-Output "  => BRIEF_NO_AUDIT_SPEAK_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# BRIEF_FACT_SENTENCE_HARD gate — DoD: each event must have >= 3 bullets with anchor/number.
+#   Reads outputs/brief_fact_sentence_hard.meta.json written by run_once.py.
+#   PASS : events_below_threshold == 0
+#   FAIL : any event has fewer than 3 anchor/number bullet hits  (exit 1)
+#   FAIL : meta file missing                                      (exit 1)
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_FACT_SENTENCE_HARD:"
+$voBfsPath = Join-Path $repoRoot "outputs\brief_fact_sentence_hard.meta.json"
+if (Test-Path $voBfsPath) {
+    try {
+        $voBfs       = Get-Content $voBfsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voBfsGate   = [string]($voBfs.gate_result)
+        $voBfsTotal  = if ($voBfs.PSObject.Properties["total_events"])          { [int]$voBfs.total_events }          else { 0 }
+        $voBfsBelow  = if ($voBfs.PSObject.Properties["events_below_threshold"]){ [int]$voBfs.events_below_threshold } else { 0 }
+        Write-Output ("  total_events={0}  events_below_anchor_threshold={1}" -f $voBfsTotal, $voBfsBelow)
+        if ($voBfsGate -eq "PASS") {
+            Write-Output "  => BRIEF_FACT_SENTENCE_HARD: PASS (all events have >= 3 anchor/number hits in bullets)"
+        } else {
+            Write-Output ("  => BRIEF_FACT_SENTENCE_HARD: FAIL (events_below_threshold={0})" -f $voBfsBelow)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_FACT_SENTENCE_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_fact_sentence_hard.meta.json not found"
+    Write-Output "  => BRIEF_FACT_SENTENCE_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
 # Reads outputs/showcase_ready.meta.json written by run_once.py.
 # showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)

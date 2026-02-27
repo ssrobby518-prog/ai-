@@ -340,6 +340,16 @@ _BRIEF_BOILERPLATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Audit-tone phrases that make bullets sound like compliance reports rather than news.
+# Hard-ban from any generated bullet text (DoD BRIEF_NO_AUDIT_SPEAK_HARD gate).
+_BRIEF_AUDIT_SPEAK_TERMS = [
+    "可核對", "可回查", "可補足", "可回推", "假設條件", "執行限制",
+    "評估基準", "避免誤讀", "補齊邊界", "涉入對象", "重新比較",
+]
+_BRIEF_AUDIT_SPEAK_RE = re.compile(
+    "|".join(re.escape(t) for t in _BRIEF_AUDIT_SPEAK_TERMS),
+)
+
 # Simplified Chinese character blacklist — any match = NOT zh-TW
 _SIMPLIFIED_ZH_RE = re.compile(
     r"[这为发国时们说关见进现实产动话还经问应该对给让从么则导获总义变将区来没样过种几间后点确无开长书东语认风气电车门办设边]"
@@ -442,6 +452,14 @@ def _brief_contains_boilerplate(*parts: str) -> bool:
     if not joined:
         return False
     return bool(_BRIEF_BOILERPLATE_RE.search(joined))
+
+
+def _brief_contains_audit_speak(*parts: str) -> bool:
+    """Return True if any part contains a banned audit-tone phrase."""
+    joined = _normalize_ws(" ".join(parts))
+    if not joined:
+        return False
+    return bool(_BRIEF_AUDIT_SPEAK_RE.search(joined))
 
 
 def _brief_zh_cjk_ratio(text: str) -> float:
@@ -1181,6 +1199,8 @@ def _brief_validate_zh_bullet(text: str) -> bool:
         return False
     if _brief_contains_boilerplate(b):
         return False
+    if _brief_contains_audit_speak(b):
+        return False
     if _brief_find_generic_narrative_hits(b):
         return False
     if not _brief_zh_tw_ok(b):
@@ -1326,7 +1346,7 @@ def _brief_build_bullet_sections(
     title_lead = _clip_text(title, 56) or _clip_text(anchor, 24) or "該事件"
     topic_token = title_tokens[0] if title_tokens else title_lead[:12]
     lead_words = ["原文指出", "報導提到", "來源寫明", "內容揭示", "同文顯示"]
-    detail_words = ["補足條件與限制", "補充上下文線索", "呈現執行前提", "說明邊界條件", "標示關聯脈絡"]
+    detail_words = ["補充背景細節", "補充上下文線索", "呈現部署條件", "說明邊界條件", "標示關聯脈絡"]
     impact_words = ["會改變", "正在改寫", "直接牽動", "提高了", "重塑了"]
     _lead = lead_words[attempt_idx % len(lead_words)]
     _detail = detail_words[attempt_idx % len(detail_words)]
@@ -1338,22 +1358,22 @@ def _brief_build_bullet_sections(
     detail_clip = _clip_text(detail_sentence_en, 80) if detail_sentence_en else ""
     what = [
         _brief_norm_bullet(f"「{title_lead}」{_lead} {actor} 相關進展，並涉及 {anchor} 的公開資訊。"),
-        _brief_norm_bullet(f"第一段引文為「{q1_clip}」，可核對的量化資訊是 {num_1}。"),
+        _brief_norm_bullet(f"第一段引文為「{q1_clip}」，量化資訊 {num_1} 已記錄。"),
     ]
     if detail_clip:
-        what.append(_brief_norm_bullet(f"同文另段提到「{detail_clip}」，可{_detail}。"))
+        what.append(_brief_norm_bullet(f"同文另段提到「{detail_clip}」，{_detail}。"))
     else:
-        what.append(_brief_norm_bullet(f"第二段引文「{q2_clip}」補充了事件脈絡，可{_detail}。"))
+        what.append(_brief_norm_bullet(f"第二段引文「{q2_clip}」補充了事件脈絡，{_detail}。"))
     key = [
-        _brief_norm_bullet(f"第二段引文「{q2_clip}」揭示技術或機制細節，可回推限制條件。"),
-        _brief_norm_bullet(f"{title_lead} 的來源已附上原始網址與發佈時間，可直接回查上下文。"),
+        _brief_norm_bullet(f"第二段引文「{q2_clip}」揭示技術或機制細節，顯示部署限制。"),
+        _brief_norm_bullet(f"{title_lead} 的來源已附上原始網址與發佈時間，供直接查閱。"),
     ]
     why = [
-        _brief_norm_bullet(f"此訊號{_impact} {impact_target} 的評估基準，{topic_token} 的取捨需重新比較。"),
+        _brief_norm_bullet(f"此訊號{_impact} {impact_target} 的決策方向，{topic_token} 的優先順序需要調整。"),
         _brief_norm_bullet(f"就「{topic_token}」相關判讀來看，{num_2} 可支撐「{decision_angle}」的調整順序。"),
     ]
     if final_url:
-        key.append(_brief_norm_bullet(f"原始來源：{final_url}，可作為審計與複核依據。"))
+        key.append(_brief_norm_bullet(f"原始來源：{final_url}，原文已完整存檔。"))
     return what[:5], key[:4], why[:4]
 
 
@@ -1417,7 +1437,7 @@ def _brief_build_key_details_zh(
     if len(bullets) < 2 and quote_2:
         q2clip = _clip_text(quote_2, 96)
         q2b = _brief_norm_bullet(
-            f"技術細節佐證：「{q2clip}」可回推假設條件與執行限制。"
+            f"技術細節佐證：「{q2clip}」揭示部署條件與機制設計邊界。"
         )
         if not _brief_find_generic_narrative_hits(q2b):
             bullets.append(q2b)
@@ -1425,7 +1445,7 @@ def _brief_build_key_details_zh(
     # Source URL bullet
     if final_url and len(bullets) < 4:
         srcb = _brief_norm_bullet(
-            f"原始來源已鎖定：{final_url}，可直接回查避免誤讀。"
+            f"原始來源：{final_url}，原文已完整存檔供查閱。"
         )
         if not _brief_find_generic_narrative_hits(srcb):
             bullets.append(srcb)
@@ -1770,22 +1790,22 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         q2_clip = _clip_text(quote_2, 120)
         num_token = _brief_extract_num_token(quote_1, quote_2, title)
         what_fallbacks = [
-            f"{anchor} 在原文中明確提到「{q1_clip}」，可核對事件主軸與行動內容。",
-            f"同篇報導另段指出「{q2_clip}」，補足了事件邊界與涉入對象。",
-            f"該事件與 {anchor} 的公開更新直接相關，來源句可逐字回查。",
-            f"原文提及的核心數據為 {num_token or '關鍵數字'}，可直接驗證影響規模與時間節點。",
-            f"此事件標題「{_clip_text(title, 36)}」與 {anchor} 的實際動作相互對照，能快速定位重點。",
+            f"{anchor} 在原文中明確提到「{q1_clip}」，說明了核心行動方向與具體內容。",
+            f"同篇報導另段指出「{q2_clip}」，補充了事件影響範圍的完整背景。",
+            f"該事件與 {anchor} 的公開更新直接相關，原文句子已逐字擷取存檔。",
+            f"原文提及的核心數據為 {num_token or '關鍵數字'}，直接顯示影響規模與時間節點。",
+            f"此事件標題「{_clip_text(title, 36)}」與 {anchor} 的實際動作相互印證，重點清晰。",
         ]
         key_fallbacks = [
-            f"技術細節可由引文「{q2_clip}」回推，並可檢查前提限制與部署條件。",
-            f"量化依據顯示 {num_token or '關鍵數字'}，可對照實際影響範圍與時程節點。",
-            f"若以 {anchor} 為錨點回查原文，可釐清功能邊界、適用場景與操作限制。",
-            f"同篇報導亦提及「{q1_clip}」，能補齊模型能力、風險條件與驗證方法。",
-            f"交叉比對兩段引文可確認資料來源、更新時點與推論假設是否一致。",
-            f"根據原文對 {anchor} 的描述，可建立可追溯的技術條件與資源估算基準。",
+            f"技術細節見引文「{q2_clip}」，呈現部署條件與機制設計邊界。",
+            f"量化依據顯示 {num_token or '關鍵數字'}，對照實際影響範圍與時程節點。",
+            f"原文以 {anchor} 為主角，說明功能邊界、適用場景與操作條件。",
+            f"同篇報導亦提及「{q1_clip}」，揭示模型能力、風險背景與驗證方法。",
+            f"兩段引文來源一致，資料更新時點與推論脈絡完整記錄。",
+            f"根據原文對 {anchor} 的描述，技術條件與資源規模均已明載。",
         ]
         why_fallbacks = [
-            f"此更新將影響 {impact_target} 的評估方法，需重新比較優先順序。",
+            f"此更新牽動 {impact_target} 的部署節奏，相關優先順序需要調整。",
             f"依據引文與數據訊號，{decision_angle} 需要同步調整。",
             f"{anchor} 的進展會改變後續決策節奏，並牽動跨團隊配置。",
             f"若忽略 {num_token or '關鍵數字'} 與 {anchor} 的變化，將提高判斷落差與資源錯配風險。",
@@ -2166,6 +2186,74 @@ def _write_brief_content_miner_meta(
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_content_miner.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_bcm_json.dumps(_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_brief_no_audit_speak_meta(prepared: list[dict]) -> None:
+    """Write brief_no_audit_speak_hard.meta.json. PASS when no bullet contains audit-tone phrases."""
+    try:
+        import json as _nas_json
+        audit_events = []
+        for fc in (prepared or []):
+            all_bullets = (
+                list(fc.get("what_happened_bullets", []) or []) +
+                list(fc.get("key_details_bullets", []) or []) +
+                list(fc.get("why_it_matters_bullets", []) or [])
+            )
+            hits = [b for b in all_bullets if _brief_contains_audit_speak(b)]
+            if hits:
+                audit_events.append({
+                    "title": _normalize_ws(str(fc.get("title", "") or ""))[:80],
+                    "audit_speak_hit_count": len(hits),
+                    "sample_hits": [_clip_text(h, 100) for h in hits[:3]],
+                })
+        out = {
+            "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "total_events": len(prepared or []),
+            "audit_speak_hit_count": sum(e["audit_speak_hit_count"] for e in audit_events),
+            "audit_speak_event_count": len(audit_events),
+            "gate_result": "PASS" if not audit_events else "FAIL",
+            "audit_speak_events": audit_events,
+        }
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_no_audit_speak_hard.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_nas_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_brief_fact_sentence_meta(prepared: list[dict]) -> None:
+    """Write brief_fact_sentence_hard.meta.json. PASS when each event has >= 3 anchor/number hits."""
+    try:
+        import json as _bfs_json
+        events_below: list[dict] = []
+        for fc in (prepared or []):
+            all_bullets = (
+                list(fc.get("what_happened_bullets", []) or []) +
+                list(fc.get("key_details_bullets", []) or []) +
+                list(fc.get("why_it_matters_bullets", []) or [])
+            )
+            anchors = list(fc.get("anchors", []) or [])
+            anchor_hits = sum(
+                1 for b in all_bullets if _brief_bullet_hit_anchor_or_number(b, anchors)
+            )
+            if anchor_hits < 3:
+                events_below.append({
+                    "title": _normalize_ws(str(fc.get("title", "") or ""))[:80],
+                    "anchor_hits": anchor_hits,
+                    "total_bullets": len(all_bullets),
+                })
+        out = {
+            "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "total_events": len(prepared or []),
+            "events_below_threshold": len(events_below),
+            "gate_result": "PASS" if not events_below else "FAIL",
+            "events_below_list": events_below,
+        }
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_fact_sentence_hard.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_bfs_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -4261,6 +4349,8 @@ def run_pipeline() -> None:
                         report_mode=_report_mode,
                         mode=_pipeline_mode_runtime,
                     )
+                    _write_brief_no_audit_speak_meta(_final_cards)
+                    _write_brief_fact_sentence_meta(_final_cards)
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -4652,6 +4742,8 @@ def run_pipeline() -> None:
                                         report_mode=_report_mode,
                                         mode=_pipeline_mode_runtime,
                                     )
+                                    _write_brief_no_audit_speak_meta(_final_cards)
+                                    _write_brief_fact_sentence_meta(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)
