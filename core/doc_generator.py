@@ -324,7 +324,31 @@ def _generate_brief_docx_only(
         doc.add_paragraph(f"published_at：{published_at}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    doc.save(str(output_path))
+    # Save via temp file to handle Windows file-lock (e.g. target open in Word)
+    import tempfile as _tf_mod, shutil as _sh_mod
+    _tmp_fd, _tmp_p = _tf_mod.mkstemp(suffix=".docx", dir=output_path.parent)
+    try:
+        import os as _os_brief
+        _os_brief.close(_tmp_fd)
+        doc.save(_tmp_p)
+        try:
+            _sh_mod.move(_tmp_p, str(output_path))
+        except (PermissionError, OSError):
+            # Target is locked — overwrite via os.replace (best effort on Windows)
+            try:
+                _os_brief.replace(_tmp_p, str(output_path))
+            except Exception:
+                # Last resort: keep temp as the actual output (different name)
+                _alt = output_path.with_name("executive_report_brief.docx")
+                _sh_mod.move(_tmp_p, str(_alt))
+                return _alt
+    except Exception:
+        try:
+            import os as _os_c
+            _os_c.unlink(_tmp_p)
+        except Exception:
+            pass
+        raise
     return output_path
 
 

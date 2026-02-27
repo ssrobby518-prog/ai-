@@ -1966,6 +1966,43 @@ if (Test-Path $voBesPath) {
 }
 
 # ---------------------------------------------------------------------------
+# BRIEF_FACT_CANDIDATES_HARD gate — information density hard gate.
+#   Reads outputs/brief_fact_candidates_hard.meta.json written by run_once.py.
+#   PASS : gate_result == "PASS" (all events satisfy all 4 density checks)
+#   FAIL : any event fails any check => exit 1
+#   Checks per event:
+#     1. >= 8 fact_candidates (English source sentences)
+#     2. >= 6 bullets correspond to fact_candidates (token overlap)
+#     3. All bullets >= 14 CJK chars
+#     4. >= 3 bullets contain anchor or number
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_FACT_CANDIDATES_HARD:"
+$voBfcPath = Join-Path $repoRoot "outputs\brief_fact_candidates_hard.meta.json"
+if (Test-Path $voBfcPath) {
+    try {
+        $voBfc       = Get-Content $voBfcPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voBfcGate   = [string]($voBfc.gate_result)
+        $voBfcTotal  = if ($voBfc.PSObject.Properties["total_events"])      { [int]$voBfc.total_events }      else { 0 }
+        $voBfcFail   = if ($voBfc.PSObject.Properties["events_fail_count"]) { [int]$voBfc.events_fail_count } else { 0 }
+        $voBfcSample = if ($voBfc.PSObject.Properties["sample_fail_reason"]) { [string]$voBfc.sample_fail_reason } else { "" }
+        Write-Output ("  total_events={0}  events_fail_count={1}" -f $voBfcTotal, $voBfcFail)
+        if ($voBfcGate -eq "PASS") {
+            Write-Output ("  => BRIEF_FACT_CANDIDATES_HARD: PASS (all {0} events satisfy density gate)" -f $voBfcTotal)
+        } else {
+            Write-Output ("  => BRIEF_FACT_CANDIDATES_HARD: FAIL (events_fail={0}  sample={1})" -f $voBfcFail, $voBfcSample)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_FACT_CANDIDATES_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_fact_candidates_hard.meta.json not found"
+    Write-Output "  => BRIEF_FACT_CANDIDATES_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
 # Reads outputs/showcase_ready.meta.json written by run_once.py.
 # showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)

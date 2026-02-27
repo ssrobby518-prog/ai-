@@ -1180,6 +1180,120 @@ def _brief_mine_sentence_candidates(
     return selected
 
 
+# ---------------------------------------------------------------------------
+# Fact candidate miner — BRIEF_FACT_CANDIDATES_HARD gate support
+# ---------------------------------------------------------------------------
+_FC_CTA_RE = re.compile(
+    r'\b(?:subscribe|newsletter|sign[\s\-]*up|cookie[s]?|privacy\s+polic|adverti[sz]|'
+    r'sponsor(?:ed)?|hear\s+from|sessions?|ticket[s]?|register|follow\s+us|join\s+us)\b',
+    re.IGNORECASE,
+)
+_FC_INFORMATIONAL_RE = re.compile(
+    r'(?:\$\s*\d|\d+(?:[,\.]\d+)?\s*(?:%|percent|billion|million|trillion|\bB\b|\bM\b|x\b)|'
+    r'\b(?:19|20)\d{2}\b|'
+    r'\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\b|'
+    r'\bQ[1-4]\b|v\d+\.\d+|GPT[-\s]?\d|Claude\s*\d)',
+    re.IGNORECASE,
+)
+
+
+def extract_fact_candidates(
+    full_text: str,
+    title: str,
+    actor_primary: str,
+    anchors: list[str],
+) -> list[str]:
+    """Extract up to 15 English sentences from full_text for BRIEF_FACT_CANDIDATES gate.
+
+    Prioritises (returned in order):
+      1. Informational sentences: contain number/%, money, date, quarter, version
+         AND overlap with title+actor+anchors >= min_overlap tokens
+      2. Contextual sentences: no numeric content but >= min_overlap token overlap
+    CTA/navigational sentences are always excluded.
+    Returns combined list (informational first, then contextual), max 15.
+    """
+    sents = _brief_split_source_sentences(full_text)
+    if not sents:
+        return []
+    # Build overlap token set from title + actor + anchors
+    title_toks = {w.lower() for w in re.findall(r'[A-Za-z0-9]{3,}', (title or ''))}
+    actor_toks = {w.lower() for w in re.findall(r'[A-Za-z0-9]{3,}', (actor_primary or ''))}
+    anchor_toks: set[str] = set()
+    for a in (anchors or []):
+        an = _normalize_ws(str(a or ''))
+        if an:
+            anchor_toks.update(w.lower() for w in re.findall(r'[A-Za-z0-9]{3,}', an))
+    overlap_tokens = title_toks | actor_toks | anchor_toks
+    # Lower threshold for tiny token sets
+    min_overlap = 1 if len(overlap_tokens) <= 2 else 2
+
+    results_info: list[str] = []   # informational (numbers/dates) — higher priority
+    results_ctx: list[str] = []    # contextual (topic-relevant but no numbers)
+    for sent in sents:
+        s = _normalize_ws(sent.strip())
+        if not s or len(s) < 40 or len(s) > 600:
+            continue
+        if _FC_CTA_RE.search(s):
+            continue
+        has_info = bool(_FC_INFORMATIONAL_RE.search(s))
+        s_toks = {w.lower() for w in re.findall(r'[A-Za-z0-9]{3,}', s)}
+        # Informational sentences only need 1 overlap token (number grounds the relevance)
+        eff_min = 1 if has_info else min_overlap
+        if len(s_toks & overlap_tokens) < eff_min:
+            continue
+        if has_info:
+            results_info.append(s)
+        else:
+            results_ctx.append(s)
+    # Informational first; contextual fills remaining slots
+    combined = results_info + results_ctx
+    return combined[:15]
+
+
+def _brief_bullet_maps_to_any_fact(
+    bullet: str,
+    fact_candidates: list[str],
+    anchors: list[str],
+) -> bool:
+    """Return True if bullet corresponds to >= 1 fact_candidate via shared tokens.
+
+    Correspondence = shared anchor name OR shared number (>= 2 digits) OR
+    >= 2 shared EN words (>= 4 chars).
+    ZH bullets embed anchors/numbers via _brief_sentence_to_zh_bullet fallback,
+    so token overlap is reliable for EN↔ZH correspondence.
+    """
+    b = _normalize_ws(bullet)
+    if not b or not fact_candidates:
+        return False
+    # Anchor match
+    for a in (anchors or []):
+        an = _normalize_ws(str(a or ''))
+        if not an:
+            continue
+        an_l = an.lower()
+        if an_l in b.lower():
+            for fc_t in fact_candidates:
+                if an_l in fc_t.lower():
+                    return True
+    # Number match (>= 2 digit string)
+    b_nums = re.findall(r'\d[\d,\.]*', b)
+    for num in b_nums:
+        num_clean = re.sub(r'[,\.]', '', num)
+        if len(num_clean) < 2:
+            continue
+        for fc_t in fact_candidates:
+            if num_clean in re.sub(r'[,\.]', '', fc_t):
+                return True
+    # EN word overlap (>= 2 shared words of >= 4 chars)
+    b_en = {w.lower() for w in re.findall(r'[A-Za-z]{4,}', b)}
+    if len(b_en) >= 1:
+        for fc_t in fact_candidates:
+            fc_en = {w.lower() for w in re.findall(r'[A-Za-z]{4,}', fc_t)}
+            if len(b_en & fc_en) >= 2:
+                return True
+    return False
+
+
 def _brief_pick_quote_from_candidates(
     candidates: list[dict],
     *,
@@ -1993,6 +2107,22 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             _normalize_ws(str(x.get("text", "") or ""))
             for x in _sorted_by_score[:6]
         ]
+        # fact_candidates: English original sentences for BRIEF_FACT_CANDIDATES_HARD gate.
+        # Combines mined scored candidates + extract_fact_candidates wide scan (full text).
+        _mined_texts = [
+            _normalize_ws(str(x.get("text", "") or ""))
+            for x in mined
+            if _normalize_ws(str(x.get("text", "") or ""))
+        ]
+        _fc_wide = extract_fact_candidates(source_blob, title, actor, anchors_all)
+        _fc_seen: set[str] = set()
+        _fact_candidates: list[str] = []
+        for _fc_s in _mined_texts + _fc_wide:
+            _fc_k = _fc_s[:80].lower()
+            if _fc_k not in _fc_seen:
+                _fc_seen.add(_fc_k)
+                _fact_candidates.append(_fc_s)
+        out["fact_candidates"] = _fact_candidates[:15]
         out["published_at"] = _normalize_ws(str(fc.get("published_at", "") or "")) or "unknown"
         prepared.append(out)
         accepted_signature_sets.append(
@@ -2334,6 +2464,110 @@ def _write_brief_event_sentence_meta(prepared: list[dict]) -> None:
         out_path.write_text(_bes_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def _write_brief_fact_candidates_hard_meta(prepared: list[dict]) -> None:
+    """Write brief_fact_candidates_hard.meta.json.
+
+    BRIEF_FACT_CANDIDATES_HARD gate (hard gate; FAIL writes NOT_READY.md + deletes artifacts):
+      1. Each event >= 8 fact_candidates (English sentences from full_text).
+      2. >= 6 total bullets correspond to fact_candidates (anchor/number/EN-word token overlap).
+      3. Every bullet >= 14 CJK chars.
+      4. >= 3 bullets contain an anchor or number.
+    FAIL: writes outputs/NOT_READY.md and deletes executive_report.pptx/.docx.
+    """
+    import json as _bfc_json
+    _MIN_FC = 8
+    _MIN_BULLET_MAPPED = 6
+    _MIN_CJK_PER_BULLET = 14
+    _MIN_ANCHOR_HITS = 3
+
+    events_fail: list[dict] = []
+    for fc in (prepared or []):
+        all_bullets = (
+            list(fc.get("what_happened_bullets", []) or []) +
+            list(fc.get("key_details_bullets", []) or []) +
+            list(fc.get("why_it_matters_bullets", []) or [])
+        )
+        anchors = list(fc.get("anchors", []) or [])
+        fact_cands = list(fc.get("fact_candidates", []) or [])
+
+        fail_reasons: list[str] = []
+        # Check 1: >= 8 fact_candidates
+        fc_count = len(fact_cands)
+        if fc_count < _MIN_FC:
+            fail_reasons.append(f"fact_candidates={fc_count}<{_MIN_FC}")
+        # Check 2: >= 6 bullets mapped to fact_candidates
+        mapped_count = sum(
+            1 for b in all_bullets
+            if _brief_bullet_maps_to_any_fact(b, fact_cands, anchors)
+        )
+        if mapped_count < _MIN_BULLET_MAPPED:
+            fail_reasons.append(f"bullets_mapped={mapped_count}<{_MIN_BULLET_MAPPED}")
+        # Check 3: all bullets >= 14 CJK chars
+        below_cjk = [b for b in all_bullets if _brief_count_cjk_chars(b) < _MIN_CJK_PER_BULLET]
+        if below_cjk:
+            fail_reasons.append(f"bullets_below_cjk={len(below_cjk)}")
+        # Check 4: >= 3 anchor/number hits
+        anchor_hits = sum(
+            1 for b in all_bullets if _brief_bullet_hit_anchor_or_number(b, anchors)
+        )
+        if anchor_hits < _MIN_ANCHOR_HITS:
+            fail_reasons.append(f"anchor_hits={anchor_hits}<{_MIN_ANCHOR_HITS}")
+        if fail_reasons:
+            events_fail.append({
+                "title": _normalize_ws(str(fc.get("title", "") or ""))[:80],
+                "fail_reasons": fail_reasons,
+                "fact_candidates_count": fc_count,
+                "bullets_mapped_count": mapped_count,
+                "bullets_total": len(all_bullets),
+                "anchor_hits": anchor_hits,
+            })
+
+    gate_result = "PASS" if not events_fail else "FAIL"
+    sample_fail_reason = (
+        "; ".join(events_fail[0]["fail_reasons"]) if events_fail else ""
+    )
+    out = {
+        "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+        "total_events": len(prepared or []),
+        "events_fail_count": len(events_fail),
+        "gate_result": gate_result,
+        "thresholds": {
+            "min_fact_candidates": _MIN_FC,
+            "min_bullets_mapped": _MIN_BULLET_MAPPED,
+            "min_cjk_per_bullet": _MIN_CJK_PER_BULLET,
+            "min_anchor_hits": _MIN_ANCHOR_HITS,
+        },
+        "sample_fail_reason": sample_fail_reason,
+        "events_fail_list": events_fail,
+    }
+    try:
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_fact_candidates_hard.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_bfc_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    if gate_result == "FAIL":
+        try:
+            _nr_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+            _nr_path.write_text(
+                "# NOT_READY\n\n"
+                f"run_id: {os.environ.get('PIPELINE_RUN_ID', 'unknown')}\n"
+                "gate: BRIEF_FACT_CANDIDATES_HARD\n"
+                f"events_fail_count={len(events_fail)}\n"
+                f"sample_fail_reason: {sample_fail_reason}\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        for _art in ("executive_report.pptx", "executive_report.docx"):
+            try:
+                _art_p = Path(settings.PROJECT_ROOT) / "outputs" / _art
+                if _art_p.exists():
+                    _art_p.unlink()
+            except Exception:
+                pass
 
 
 def _write_supply_fallback_meta() -> None:
@@ -4590,6 +4824,7 @@ def run_pipeline() -> None:
                     _write_brief_no_audit_speak_meta(_final_cards)
                     _write_brief_fact_sentence_meta(_final_cards)
                     _write_brief_event_sentence_meta(_final_cards)
+                    _write_brief_fact_candidates_hard_meta(_final_cards)
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -4984,6 +5219,7 @@ def run_pipeline() -> None:
                                     _write_brief_no_audit_speak_meta(_final_cards)
                                     _write_brief_fact_sentence_meta(_final_cards)
                                     _write_brief_event_sentence_meta(_final_cards)
+                                    _write_brief_fact_candidates_hard_meta(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)
