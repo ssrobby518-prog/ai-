@@ -20,6 +20,7 @@ chcp 65001 | Out-Null
 $env:PYTHONIOENCODING = "utf-8"
 
 $repoRoot = Split-Path $PSScriptRoot -Parent
+$_voRunId = (Get-Date -Format "yyyyMMdd_HHmmss")
 
 Write-Output "=== verify_online.ps1 START ==="
 Write-Output ""
@@ -28,20 +29,28 @@ Write-Output ""
 $_z0Dir          = Join-Path $repoRoot "data\raw\z0"
 $_z0Latest       = Join-Path $_z0Dir   "latest.jsonl"
 $_z0LatestMeta   = Join-Path $_z0Dir   "latest.meta.json"
-$_z0Snapshot     = Join-Path $_z0Dir   "supply_snapshot.jsonl"
-$_z0SnapshotMeta = Join-Path $_z0Dir   "supply_snapshot.meta.json"
+
+# Per-run snapshot dir (parallel-safe: each verify_online invocation uses its own run_id)
+$_snapshotDir    = Join-Path $repoRoot "outputs\runs\$_voRunId"
+$_z0Snapshot     = Join-Path $_snapshotDir "z0_snapshot.jsonl"
+$_z0SnapshotMeta = Join-Path $_snapshotDir "z0_snapshot.meta.json"
 
 # Initialise fallback env vars (inherited by verify_run.ps1 -> run_once.py)
-$env:Z0_SUPPLY_FALLBACK_USED    = "0"
-$env:Z0_SUPPLY_FALLBACK_REASON  = "none"
-$env:Z0_SUPPLY_PRIMARY_FETCHED  = "0"
-$env:Z0_SUPPLY_FALLBACK_PATH    = ""
+$env:Z0_SUPPLY_FALLBACK_USED                  = "0"
+$env:Z0_SUPPLY_FALLBACK_REASON                = "none"
+$env:Z0_SUPPLY_PRIMARY_FETCHED                = "0"
+$env:Z0_SUPPLY_FALLBACK_PATH                  = ""
+$env:Z0_SUPPLY_FALLBACK_SNAPSHOT_PATH         = ""
+$env:Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS    = ""
 
 if (-not $SkipPipeline) {
     Write-Output "[1/3] Running Z0 collector (online)..."
 
-    # Save snapshot BEFORE collection (preserves last-known-good data)
+    # Save snapshot BEFORE collection (parallel-safe: each run uses its own $_voRunId dir)
+    New-Item -ItemType Directory -Force -Path $_snapshotDir | Out-Null
+    $_snapshotSourceMtime = [datetime]::UtcNow   # fallback if no latest.jsonl exists yet
     if (Test-Path $_z0Latest) {
+        $_snapshotSourceMtime = (Get-Item $_z0Latest).LastWriteTimeUtc
         try { Copy-Item -LiteralPath $_z0Latest -Destination $_z0Snapshot -Force } catch {}
     }
     if (Test-Path $_z0LatestMeta) {
@@ -79,11 +88,14 @@ if (-not $SkipPipeline) {
                     Copy-Item -LiteralPath $_z0SnapshotMeta -Destination $_z0LatestMeta -Force
                 }
                 $_z0FbReason = if ($_forceZ0Fail) { "FORCE_Z0_FAIL=1 (simulated degradation)" } else { "primary_total=$_z0PrimaryTotal<1200" }
-                Write-Output ("  [Z0_SUPPLY_FALLBACK] Degraded collection (primary_total={0}). Restored snapshot: {1}" -f $_z0PrimaryTotal, $_z0Snapshot)
-                $env:Z0_SUPPLY_FALLBACK_USED    = "1"
-                $env:Z0_SUPPLY_FALLBACK_REASON  = $_z0FbReason
-                $env:Z0_SUPPLY_PRIMARY_FETCHED  = "$_z0PrimaryTotal"
-                $env:Z0_SUPPLY_FALLBACK_PATH    = $_z0Snapshot
+                $_snapshotAgeHours = [Math]::Round(([datetime]::UtcNow - $_snapshotSourceMtime).TotalSeconds / 3600, 1)
+                Write-Output ("  [Z0_SUPPLY_FALLBACK] Degraded collection (primary_total={0}). Restored snapshot: {1}  age={2}h" -f $_z0PrimaryTotal, $_z0Snapshot, $_snapshotAgeHours)
+                $env:Z0_SUPPLY_FALLBACK_USED                  = "1"
+                $env:Z0_SUPPLY_FALLBACK_REASON                = $_z0FbReason
+                $env:Z0_SUPPLY_PRIMARY_FETCHED                = "$_z0PrimaryTotal"
+                $env:Z0_SUPPLY_FALLBACK_PATH                  = $_z0Snapshot
+                $env:Z0_SUPPLY_FALLBACK_SNAPSHOT_PATH         = $_z0Snapshot
+                $env:Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS    = "$_snapshotAgeHours"
             } catch {
                 Write-Output ("  [Z0_SUPPLY_FALLBACK] WARNING: snapshot restore failed: {0}" -f $_)
             }
@@ -95,9 +107,11 @@ if (-not $SkipPipeline) {
             }
         }
     } else {
-        $env:Z0_SUPPLY_FALLBACK_USED    = "0"
-        $env:Z0_SUPPLY_FALLBACK_REASON  = "none"
-        $env:Z0_SUPPLY_PRIMARY_FETCHED  = "$_z0PrimaryTotal"
+        $env:Z0_SUPPLY_FALLBACK_USED                  = "0"
+        $env:Z0_SUPPLY_FALLBACK_REASON                = "none"
+        $env:Z0_SUPPLY_PRIMARY_FETCHED                = "$_z0PrimaryTotal"
+        $env:Z0_SUPPLY_FALLBACK_SNAPSHOT_PATH         = $_z0Snapshot
+        $env:Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS    = ""
     }
 
     Write-Output ""
@@ -2334,10 +2348,15 @@ $_sfbMetaPath = Join-Path $repoRoot "outputs\supply_fallback.meta.json"
 if (Test-Path $_sfbMetaPath) {
     try {
         $_sfbMeta    = Get-Content $_sfbMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $_sfbUsedStr = if ($null -ne $_sfbMeta.fallback_used -and $_sfbMeta.fallback_used -eq $true) { "true" } else { "false" }
-        $_sfbReason  = if ($_sfbMeta.PSObject.Properties['reason'])                { [string]$_sfbMeta.reason }                else { "none" }
-        $_sfbPrimary = if ($_sfbMeta.PSObject.Properties['primary_fetched_total']) { [int]$_sfbMeta.primary_fetched_total }    else { 0 }
-        Write-Output ("Z0_SUPPLY_FALLBACK: used={0}  reason={1}  primary_fetched_total={2}" -f $_sfbUsedStr, $_sfbReason, $_sfbPrimary)
+        $_sfbUsedStr  = if ($null -ne $_sfbMeta.fallback_used -and $_sfbMeta.fallback_used -eq $true) { "true" } else { "false" }
+        $_sfbReason   = if ($_sfbMeta.PSObject.Properties['reason'])                { [string]$_sfbMeta.reason }                else { "none" }
+        $_sfbPrimary  = if ($_sfbMeta.PSObject.Properties['primary_fetched_total']) { [int]$_sfbMeta.primary_fetched_total }    else { 0 }
+        $_sfbSnapPath = if ($null -ne $_sfbMeta.snapshot_path -and [string]$_sfbMeta.snapshot_path -ne "") { [string]$_sfbMeta.snapshot_path } else { "" }
+        $_sfbSnapAge  = if ($null -ne $_sfbMeta.snapshot_age_hours)                 { [string]$_sfbMeta.snapshot_age_hours }    else { "null" }
+        Write-Output ("Z0_SUPPLY_FALLBACK: used={0}  reason={1}  primary_fetched_total={2}  snapshot_age_hours={3}" -f $_sfbUsedStr, $_sfbReason, $_sfbPrimary, $_sfbSnapAge)
+        if ($_sfbUsedStr -eq "true" -and $_sfbSnapPath) {
+            Write-Output ("  snapshot_path: {0}" -f $_sfbSnapPath)
+        }
     } catch {
         Write-Output ("Z0_SUPPLY_FALLBACK: WARN-OK (parse error: {0})" -f $_)
     }

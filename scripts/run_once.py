@@ -2340,29 +2340,156 @@ def _write_supply_fallback_meta() -> None:
     """Write supply_fallback.meta.json from env vars set by verify_online.ps1.
 
     Env vars read (all optional, default to no-fallback):
-      Z0_SUPPLY_FALLBACK_USED    "1" = fallback active, "0" = normal
-      Z0_SUPPLY_FALLBACK_REASON  human-readable reason string
-      Z0_SUPPLY_PRIMARY_FETCHED  total_items from the degraded collection
-      Z0_SUPPLY_FALLBACK_PATH    path to supply_snapshot.jsonl that was restored
+      Z0_SUPPLY_FALLBACK_USED                "1" = fallback active, "0" = normal
+      Z0_SUPPLY_FALLBACK_REASON              human-readable reason string
+      Z0_SUPPLY_PRIMARY_FETCHED              total_items from the degraded collection
+      Z0_SUPPLY_FALLBACK_PATH                path that was restored (legacy compat)
+      Z0_SUPPLY_FALLBACK_SNAPSHOT_PATH       per-run snapshot path (run_id-based)
+      Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS  age of snapshot data in hours (empty = null)
     """
     try:
         import json as _sfb_json
-        _sfb_used   = os.environ.get("Z0_SUPPLY_FALLBACK_USED", "0") == "1"
-        _sfb_reason = os.environ.get("Z0_SUPPLY_FALLBACK_REASON", "none")
-        _sfb_raw    = os.environ.get("Z0_SUPPLY_PRIMARY_FETCHED", "0")
-        _sfb_path   = os.environ.get("Z0_SUPPLY_FALLBACK_PATH", "")
+        _sfb_used      = os.environ.get("Z0_SUPPLY_FALLBACK_USED", "0") == "1"
+        _sfb_reason    = os.environ.get("Z0_SUPPLY_FALLBACK_REASON", "none")
+        _sfb_raw       = os.environ.get("Z0_SUPPLY_PRIMARY_FETCHED", "0")
+        _sfb_path      = os.environ.get("Z0_SUPPLY_FALLBACK_PATH", "")
+        _sfb_snap_path = os.environ.get("Z0_SUPPLY_FALLBACK_SNAPSHOT_PATH", "")
+        _sfb_age_raw   = os.environ.get("Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS", "")
+        _sfb_snap_age: "float | None" = None
+        if _sfb_age_raw:
+            try:
+                _sfb_snap_age = round(float(_sfb_age_raw), 1)
+            except ValueError:
+                pass
         _sfb_out = {
             "run_id":                os.environ.get("PIPELINE_RUN_ID", "unknown"),
             "fallback_used":         _sfb_used,
             "reason":                _sfb_reason,
             "primary_fetched_total": int(_sfb_raw) if _sfb_raw.isdigit() else 0,
             "fallback_source_path":  _sfb_path,
+            "snapshot_path":         _sfb_snap_path,
+            "snapshot_age_hours":    _sfb_snap_age,
         }
         _sfb_p = Path(settings.PROJECT_ROOT) / "outputs" / "supply_fallback.meta.json"
         _sfb_p.parent.mkdir(parents=True, exist_ok=True)
         _sfb_p.write_text(_sfb_json.dumps(_sfb_out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def _generate_brief_md(prepared: list[dict], run_id: str, mode: str, report_mode: str) -> None:
+    """Generate outputs/latest_brief.md — human-readable Markdown of the brief.
+
+    Writes two files:
+      outputs/latest_brief.md          (always overwritten, latest pointer)
+      outputs/runs/{run_id}/brief.md   (archive copy alongside z0_snapshot)
+    """
+    try:
+        import json as _bmd_json
+        from datetime import datetime as _bmd_dt, timezone as _bmd_tz
+
+        _bmd_now = _bmd_dt.now(_bmd_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+        _out_dir = Path(settings.PROJECT_ROOT) / "outputs"
+        _lines: list[str] = []
+
+        # ── Header ──────────────────────────────────────────────────────────
+        _lines += [
+            f"# AI Intel Brief \u2014 {run_id}", "",
+            "| Field | Value |", "|-------|-------|",
+            f"| run_id | `{run_id}` |",
+            f"| mode | {mode} |",
+            f"| report_mode | {report_mode} |",
+            "| status | **OK** |",
+            f"| generated_at | {_bmd_now} |", "",
+        ]
+
+        # ── Supply ──────────────────────────────────────────────────────────
+        _sfb_used_s = "false"; _sfb_reason_s = "none"; _sfb_primary_s = 0
+        _sfb_snap_path_s = ""; _sfb_snap_age_s: "float | None" = None
+        _sfb_meta_p = _out_dir / "supply_fallback.meta.json"
+        if _sfb_meta_p.exists():
+            try:
+                _sfb_d = _bmd_json.loads(_sfb_meta_p.read_text(encoding="utf-8"))
+                _sfb_used_s     = "true" if _sfb_d.get("fallback_used") else "false"
+                _sfb_reason_s   = str(_sfb_d.get("reason", "none"))
+                _sfb_primary_s  = int(_sfb_d.get("primary_fetched_total", 0) or 0)
+                _sfb_snap_path_s = str(_sfb_d.get("snapshot_path", "") or "")
+                _sfb_snap_age_s  = _sfb_d.get("snapshot_age_hours")
+            except Exception:
+                pass
+        _lines += ["## Supply", ""]
+        _lines.append(f"- primary_fetched_total: {_sfb_primary_s}")
+        _lines.append(f"- fallback_used: {_sfb_used_s}")
+        _lines.append(f"- reason: {_sfb_reason_s}")
+        if _sfb_snap_path_s:
+            _lines.append(f"- snapshot_path: `{_sfb_snap_path_s}`")
+        _lines.append(f"- snapshot_age_hours: {_sfb_snap_age_s if _sfb_snap_age_s is not None else 'null'}")
+        _lines.append("")
+
+        # ── Selection ───────────────────────────────────────────────────────
+        _evt_count = len(prepared or [])
+        _lines += [
+            "## Selection", "",
+            f"- selected_events: {_evt_count}",
+            f"- ai_selected_events: {_evt_count}", "",
+        ]
+
+        # ── Events ──────────────────────────────────────────────────────────
+        _lines += ["## Events", ""]
+        for _ei, _fc in enumerate(prepared or [], 1):
+            _et = _normalize_ws(str(_fc.get("title", "") or ""))
+            _es = _normalize_ws(str(_fc.get("source_name", "") or ""))
+            _eu = str(_fc.get("final_url", "") or _fc.get("url", "") or "").strip()
+            _lines.append(f"### Event {_ei}: {_et}")
+            _lines.append("")
+            if _es:
+                _lines.append(f"**Source:** {_es}")
+            if _eu:
+                _lines.append(f"**URL:** <{_eu}>")
+            _lines.append("")
+            for _section, _field in [
+                ("What Happened", "what_happened_bullets"),
+                ("Key Details",   "key_details_bullets"),
+                ("Why It Matters","why_it_matters_bullets"),
+            ]:
+                _bb = [_normalize_ws(str(_b or "")) for _b in (_fc.get(_field) or []) if _normalize_ws(str(_b or ""))]
+                if _bb:
+                    _lines.append(f"**{_section}:**")
+                    _lines += [f"- {_b}" for _b in _bb]
+                    _lines.append("")
+            _q1 = _normalize_ws(str(_fc.get("quote_1", "") or ""))
+            _q2 = _normalize_ws(str(_fc.get("quote_2", "") or ""))
+            if _q1:
+                _lines.append(f"> **Quote 1:** {_q1}")
+                _lines.append("")
+            if _q2:
+                _lines.append(f"> **Quote 2:** {_q2}")
+                _lines.append("")
+            _pf = _normalize_ws(str(_fc.get("proof", "") or _fc.get("channel", "") or ""))
+            if _pf:
+                _lines.append(f"**Proof:** {_pf}")
+            _lines += ["", "---", ""]
+
+        # ── Produced files ───────────────────────────────────────────────────
+        _lines += ["## Produced Files", ""]
+        for _fn in ("executive_report.docx", "executive_report.pptx", "latest_brief.md"):
+            _fp = _out_dir / _fn
+            if _fp.exists():
+                _lines.append(f"- `outputs/{_fn}` ({_fp.stat().st_size:,} bytes)")
+            else:
+                _lines.append(f"- `outputs/{_fn}` (pending)")
+        _lines.append("")
+
+        _md_text = "\n".join(_lines)
+        # Latest pointer (always overwritten)
+        (_out_dir / "latest_brief.md").write_text(_md_text, encoding="utf-8")
+        # Archive copy (alongside z0_snapshot in outputs/runs/{run_id}/)
+        _run_archive = _out_dir / "runs" / run_id
+        _run_archive.mkdir(parents=True, exist_ok=True)
+        (_run_archive / "brief.md").write_text(_md_text, encoding="utf-8")
+        log.info("Generated outputs/latest_brief.md (%d events)", _evt_count)
+    except Exception as _bmd_exc:
+        log.warning("latest_brief.md generation failed (non-fatal): %s", _bmd_exc)
 
 
 def _sanitize_quote_for_delivery(text: str) -> str:
@@ -6440,6 +6567,15 @@ def run_pipeline() -> None:
             _supply_meta["reason"] = ""
     _write_supply_resilience_meta(_supply_meta)
 
+    # Generate outputs/latest_brief.md (success path, brief mode only)
+    if _is_brief_mode and not (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").exists():
+        _generate_brief_md(
+            list(_final_cards or []),
+            os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            os.environ.get("PIPELINE_MODE", "manual"),
+            os.environ.get("PIPELINE_REPORT_MODE", "brief"),
+        )
+
     # Notifications
     send_all_notifications(t_start_iso, len(all_results), True, str(digest_path))
 
@@ -6551,6 +6687,45 @@ if __name__ == "__main__":
             print(f"NOT_READY_report.pptx written: {_pptx_out}")
         except Exception as _pptx_exc:
             print(f"ERROR generating NOT_READY_report.pptx: {_pptx_exc}")
+
+        # 6. Generate NOT_READY_report.md (Markdown for quick reading)
+        try:
+            from datetime import datetime as _nr2_dt, timezone as _nr2_tz
+            _nr2_now      = _nr2_dt.now(_nr2_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+            _nr2_run_mode = os.environ.get("PIPELINE_MODE", "manual")
+            _nr2_rpt_mode = os.environ.get("PIPELINE_REPORT_MODE", "brief")
+            _nr2_sfb_used = os.environ.get("Z0_SUPPLY_FALLBACK_USED", "0") == "1"
+            _nr2_sfb_reason = os.environ.get("Z0_SUPPLY_FALLBACK_REASON", "none")
+            _nr2_sfb_age    = os.environ.get("Z0_SUPPLY_FALLBACK_SNAPSHOT_AGE_HOURS", "") or "null"
+            _nr2_lines = [
+                f"# NOT READY Report \u2014 {_run_id}", "",
+                "| Field | Value |", "|-------|-------|",
+                f"| run_id | `{_run_id}` |",
+                f"| mode | {_nr2_run_mode} |",
+                f"| report_mode | {_nr2_rpt_mode} |",
+                "| status | **FAIL** |",
+                f"| generated_at | {_nr2_now} |", "",
+                "## Failure", "",
+                f"- gate: `{_gate_name}`",
+                f"- fail_reason: {_fail_reason}", "",
+                "## Supply Fallback", "",
+                f"- fallback_used: {str(_nr2_sfb_used).lower()}",
+                f"- reason: {_nr2_sfb_reason}",
+                f"- snapshot_age_hours: {_nr2_sfb_age}", "",
+                "## Sample Events", "",
+            ]
+            for _nr2_s in (_samples or []):
+                _nr2_t = str(_nr2_s.get("title", "") or "").strip()
+                _nr2_u = str(_nr2_s.get("final_url", "") or "").strip()
+                _nr2_lines.append(f"- **{_nr2_t}**")
+                if _nr2_u:
+                    _nr2_lines.append(f"  <{_nr2_u}>")
+            _nr2_lines += ["", "## Next Steps", "", f"- {_next_steps}", ""]
+            _nr2_path = _outputs / "NOT_READY_report.md"
+            _nr2_path.write_text("\n".join(_nr2_lines), encoding="utf-8")
+            print(f"NOT_READY_report.md written: {_nr2_path}")
+        except Exception as _nr2_exc:
+            print(f"WARN: NOT_READY_report.md generation failed: {_nr2_exc}")
 
         sys.exit(0)
     else:
