@@ -5815,21 +5815,26 @@ def run_pipeline() -> None:
                     # AI_RELEVANCE is excluded from _all_pass so supplemental events
                     # (Tesla, Apple, etc.) don't block delivery.
                     _enq_gate = "PASS" if (_enq_pass_count >= 1) else "FAIL"
-                    (_outputs_dir / "exec_news_quality.meta.json").write_text(
-                        _gate_json.dumps(
-                            {
-                                "generated_at": _deliverable_meta["generated_at"],
-                                "events_total": len(_enq_records),
-                                "pass_count": _enq_pass_count,
-                                "fail_count": _enq_fail_count,
-                                "gate_result": _enq_gate,
-                                "events": _enq_records,
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
+                    # Preserve the primary EXEC_NEWS_QUALITY_HARD result written earlier.
+                    # This block is the deliverable sync gate compatibility view and should
+                    # not overwrite an existing canonical news-quality verdict.
+                    _legacy_enq_path = _outputs_dir / "exec_news_quality.meta.json"
+                    if not _legacy_enq_path.exists():
+                        _legacy_enq_path.write_text(
+                            _gate_json.dumps(
+                                {
+                                    "generated_at": _deliverable_meta["generated_at"],
+                                    "events_total": len(_enq_records),
+                                    "pass_count": _enq_pass_count,
+                                    "fail_count": _enq_fail_count,
+                                    "gate_result": _enq_gate,
+                                    "events": _enq_records,
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            ),
+                            encoding="utf-8",
+                        )
 
                     # Engineering audit only (not delivery artifact).
                     _showcase_lines = ["# LATEST_SHOWCASE", ""]
