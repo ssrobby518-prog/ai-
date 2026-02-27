@@ -24,14 +24,82 @@ $repoRoot = Split-Path $PSScriptRoot -Parent
 Write-Output "=== verify_online.ps1 START ==="
 Write-Output ""
 
-# ---- Step 1: Z0 online collection ----
+# ---- Step 1: Z0 online collection + supply fallback ----
+$_z0Dir          = Join-Path $repoRoot "data\raw\z0"
+$_z0Latest       = Join-Path $_z0Dir   "latest.jsonl"
+$_z0LatestMeta   = Join-Path $_z0Dir   "latest.meta.json"
+$_z0Snapshot     = Join-Path $_z0Dir   "supply_snapshot.jsonl"
+$_z0SnapshotMeta = Join-Path $_z0Dir   "supply_snapshot.meta.json"
+
+# Initialise fallback env vars (inherited by verify_run.ps1 -> run_once.py)
+$env:Z0_SUPPLY_FALLBACK_USED    = "0"
+$env:Z0_SUPPLY_FALLBACK_REASON  = "none"
+$env:Z0_SUPPLY_PRIMARY_FETCHED  = "0"
+$env:Z0_SUPPLY_FALLBACK_PATH    = ""
+
 if (-not $SkipPipeline) {
     Write-Output "[1/3] Running Z0 collector (online)..."
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "z0_collect.ps1")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Output "[verify_online] Z0 collect FAILED (exit $LASTEXITCODE). Aborting."
-        exit 1
+
+    # Save snapshot BEFORE collection (preserves last-known-good data)
+    if (Test-Path $_z0Latest) {
+        try { Copy-Item -LiteralPath $_z0Latest -Destination $_z0Snapshot -Force } catch {}
     }
+    if (Test-Path $_z0LatestMeta) {
+        try { Copy-Item -LiteralPath $_z0LatestMeta -Destination $_z0SnapshotMeta -Force } catch {}
+    }
+
+    $_forceZ0Fail = ($env:FORCE_Z0_FAIL -eq "1")
+
+    if (-not $_forceZ0Fail) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "z0_collect.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "[verify_online] Z0 collect FAILED (exit $LASTEXITCODE). Aborting."
+            exit 1
+        }
+    } else {
+        Write-Output "  [FORCE_Z0_FAIL=1] Skipping z0_collect.ps1 (simulating collection failure)."
+    }
+
+    # --- Z0 Supply Fallback: detect degraded collection ---
+    $_z0PrimaryTotal = 0
+    if (-not $_forceZ0Fail -and (Test-Path $_z0LatestMeta)) {
+        try {
+            $_z0FreshMeta    = Get-Content $_z0LatestMeta -Raw -Encoding UTF8 | ConvertFrom-Json
+            $_z0PrimaryTotal = if ($_z0FreshMeta.PSObject.Properties['total_items']) { [int]$_z0FreshMeta.total_items } else { 0 }
+        } catch {}
+    }
+
+    $_z0Degraded = $_forceZ0Fail -or ($_z0PrimaryTotal -lt 1200)
+
+    if ($_z0Degraded) {
+        if (Test-Path $_z0Snapshot) {
+            try {
+                Copy-Item -LiteralPath $_z0Snapshot     -Destination $_z0Latest     -Force
+                if (Test-Path $_z0SnapshotMeta) {
+                    Copy-Item -LiteralPath $_z0SnapshotMeta -Destination $_z0LatestMeta -Force
+                }
+                $_z0FbReason = if ($_forceZ0Fail) { "FORCE_Z0_FAIL=1 (simulated degradation)" } else { "primary_total=$_z0PrimaryTotal<1200" }
+                Write-Output ("  [Z0_SUPPLY_FALLBACK] Degraded collection (primary_total={0}). Restored snapshot: {1}" -f $_z0PrimaryTotal, $_z0Snapshot)
+                $env:Z0_SUPPLY_FALLBACK_USED    = "1"
+                $env:Z0_SUPPLY_FALLBACK_REASON  = $_z0FbReason
+                $env:Z0_SUPPLY_PRIMARY_FETCHED  = "$_z0PrimaryTotal"
+                $env:Z0_SUPPLY_FALLBACK_PATH    = $_z0Snapshot
+            } catch {
+                Write-Output ("  [Z0_SUPPLY_FALLBACK] WARNING: snapshot restore failed: {0}" -f $_)
+            }
+        } else {
+            Write-Output "  [Z0_SUPPLY_FALLBACK] WARNING: degraded collection but no snapshot available."
+            if ($_forceZ0Fail) {
+                Write-Output "  [Z0_SUPPLY_FALLBACK] ABORT: FORCE_Z0_FAIL=1 with no snapshot -- run verify_online once normally first."
+                exit 1
+            }
+        }
+    } else {
+        $env:Z0_SUPPLY_FALLBACK_USED    = "0"
+        $env:Z0_SUPPLY_FALLBACK_REASON  = "none"
+        $env:Z0_SUPPLY_PRIMARY_FETCHED  = "$_z0PrimaryTotal"
+    }
+
     Write-Output ""
 } else {
     Write-Output "[1/3] Z0 collection SKIPPED (-SkipPipeline mode; using existing data/raw/z0 files)"
@@ -2259,6 +2327,22 @@ if (Test-Path $_sumScript) {
     }
 } else {
     Write-Output "WARN: SUMMARY_GENERATOR_FAILED (script not found: $_sumScript)"
+}
+
+# --- Z0 Supply Fallback summary ---
+$_sfbMetaPath = Join-Path $repoRoot "outputs\supply_fallback.meta.json"
+if (Test-Path $_sfbMetaPath) {
+    try {
+        $_sfbMeta    = Get-Content $_sfbMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $_sfbUsedStr = if ($null -ne $_sfbMeta.fallback_used -and $_sfbMeta.fallback_used -eq $true) { "true" } else { "false" }
+        $_sfbReason  = if ($_sfbMeta.PSObject.Properties['reason'])                { [string]$_sfbMeta.reason }                else { "none" }
+        $_sfbPrimary = if ($_sfbMeta.PSObject.Properties['primary_fetched_total']) { [int]$_sfbMeta.primary_fetched_total }    else { 0 }
+        Write-Output ("Z0_SUPPLY_FALLBACK: used={0}  reason={1}  primary_fetched_total={2}" -f $_sfbUsedStr, $_sfbReason, $_sfbPrimary)
+    } catch {
+        Write-Output ("Z0_SUPPLY_FALLBACK: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "Z0_SUPPLY_FALLBACK: WARN-OK (supply_fallback.meta.json not found)"
 }
 
 Write-Output ""

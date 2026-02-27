@@ -2336,6 +2336,35 @@ def _write_brief_event_sentence_meta(prepared: list[dict]) -> None:
         pass
 
 
+def _write_supply_fallback_meta() -> None:
+    """Write supply_fallback.meta.json from env vars set by verify_online.ps1.
+
+    Env vars read (all optional, default to no-fallback):
+      Z0_SUPPLY_FALLBACK_USED    "1" = fallback active, "0" = normal
+      Z0_SUPPLY_FALLBACK_REASON  human-readable reason string
+      Z0_SUPPLY_PRIMARY_FETCHED  total_items from the degraded collection
+      Z0_SUPPLY_FALLBACK_PATH    path to supply_snapshot.jsonl that was restored
+    """
+    try:
+        import json as _sfb_json
+        _sfb_used   = os.environ.get("Z0_SUPPLY_FALLBACK_USED", "0") == "1"
+        _sfb_reason = os.environ.get("Z0_SUPPLY_FALLBACK_REASON", "none")
+        _sfb_raw    = os.environ.get("Z0_SUPPLY_PRIMARY_FETCHED", "0")
+        _sfb_path   = os.environ.get("Z0_SUPPLY_FALLBACK_PATH", "")
+        _sfb_out = {
+            "run_id":                os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "fallback_used":         _sfb_used,
+            "reason":                _sfb_reason,
+            "primary_fetched_total": int(_sfb_raw) if _sfb_raw.isdigit() else 0,
+            "fallback_source_path":  _sfb_path,
+        }
+        _sfb_p = Path(settings.PROJECT_ROOT) / "outputs" / "supply_fallback.meta.json"
+        _sfb_p.parent.mkdir(parents=True, exist_ok=True)
+        _sfb_p.write_text(_sfb_json.dumps(_sfb_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _sanitize_quote_for_delivery(text: str) -> str:
     """Normalize quote text so DOCX/PPTX renderers keep the same token stream."""
     q = _normalize_ws(text)
@@ -3789,6 +3818,8 @@ def run_pipeline() -> None:
         float(_hydrated_ok_now) / max(1, len(raw_items)),
         3,
     )
+    # Write supply fallback meta (reads env vars from verify_online.ps1 Step 1)
+    _write_supply_fallback_meta()
 
     # Write per-source counts to feed_stats.meta.json (covers both Z0 and RSS paths).
     # ingestion.py already writes this for RSS path; for Z0 path we overwrite with live counts.
