@@ -57,12 +57,16 @@ if (-not $SkipPipeline) {
         }
     }
 
-    # 2) Run pipeline with calibration profile
-    Write-Host "`n[2/9] Running pipeline with RUN_PROFILE=calibration..." -ForegroundColor Yellow
+    # 2) Run pipeline with calibration profile + brief report mode
+    # brief mode matches the production deployment (run_pipeline.ps1 -Mode manual)
+    # and prevents EXEC_ZH_NARRATIVE legacy gate from firing without llama.cpp
+    Write-Host "`n[2/9] Running pipeline with RUN_PROFILE=calibration REPORT_MODE=brief..." -ForegroundColor Yellow
     $env:RUN_PROFILE = "calibration"
+    $env:PIPELINE_REPORT_MODE = "brief"
     & $py scripts/run_once.py
     $exitCode = $LASTEXITCODE
     $env:RUN_PROFILE = $null
+    $env:PIPELINE_REPORT_MODE = $null
 
     if ($exitCode -ne 0) {
         Write-Host "  Pipeline failed (exit code: $exitCode)" -ForegroundColor Red
