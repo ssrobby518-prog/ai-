@@ -374,11 +374,6 @@ $env:EXEC_MIN_BUSINESS     = $null
 $env:PIPELINE_RUN_ID       = $null
 $env:PIPELINE_TRIGGERED_BY = $null
 $env:PYTEST_ADDOPTS        = $null
-$env:GIT_CONFIG_COUNT      = $null
-$env:GIT_CONFIG_KEY_0      = $null
-$env:GIT_CONFIG_VALUE_0    = $null
-$env:GIT_CONFIG_KEY_1      = $null
-$env:GIT_CONFIG_VALUE_1    = $null
 
 if ($exitCode -ne 0) {
     # verify_run can fail after all hard gates pass when DOCX is file-locked during
