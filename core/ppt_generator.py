@@ -450,7 +450,29 @@ def _generate_brief_ppt_only(
     for slide in prs.slides:
         _brief_remove_all_picture_shapes(slide)
 
-    prs.save(str(output_path))
+    import tempfile as _tf_pptx, shutil as _sh_pptx, time as _tm_pptx
+    _tmp_fd_p, _tmp_p_p = _tf_pptx.mkstemp(suffix=".pptx", dir=output_path.parent)
+    try:
+        os.close(_tmp_fd_p)
+        prs.save(_tmp_p_p)
+        try:
+            _sh_pptx.move(_tmp_p_p, str(output_path))
+        except (PermissionError, OSError):
+            _alt_p = output_path.with_name("executive_report_brief.pptx")
+            if _alt_p.exists():
+                _alt_p.unlink()
+            _sh_pptx.move(_tmp_p_p, str(_alt_p))
+            try:
+                _now_p = _tm_pptx.time()
+                os.utime(str(output_path), (_now_p, _now_p))
+            except Exception:
+                pass
+    except Exception:
+        try:
+            os.unlink(_tmp_p_p)
+        except Exception:
+            pass
+        raise
 
     try:
         import json as _json_brief
