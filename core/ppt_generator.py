@@ -452,6 +452,7 @@ def _generate_brief_ppt_only(
 
     import tempfile as _tf_pptx, shutil as _sh_pptx, time as _tm_pptx
     _tmp_fd_p, _tmp_p_p = _tf_pptx.mkstemp(suffix=".pptx", dir=output_path.parent)
+    _alt_p = None
     try:
         os.close(_tmp_fd_p)
         prs.save(_tmp_p_p)
@@ -462,6 +463,11 @@ def _generate_brief_ppt_only(
             if _alt_p.exists():
                 _alt_p.unlink()
             _sh_pptx.move(_tmp_p_p, str(_alt_p))
+            if not output_path.exists():
+                try:
+                    _sh_pptx.copy2(_alt_p, output_path)
+                except Exception:
+                    pass
             try:
                 _now_p = _tm_pptx.time()
                 os.utime(str(output_path), (_now_p, _now_p))
@@ -473,6 +479,25 @@ def _generate_brief_ppt_only(
         except Exception:
             pass
         raise
+
+    _pptx_write_exists = output_path.exists()
+    _pptx_write_size = output_path.stat().st_size if _pptx_write_exists else 0
+    if (not _pptx_write_exists or _pptx_write_size <= 0) and _alt_p and _alt_p.exists():
+        try:
+            _sh_pptx.copy2(_alt_p, output_path)
+        except Exception:
+            pass
+        _pptx_write_exists = output_path.exists()
+        _pptx_write_size = output_path.stat().st_size if _pptx_write_exists else 0
+
+    get_logger().info(
+        "PPTX_WRITE_CHECK path=%s exists=%s size=%d",
+        output_path,
+        _pptx_write_exists,
+        _pptx_write_size,
+    )
+    if not _pptx_write_exists or _pptx_write_size <= 0:
+        raise RuntimeError(f"PPTX_WRITE_CHECK failed: path={output_path}")
 
     try:
         import json as _json_brief
@@ -1242,6 +1267,16 @@ def generate_executive_ppt(
     _slide_pending_decisions(prs, event_cards)
 
     prs.save(str(output_path))
+    _pptx_write_exists = output_path.exists()
+    _pptx_write_size = output_path.stat().st_size if _pptx_write_exists else 0
+    log.info(
+        "PPTX_WRITE_CHECK path=%s exists=%s size=%d",
+        output_path,
+        _pptx_write_exists,
+        _pptx_write_size,
+    )
+    if not _pptx_write_exists or _pptx_write_size <= 0:
+        raise RuntimeError(f"PPTX_WRITE_CHECK failed: path={output_path}")
     log.info("Executive PPTX generated: %s", output_path)
     return output_path
 
@@ -2684,4 +2719,3 @@ def generate_not_ready_report_pptx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
     return output_path
-

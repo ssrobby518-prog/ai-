@@ -337,6 +337,16 @@ Write-Output "[verify_online] EXEC KPI gates: MIN_EVENTS=$($env:EXEC_MIN_EVENTS)
 # Pass run_id so run_once.py writes it into supply_fallback.meta.json and latest_brief.md
 $env:PIPELINE_RUN_ID       = $_voRunId
 $env:PIPELINE_TRIGGERED_BY = "verify_online.ps1"
+# CI/Windows ACL hardening: avoid pytest cache writes under locked temp folders.
+$env:PYTEST_ADDOPTS        = "-p no:cacheprovider"
+# Harden git calls inside verify_run/check_text_integrity:
+#   1) trust this workspace as safe.directory
+#   2) skip untracked scan to avoid locked temp-folder noise
+$env:GIT_CONFIG_COUNT      = "2"
+$env:GIT_CONFIG_KEY_0      = "status.showUntrackedFiles"
+$env:GIT_CONFIG_VALUE_0    = "no"
+$env:GIT_CONFIG_KEY_1      = "safe.directory"
+$env:GIT_CONFIG_VALUE_1    = ($repoRoot -replace "\\", "/")
 
 Write-Output "[3/3] Running verify_run.ps1 (offline, reads Z0 JSONL)..."
 Write-Output ""
@@ -354,6 +364,12 @@ $env:EXEC_MIN_TECH         = $null
 $env:EXEC_MIN_BUSINESS     = $null
 $env:PIPELINE_RUN_ID       = $null
 $env:PIPELINE_TRIGGERED_BY = $null
+$env:PYTEST_ADDOPTS        = $null
+$env:GIT_CONFIG_COUNT      = $null
+$env:GIT_CONFIG_KEY_0      = $null
+$env:GIT_CONFIG_VALUE_0    = $null
+$env:GIT_CONFIG_KEY_1      = $null
+$env:GIT_CONFIG_VALUE_1    = $null
 
 if ($exitCode -ne 0) {
     Write-Output "[verify_online] verify_run.ps1 FAILED (exit $exitCode)."

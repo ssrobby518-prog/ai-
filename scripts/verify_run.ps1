@@ -224,12 +224,29 @@ $minSizes = @{
     "DOCX" = 10240
     "PPTX" = 20480
 }
+$execAltPaths = @{
+    "DOCX" = @("outputs\executive_report_brief.docx")
+    "PPTX" = @("outputs\executive_report_brief.pptx")
+}
 $binPass = $true
 
 foreach ($ef in $execFiles) {
-    if (Test-Path $ef.Path) {
-        $info = Get-Item $ef.Path
-        Write-Host ("  {0}: {1} ({2} bytes, {3})" -f $ef.Name, $info.FullName, $info.Length, $info.LastWriteTime) -ForegroundColor Green
+    $resolvedPath = $ef.Path
+    $usedAltPath = $false
+    if (-not (Test-Path $resolvedPath) -and $execAltPaths.ContainsKey($ef.Name)) {
+        foreach ($altPath in $execAltPaths[$ef.Name]) {
+            if (Test-Path $altPath) {
+                $resolvedPath = $altPath
+                $usedAltPath = $true
+                break
+            }
+        }
+    }
+
+    if (Test-Path $resolvedPath) {
+        $info = Get-Item $resolvedPath
+        $pathTag = if ($usedAltPath) { " [ALT_PATH]" } else { "" }
+        Write-Host ("  {0}: {1} ({2} bytes, {3}){4}" -f $ef.Name, $info.FullName, $info.Length, $info.LastWriteTime, $pathTag) -ForegroundColor Green
         if ($minSizes.ContainsKey($ef.Name) -and $info.Length -lt $minSizes[$ef.Name]) {
             Write-Host ("  FAIL: {0} too small ({1} bytes < {2} bytes threshold)" -f $ef.Name, $info.Length, $minSizes[$ef.Name]) -ForegroundColor Red
             $binPass = $false

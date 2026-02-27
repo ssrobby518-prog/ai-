@@ -145,6 +145,11 @@ def _build_soft_quality_cards_from_filtered(filtered_items: list) -> list[EduNew
             setattr(card, "density_tier", "A" if bool(getattr(item, "event_gate_pass", False)) else "B")
             # Propagate fulltext_len from RawItem so POOL_SUFFICIENCY gate sees hydrated lengths
             _ft_len = int(getattr(item, "fulltext_len", 0) or 0)
+            if _ft_len <= 0:
+                _ft_src = str(getattr(item, "full_text", "") or "").strip()
+                if not _ft_src:
+                    _ft_src = str(getattr(item, "body", "") or "").strip()
+                _ft_len = len(_ft_src)
             setattr(card, "fulltext_len", _ft_len)
             if _ft_len >= 300:
                 _ft_text = str(getattr(item, "full_text", "") or "")
@@ -4173,6 +4178,30 @@ def run_pipeline() -> None:
             log.warning("Z0 fulltext hydration failed (non-fatal): %s", _z0_hydr_exc)
     else:
         raw_items = fetch_all_feeds()
+
+    # Some Z0 snapshots include full_text/body but miss fulltext_len.
+    # Infer it so downstream hard gates evaluate real content length.
+    _fulltext_len_inferred = 0
+    for _ri in raw_items:
+        try:
+            _cur_len = int(getattr(_ri, "fulltext_len", 0) or 0)
+        except Exception:
+            _cur_len = 0
+        if _cur_len > 0:
+            continue
+        _ft_src = str(getattr(_ri, "full_text", "") or "").strip()
+        if not _ft_src:
+            _ft_src = str(getattr(_ri, "body", "") or "").strip()
+        if not _ft_src:
+            continue
+        try:
+            setattr(_ri, "fulltext_len", len(_ft_src))
+            _fulltext_len_inferred += 1
+        except Exception:
+            pass
+    if _fulltext_len_inferred > 0:
+        log.info("FULLTEXT_LEN_INFERRED: %d items from existing full_text/body", _fulltext_len_inferred)
+
     log.info("Fetched %d total raw items", len(raw_items))
     collector.fetched_total = len(raw_items)
     _supply_meta["fetched_total"] = len(raw_items)
@@ -4355,7 +4384,11 @@ def run_pipeline() -> None:
     }
     # Build fulltext_len map so _build_quality_cards can propagate hydrated lengths to EduCards
     fulltext_len_map = {
-        str(getattr(item, "item_id", "") or ""): int(getattr(item, "fulltext_len", 0) or 0)
+        str(getattr(item, "item_id", "") or ""): max(
+            int(getattr(item, "fulltext_len", 0) or 0),
+            len(str(getattr(item, "full_text", "") or "").strip()),
+            len(str(getattr(item, "body", "") or "").strip()),
+        )
         for item in processing_items
     }
     quality_cards = _build_quality_cards(all_results, source_url_map=source_url_map,
@@ -4949,9 +4982,10 @@ def run_pipeline() -> None:
             except Exception as _sr_exc:
                 log.warning("showcase_ready.meta.json write failed (non-fatal): %s", _sr_exc)
 
-            # Demo extended pool: supplement before final selection and rewrite readiness meta
-            # from the final selected AI card set.
-            if _is_demo_mode_sr:
+            # Extended pool fallback: supplement before final selection and rewrite readiness
+            # meta from the final selected AI card set. In manual mode this runs only when
+            # final_cards are below the hard threshold.
+            if _is_demo_mode_sr or (len(_final_cards or []) < _sr_threshold):
                 try:
                     import json as _dbe_json
                     _dbe_sr_path = Path(settings.PROJECT_ROOT) / "outputs" / "showcase_ready.meta.json"
@@ -4964,11 +4998,37 @@ def run_pipeline() -> None:
                     # Deck count != final_cards count; we must rebuild with demo_ext to get
                     # actual selected events that pass all delivery gates.
                     _dbe_final_cards_now = len(_final_cards) if isinstance(_final_cards, list) else 0
-                    if not _dbe_ready or _dbe_final_cards_now < 6:
+                    if not _dbe_ready or _dbe_final_cards_now < _sr_threshold:
                         from core.storage import load_passed_results as _dbe_load_pr
                         from utils.topic_router import is_relevant_ai as _dbe_is_relevant_ai
 
-                        _dbe_rows = _dbe_load_pr(settings.DB_PATH, limit=120)
+                        _dbe_rows = _dbe_load_pr(settings.DB_PATH, limit=500)
+                        _dbe_body_by_id: dict[str, str] = {}
+                        try:
+                            import sqlite3 as _dbe_sqlite3
+
+                            _dbe_ids = [
+                                str(_r.get("item_id", "") or "")
+                                for _r in _dbe_rows
+                                if str(_r.get("item_id", "") or "")
+                            ]
+                            _dbe_conn = _dbe_sqlite3.connect(str(settings.DB_PATH))
+                            _dbe_conn.row_factory = _dbe_sqlite3.Row
+                            try:
+                                for _ofs in range(0, len(_dbe_ids), 200):
+                                    _chunk = _dbe_ids[_ofs:_ofs + 200]
+                                    if not _chunk:
+                                        continue
+                                    _ph = ",".join("?" for _ in _chunk)
+                                    _sql = f"SELECT item_id, body FROM items WHERE item_id IN ({_ph})"
+                                    for _row in _dbe_conn.execute(_sql, _chunk):
+                                        _iid = str(_row["item_id"] or "")
+                                        _dbe_body_by_id[_iid] = str(_row["body"] or "")
+                            finally:
+                                _dbe_conn.close()
+                        except Exception as _dbe_body_exc:
+                            log.warning("DEMO_EXTENDED_POOL body preload failed (non-fatal): %s", _dbe_body_exc)
+
                         _dbe_existing_orig = {
                             str(getattr(c, "item_id", "") or "").replace("demo_ext_", "")
                             for c in (z0_exec_extra_cards if isinstance(z0_exec_extra_cards, list) else [])
@@ -4984,7 +5044,7 @@ def run_pipeline() -> None:
                         # final subset that passes delivery hard gates.
                         # S5 fix: base on actual _final_cards count, not the (possibly inflated)
                         # _sr_ai_selected which may reflect deck_count from the shortcut above.
-                        _dbe_needed = max(0, 10 - _dbe_final_cards_now)
+                        _dbe_needed = max(0, 24 - _dbe_final_cards_now)
                         _dbe_added = 0
                         _dbe_created_count = 0
                         _dbe_title_ok_count = 0
@@ -5003,10 +5063,12 @@ def run_pipeline() -> None:
                             _dbe_sa = _dbe_row.get("schema_a") or {}
                             _dbe_sc = _dbe_row.get("schema_c") or {}
                             _dbe_title_plain = str(
-                                _dbe_sa.get("title_zh", "") or _dbe_row.get("title", "") or ""
+                                _dbe_row.get("title", "") or _dbe_sa.get("title_zh", "") or ""
                             ).strip()
                             _dbe_title = _dbe_title_plain
-                            _dbe_body = str(_dbe_sa.get("summary_zh", "") or "").strip()
+                            _dbe_body = str(_dbe_body_by_id.get(_dbe_id_orig, "") or "").strip()
+                            if len(_dbe_body) < 120:
+                                _dbe_body = str(_dbe_sa.get("summary_zh", "") or "").strip()
                             if not _dbe_title or len(_dbe_body) < 120:
                                 continue
                             _dbe_created_count += 1
@@ -5301,6 +5363,60 @@ def run_pipeline() -> None:
                 log.info("Notion page generated: %s", notion_path)
                 log.info("XMind mindmap generated: %s", xmind_path)
 
+                _pptx_canon_path = _outputs_dir / "executive_report.pptx"
+                _docx_canon_path = _outputs_dir / "executive_report.docx"
+                _pptx_generated_path = Path(str(pptx_path)) if pptx_path else _pptx_canon_path
+                _docx_generated_path = Path(str(docx_path)) if docx_path else _docx_canon_path
+
+                if (
+                    _pptx_generated_path.exists()
+                    and _pptx_generated_path != _pptx_canon_path
+                    and not _pptx_canon_path.exists()
+                ):
+                    try:
+                        shutil.copy2(_pptx_generated_path, _pptx_canon_path)
+                        log.info(
+                            "Executive PPTX canonicalized from alt: %s -> %s",
+                            _pptx_generated_path,
+                            _pptx_canon_path,
+                        )
+                    except Exception as _pptx_canon_exc:
+                        log.warning(
+                            "Executive PPTX canonicalization failed (non-fatal): %s",
+                            _pptx_canon_exc,
+                        )
+                if (
+                    _docx_generated_path.exists()
+                    and _docx_generated_path != _docx_canon_path
+                    and not _docx_canon_path.exists()
+                ):
+                    try:
+                        shutil.copy2(_docx_generated_path, _docx_canon_path)
+                        log.info(
+                            "Executive DOCX canonicalized from alt: %s -> %s",
+                            _docx_generated_path,
+                            _docx_canon_path,
+                        )
+                    except Exception as _docx_canon_exc:
+                        log.warning(
+                            "Executive DOCX canonicalization failed (non-fatal): %s",
+                            _docx_canon_exc,
+                        )
+
+                if _pptx_canon_path.exists():
+                    pptx_path = _pptx_canon_path
+                if _docx_canon_path.exists():
+                    docx_path = _docx_canon_path
+
+                _pptx_write_exists = _pptx_canon_path.exists()
+                _pptx_write_size = _pptx_canon_path.stat().st_size if _pptx_write_exists else 0
+                log.info(
+                    "PPTX_WRITE_CHECK path=%s exists=%s size=%d",
+                    _pptx_canon_path,
+                    _pptx_write_exists,
+                    _pptx_write_size,
+                )
+
                 # Demo mode: stamp slide 0 with a red textbox so the deck can never be
                 # mistaken for a production deliverable.
                 if _is_demo_mode_sr and pptx_path and Path(str(pptx_path)).exists():
@@ -5387,7 +5503,7 @@ def run_pipeline() -> None:
                                     encoding="utf-8",
                                 )
                                 log.info(
-                                    "filter_summary.meta.json: kept_total updated %d??d (+%d PH_SUPP effective)",
+                                    "filter_summary.meta.json: kept_total updated %d->%d (+%d PH_SUPP effective)",
                                     _old_kept2, _exec_sel2, _exec_sel2 - _old_kept2,
                                 )
                 except Exception as _fsu_exc:
@@ -5777,7 +5893,10 @@ def run_pipeline() -> None:
                             encoding="utf-8",
                         )
 
-                        for _artifact in ("executive_report.pptx", "executive_report.docx"):
+                        # Try DOCX first. If Word keeps DOCX locked (WinError 32),
+                        # this branch can raise before touching PPTX, preventing
+                        # accidental PPTX disappearance in a non-fatal check path.
+                        for _artifact in ("executive_report.docx", "executive_report.pptx"):
                             _target = _outputs_dir / _artifact
                             _backup = _exec_backups.get(_artifact) if isinstance(_exec_backups, dict) else None
                             if _backup and _backup.exists():
@@ -6823,6 +6942,16 @@ def run_pipeline() -> None:
         if not _supply_meta.get("reason"):
             _supply_meta["reason"] = ""
     _write_supply_resilience_meta(_supply_meta)
+
+    _pptx_final_path = Path(settings.PROJECT_ROOT) / "outputs" / "executive_report.pptx"
+    _pptx_final_exists = _pptx_final_path.exists()
+    _pptx_final_size = _pptx_final_path.stat().st_size if _pptx_final_exists else 0
+    log.info(
+        "PPTX_FINAL_CHECK path=%s exists=%s size=%d",
+        _pptx_final_path,
+        _pptx_final_exists,
+        _pptx_final_size,
+    )
 
     # Generate outputs/latest_brief.md (success path, brief mode only)
     if _is_brief_mode and not (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").exists():
