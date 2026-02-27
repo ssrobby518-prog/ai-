@@ -351,14 +351,20 @@ $env:GIT_CONFIG_VALUE_1    = ($repoRoot -replace "\\", "/")
 Write-Output "[3/3] Running verify_run.ps1 (offline, reads Z0 JSONL)..."
 Write-Output ""
 $_verifyRunLogPath = Join-Path $repoRoot "outputs\verify_run.latest.log"
-if ($SkipPipeline) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1") -SkipPipeline 2>&1 |
-        Tee-Object -FilePath $_verifyRunLogPath
-} else {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1") 2>&1 |
-        Tee-Object -FilePath $_verifyRunLogPath
+$_prevVerifyRunEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try {
+    if ($SkipPipeline) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1") -SkipPipeline *>&1 |
+            Tee-Object -FilePath $_verifyRunLogPath
+    } else {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "verify_run.ps1") *>&1 |
+            Tee-Object -FilePath $_verifyRunLogPath
+    }
+    $exitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $_prevVerifyRunEap
 }
-$exitCode = $LASTEXITCODE
 
 $env:Z0_ENABLED            = $null
 $env:EXEC_MIN_EVENTS       = $null
