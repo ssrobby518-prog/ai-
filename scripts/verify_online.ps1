@@ -2591,6 +2591,20 @@ if (Test-Path $_sfbMetaPath) {
 }
 
 Write-Output ""
+# --- Template Leak soft indicator (Iteration 18) ---
+$_btlSumPath = Join-Path $repoRoot "outputs\brief_template_leak.meta.json"
+if (Test-Path $_btlSumPath) {
+    try {
+        $_btlSum = Get-Content $_btlSumPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $_btlEvtCnt = if ($_btlSum.PSObject.Properties["template_leak_events_count"]) { [int]$_btlSum.template_leak_events_count } else { 0 }
+        Write-Output ("template_leak_events_count: {0}" -f $_btlEvtCnt)
+    } catch {
+        Write-Output "template_leak_events_count: (parse error)"
+    }
+} else {
+    Write-Output "template_leak_events_count: (meta not found)"
+}
+Write-Output ""
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
 } else {

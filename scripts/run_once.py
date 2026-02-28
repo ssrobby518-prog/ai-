@@ -355,6 +355,17 @@ _BRIEF_AUDIT_SPEAK_RE = re.compile(
     "|".join(re.escape(t) for t in _BRIEF_AUDIT_SPEAK_TERMS),
 )
 
+# PM-mandated zero-tolerance template terms (Iteration 18).
+# Bullets containing these are rejected by _brief_validate_zh_bullet() → translation failure
+# → falls to Qwen per-sentence path or event drop (FAIL-fast, no template fallback).
+_BRIEF_PM_BANLIST_TERMS = [
+    "近日", "備受矚目", "備受關注", "可核對", "原文提到",
+    "同篇報導", "逐字擷取", "說明了核心行動方向",
+]
+_BRIEF_PM_BANLIST_RE = re.compile(
+    "|".join(re.escape(t) for t in _BRIEF_PM_BANLIST_TERMS),
+)
+
 # Simplified Chinese character blacklist ??any match = NOT zh-TW
 _SIMPLIFIED_ZH_RE = re.compile(r"(?!x)x")
 
@@ -1669,6 +1680,10 @@ def _brief_validate_zh_bullet(text: str) -> bool:
         return False
     if not _brief_zh_tw_ok(b):
         return False
+    # Reject PM-mandated zero-tolerance template terms (Iteration 18).
+    # Bullets with these terms fail validation → translation failure → Qwen fallback or event drop.
+    if _BRIEF_PM_BANLIST_RE.search(b):
+        return False
     return True
 
 
@@ -2041,18 +2056,18 @@ def _brief_batch_translate_event(
     )
 
     _sys = (
-        "你是繁體中文財經情報分析師。請根據以下英文事實句，產生三段繁體中文bullets。\n"
+        "你是繁體中文財經情報分析師。請根據以下英文事實句，忠實翻譯並產生三段繁體中文bullets。\n"
         "嚴格格式（只輸出以下三個section，不加任何說明）：\n"
         "[WHAT]\n"
-        "（發生什麼事，3-5條bullet，忠實翻譯，保留所有專有名詞與數字）\n"
+        "（發生什麼事，4條bullet，只翻譯原文，保留所有專有名詞與數字）\n"
         "[KEY]\n"
-        "（關鍵細節與數據，2-4條bullet，優先包含數字/版本/金額）\n"
+        "（關鍵細節與數據，3條bullet，優先包含數字/版本/金額）\n"
         "[WHY]\n"
-        "（為何重要及影響，2-4條bullet，聚焦商業或技術影響）\n"
+        "（為何重要及影響，3條bullet，聚焦商業或技術影響）\n"
         "規則：\n"
-        "1. 每條 bullet 必須含：至少1個 數字/年份/%/金額 或 英文大寫專名詞（如NVIDIA/GPT/Claude）\n"
-        "2. 禁止出現：原文/可核對/逐字/同篇報導/擷取存檔/Source snippet/證據為/對照\n"
-        "3. 每條 bullet 16-40 中文字，英文型號/公司名原樣保留\n"
+        "1. 每條bullet必須含：至少1個 數字/年份/%/金額 或 英文大寫專名詞（如NVIDIA/GPT/Claude）\n"
+        "2. 嚴禁出現：近日/備受矚目/備受關注/可核對/原文提到/同篇報導/逐字擷取/說明了核心行動方向/逐字/擷取存檔/Source snippet/證據為/對照\n"
+        "3. 每條bullet 16-40 中文字，英文型號/公司名/GPU型號原樣保留，不得補充原文未有資訊\n"
         "4. 每條bullet前不加數字/符號，直接輸出文字"
     )
     _usr = (
@@ -2327,6 +2342,91 @@ def _brief_translate_detail_bullet_zh(
     if _brief_zh_tw_ok(fb) and not _brief_contains_boilerplate("", fb):
         return fb
     return ""
+def _brief_parse_digest_supplements(
+    title: str,
+    final_url: str,
+    anchors: list[str],
+    max_add: int = 4,
+) -> list[dict]:
+    """Read outputs/latest_brief.md from the previous run and extract English quote sentences
+    for the event matching this title/url.  Used as tertiary fallback when fact_pack is still
+    below _BRIEF_FACT_PACK_MIN after primary + secondary supplement passes.
+
+    Quotes stored in latest_brief.md are original English source sentences (>= 80 chars,
+    already CTA-filtered) that were picked from the fact_pack in the previous run.
+    Returns a list of fact_pack-compatible dicts (same schema).
+    """
+    try:
+        import re as _dg_re
+        _out_dir = Path(settings.PROJECT_ROOT) / "outputs"
+        _digest_path = _out_dir / "latest_brief.md"
+        if not _digest_path.exists():
+            return []
+        content = _digest_path.read_text(encoding="utf-8", errors="ignore")
+        _title_norm = _normalize_ws(title).lower()
+        _url_norm = _normalize_ws(final_url).lower().rstrip("/")
+        # Split into per-event sections on "### Event N:" headers
+        _sections = _dg_re.split(r"\n(?=### Event \d+:)", content)
+        _target = ""
+        for _sect in _sections:
+            _sl = _sect.lower()
+            if _url_norm and len(_url_norm) >= 12 and _url_norm in _sl:
+                _target = _sect
+                break
+            if _title_norm and len(_title_norm) >= 12 and _title_norm[:40] in _sl:
+                _target = _sect
+                break
+        if not _target:
+            return []
+        # Extract "> **Quote N:** ..." lines — these are original English source sentences
+        _result: list[dict] = []
+        _seen: set[str] = set()
+        _title_toks = _brief_title_tokens(title)
+        for _line in _target.split("\n"):
+            _l = _normalize_ws(_line)
+            if _l.startswith("> **Quote") and ":** " in _l:
+                _parts = _l.split(":** ", 1)
+                if len(_parts) != 2:
+                    continue
+                _s = _normalize_ws(_parts[1])
+                if len(_s) < 24:
+                    continue
+                _k = _s.lower()
+                if _k in _seen:
+                    continue
+                if _brief_quote_is_cta(_s) or _BRIEF_CTA_RE.search(_s):
+                    continue
+                _flags = _brief_fact_signal_flags(_s)
+                _strong = _brief_fact_strong_signal_count(_s)
+                _sl2 = _s.lower()
+                _title_overlap = sum(1 for _tk in _title_toks if _tk and _tk in _sl2)
+                _anchor_overlap = sum(
+                    1 for _a in (anchors or [])
+                    if _normalize_ws(str(_a or "")) and _normalize_ws(str(_a or "")).lower() in _sl2
+                )
+                _result.append({
+                    "text": _s,
+                    "score": max(1, _strong + _title_overlap + _anchor_overlap),
+                    "index": 2000 + len(_result),
+                    "strong_signal_count": _strong,
+                    "title_overlap": _title_overlap,
+                    "anchor_overlap": _anchor_overlap,
+                    "has_number": bool(_flags["number"]),
+                    "has_money": bool(_flags["money"]),
+                    "has_percent": bool(_flags["percent"]),
+                    "has_model": bool(_flags["model"]),
+                    "has_upper_token": bool(_flags["upper_token"]),
+                    "has_impact": bool(_flags["impact"]),
+                    "key_tokens_count": 0,
+                })
+                _seen.add(_k)
+                if len(_result) >= max_add:
+                    break
+        return _result
+    except Exception:
+        return []
+
+
 def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) -> tuple[list[dict], dict]:
     prepared: list[dict] = []
     accepted_signature_sets: list[dict] = []
@@ -2519,6 +2619,19 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         ) + int(
             miner_diag.get("fact_stoplist_rejected", 0) or 0
         )
+        # Tertiary: supplement from previous run's outputs/latest_brief.md English quotes.
+        # Only runs when primary + secondary passes still leave fact_pack below minimum.
+        if len(fact_pack) < _BRIEF_FACT_PACK_MIN:
+            _fc_url_now = _normalize_ws(str(fc.get("final_url", "") or ""))
+            _dig_extras = _brief_parse_digest_supplements(title, _fc_url_now, anchors_all, max_add=4)
+            _fp_seen_dg = {str(x.get("text", "") or "").strip().lower() for x in fact_pack}
+            for _ds in _dig_extras:
+                _dsk = _normalize_ws(str(_ds.get("text", "") or "")).lower()
+                if _dsk and _dsk not in _fp_seen_dg:
+                    fact_pack.append(_ds)
+                    _fp_seen_dg.add(_dsk)
+                if len(fact_pack) >= _BRIEF_FACT_PACK_MAX:
+                    break
         if len(fact_pack) < _BRIEF_FACT_PACK_MIN:
             diag["drop_quote_relevance"] += 1
             _record_drop(
@@ -3589,6 +3702,15 @@ def _write_brief_template_leak_meta(prepared: list[dict]) -> int:
             # ZH audit-speak suffixes injected by translation
             "（證據：",
             "（對照：",
+            # PM-specified zero-tolerance template terms (Iteration 18)
+            "近日",
+            "備受矚目",
+            "備受關注",
+            "可核對",
+            "原文提到",
+            "同篇報導",
+            "逐字擷取",
+            "說明了核心行動方向",
             # EN template phrases from legacy builders
             "Source snippet:",
             "Impact snippet:",
