@@ -360,6 +360,8 @@ _SIMPLIFIED_ZH_RE = re.compile(r"(?!x)x")
 
 _BRIEF_GARBAGE_ACTORS = {
     "git", "true", "false", "none", "null", "na", "n/a", "4.0", "3.5", "1.0",
+    "for", "the", "a", "an", "in", "on", "at", "to", "of", "by", "as", "or",
+    "new", "next", "last", "old", "big", "top", "all",
 }
 
 _BRIEF_QUOTE_SPAN_START = 0.15
@@ -2508,6 +2510,18 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                         ev = _normalize_ws(_tk)
                         if ev:
                             break
+                # For key role: add a second distinct token (word or extra number)
+                # to ensure fact_pack overlap >= 2 even when ev is a date-like number
+                if role_name == "key":
+                    _kfb_all = _brief_fact_tokens_for_bullet(en, anchors_all)
+                    _extra_tok = next(
+                        (t for t in _kfb_all
+                         if _normalize_ws(t) and _normalize_ws(t) != ev
+                         and not _BRIEF_CTA_RE.search(t)),
+                        None,
+                    )
+                    if _extra_tok:
+                        ev = f"{ev} / {_extra_tok}" if ev else _extra_tok
                 if role_name == "what":
                     fb = _normalize_ws(f"{anchor} 已發布模型與產品更新，證據為 {ev or '原文關鍵句'}")
                 elif role_name == "key":
@@ -2689,8 +2703,12 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         out["quote_window_2"] = _qw2
         _q1_header = _normalize_ws(f"{actor} (anchor {anchor}) event summary:")
         _q2_header = _normalize_ws(f"{actor} (anchor {anchor}) impact summary:")
-        _q1_body = _normalize_ws(" ".join(what_bullets[:2])).replace("\"", "\"").replace("\"", "\"")
-        _q2_body = _normalize_ws(" ".join(why_bullets[:2])).replace("\"", "\"").replace("\"", "\"")
+        _clean_what = [b for b in what_bullets if check_no_boilerplate(b, "")[0]][:2]
+        _clean_why = [b for b in why_bullets if check_no_boilerplate("", b)[0]][:2]
+        if not _clean_why:
+            _clean_why = _clean_what[:1]
+        _q1_body = _normalize_ws(" ".join(_clean_what)).replace("\u201c", "\"").replace("\u201d", "\"")
+        _q2_body = _normalize_ws(" ".join(_clean_why)).replace("\u201c", "\"").replace("\u201d", "\"")
         out["q1_zh"] = _normalize_ws(
             f"{_q1_header} {_q1_body} Source snippet: 「{_qw1}」。"
         )
