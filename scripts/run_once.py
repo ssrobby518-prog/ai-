@@ -1728,8 +1728,11 @@ def _brief_build_role_bullets(
     max_count: int,
     used_sentences: set[str],
     allow_reuse_sentences: bool = False,
-    allow_template_fallback: bool = True,
 ) -> list[str]:
+    """Build role bullets exclusively from fact_pack sentences via local Qwen translation.
+
+    BRIEF_TRANSLATION_ENGINE=local_qwen — no template fallback allowed.
+    """
     out: list[str] = []
     used_bullets: set[str] = set()
     for cand in candidates:
@@ -1738,23 +1741,13 @@ def _brief_build_role_bullets(
             continue
         if (not allow_reuse_sentences) and (en.lower() in used_sentences):
             continue
-        if allow_template_fallback:
-            zh = _brief_sentence_to_zh_bullet(
-                sentence_en=en,
-                title=title,
-                actor=actor,
-                anchors=anchors,
-                role=role,
-                allow_template_fallback=True,
-            )
-        else:
-            zh = _brief_translate_fact_sentence_to_bullet(
-                sentence_en=en,
-                title=title,
-                actor=actor,
-                anchors=anchors,
-                role=role,
-            )
+        zh = _brief_translate_fact_sentence_to_bullet(
+            sentence_en=en,
+            title=title,
+            actor=actor,
+            anchors=anchors,
+            role=role,
+        )
         if not zh:
             continue
         zhl = zh.lower()
@@ -1824,6 +1817,10 @@ def _brief_fact_tokens_for_bullet(sentence: str, anchors: list[str]) -> list[str
     return out[:3]
 
 
+# Translation stats accumulator — reset at start of each _prepare_brief_final_cards call.
+_brief_trans_stats: dict = {"attempts": 0, "rule_success": 0, "qwen_success": 0, "empty": 0, "error": 0}
+
+
 def _brief_translate_fact_sentence_to_bullet(
     *,
     sentence_en: str,
@@ -1832,10 +1829,16 @@ def _brief_translate_fact_sentence_to_bullet(
     anchors: list[str],
     role: str,
 ) -> str:
-    """Translate one fact sentence into zh-TW bullet with token-grounded evidence."""
+    """Translate one fact sentence into zh-TW bullet with token-grounded evidence.
+
+    Translation engine: local Qwen (via llama-server) with rule-based rewriter as primary.
+    No template fallback — returns "" on failure so upstream drops the sentence.
+    """
     source = _normalize_ws(sentence_en)
     if not source:
         return ""
+
+    _brief_trans_stats["attempts"] += 1
 
     anchor = _brief_pick_primary_anchor(actor, anchors)
     subject = anchor or _normalize_ws(actor) or "該事件"
@@ -1861,6 +1864,7 @@ def _brief_translate_fact_sentence_to_bullet(
             break
     evidence = " / ".join(token_pack[:2])
 
+    # Attempt 1: rule-based ZH rewriter (newsroom_zh_rewrite)
     zh = _brief_sentence_to_zh_bullet(
         sentence_en=source,
         title=title,
@@ -1873,13 +1877,50 @@ def _brief_translate_fact_sentence_to_bullet(
     if zh:
         zh = _normalize_ws(re.split(r"[。！？!?]", zh)[0])
 
+    if zh:
+        _brief_trans_stats["rule_success"] += 1
+    else:
+        # Attempt 2: local Qwen translation (llama-server must be running)
+        try:
+            from utils.llama_openai_client import chat as _llama_chat, is_available as _llama_ok
+            if _llama_ok(timeout=3):
+                _role_hint = {
+                    "what": "該事件發生了什麼（忠實翻譯，保留所有專有名詞與數字）",
+                    "key": "關鍵細節與數據（忠實翻譯，保留所有數字與模型名稱）",
+                    "why": "為何重要及影響（忠實翻譯，聚焦商業或技術影響）",
+                }
+                _hint = _role_hint.get(role, "情報摘要（忠實翻譯）")
+                _sys = (
+                    "你是繁體中文情報分析師。請將以下英文句子忠實翻譯為一句繁體中文，"
+                    "保留所有數字、模型名稱、公司名稱，禁止添加任何主觀評論或虛構資訊。"
+                    "只輸出翻譯句，不加任何前綴或標點符號前綴。"
+                )
+                _usr = f"角色：{_hint}\n英文原句：{source[:400]}"
+                _ok, _txt = _llama_chat(
+                    [{"role": "system", "content": _sys}, {"role": "user", "content": _usr}],
+                    max_tokens=120,
+                    temperature=0.0,
+                    timeout=12,
+                    max_retries=0,
+                )
+                if _ok and _txt:
+                    zh = _normalize_ws(_txt.strip())
+                    if zh:
+                        zh = _normalize_ws(re.split(r"[。！？!?]", zh)[0])
+                    if zh:
+                        _brief_trans_stats["qwen_success"] += 1
+                    else:
+                        _brief_trans_stats["empty"] += 1
+                else:
+                    _brief_trans_stats["error"] += 1
+            else:
+                _brief_trans_stats["error"] += 1
+        except Exception:
+            _brief_trans_stats["error"] += 1
+
     if not zh:
-        if role == "what":
-            zh = _normalize_ws(f"{subject} 已發布模型與產品更新，內容涵蓋版本與指標變化")
-        elif role == "key":
-            zh = _normalize_ws(f"關鍵細節指出模型與平台數據變化，可直接回查原文證據")
-        else:
-            zh = _normalize_ws(f"此變化將影響產品與客戶結果，需追蹤營收與風險影響")
+        _brief_trans_stats["empty"] += 1
+        return ""
 
     if (not evidence) and num:
         evidence = num
@@ -1898,19 +1939,8 @@ def _brief_translate_fact_sentence_to_bullet(
     if _brief_validate_zh_bullet(zh):
         return zh
 
-    fallback_evidence = evidence or num or subject
-    if role == "what":
-        fb = _normalize_ws(f"{subject} 已發布模型與產品更新，重點證據為 {fallback_evidence}")
-    elif role == "key":
-        fb = _normalize_ws(f"{subject} 的關鍵數據與型號顯示 {fallback_evidence}，可直接回查原文")
-    else:
-        fb = _normalize_ws(f"{subject} 更新將影響營收與客戶結果，需以 {fallback_evidence} 追蹤效應")
-    if source_tokens and (not _brief_fact_overlap_at_least(fb, [source], min_tokens=2)):
-        _ov = " / ".join(source_tokens[:2])
-        if _ov:
-            fb = _normalize_ws(f"{fb}（對照：{_ov}）")
-    fb = _brief_norm_bullet(fb)
-    return fb if _brief_validate_zh_bullet(fb) else ""
+    _brief_trans_stats["empty"] += 1
+    return ""
 
 
 def _brief_build_bullet_sections(
@@ -2385,6 +2415,13 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             or bool(c.get("has_model"))
         ] or _sorted_by_score
 
+        # Reset translation stats for this event
+        _brief_trans_stats["attempts"] = 0
+        _brief_trans_stats["rule_success"] = 0
+        _brief_trans_stats["qwen_success"] = 0
+        _brief_trans_stats["empty"] = 0
+        _brief_trans_stats["error"] = 0
+
         what_bullets = _brief_build_role_bullets(
             role="what",
             candidates=_what_pool,
@@ -2394,7 +2431,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             min_count=_BRIEF_TARGET_WHAT_BULLETS,
             max_count=_BRIEF_TARGET_WHAT_BULLETS,
             used_sentences=used_en,
-            allow_template_fallback=False,
         )
         key_details_bullets = _brief_build_role_bullets(
             role="key",
@@ -2406,7 +2442,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             max_count=_BRIEF_TARGET_KEY_BULLETS,
             used_sentences=used_en,
             allow_reuse_sentences=True,
-            allow_template_fallback=False,
         )
         why_bullets = _brief_build_role_bullets(
             role="why",
@@ -2418,7 +2453,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             max_count=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
             used_sentences=used_en,
             allow_reuse_sentences=True,
-            allow_template_fallback=False,
         )
         def _fill_missing_from_fact_pool(
             *,
@@ -2478,85 +2512,19 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                 sink=why_bullets,
             )
 
-        def _force_fill_role_bullets(
-            *,
-            role_name: str,
-            pool: list[dict],
-            target_count: int,
-            sink: list[str],
-        ) -> None:
-            if len(sink) >= max(1, int(target_count)):
-                return
-            _pool = list(pool or _sorted_by_score or [])
-            if not _pool:
-                return
-            seen = {str(x or "").strip().lower() for x in (sink or [])}
-            attempts = 0
-            idx = 0
-            max_attempts = max(12, int(target_count) * 8)
-            while len(sink) < max(1, int(target_count)) and attempts < max_attempts:
-                cand = _pool[idx % len(_pool)]
-                en = _normalize_ws(str(cand.get("text", "") or ""))
-                idx += 1
-                attempts += 1
-                if not en:
-                    continue
-                ev = _brief_extract_num_token(en)
-                if not ev:
-                    _tks = _brief_fact_tokens_for_bullet(en, anchors_all)
-                    for _tk in _tks:
-                        if _BRIEF_CTA_RE.search(_tk):
-                            continue
-                        ev = _normalize_ws(_tk)
-                        if ev:
-                            break
-                # For key role: add a second distinct token (word or extra number)
-                # to ensure fact_pack overlap >= 2 even when ev is a date-like number
-                if role_name == "key":
-                    _kfb_all = _brief_fact_tokens_for_bullet(en, anchors_all)
-                    _extra_tok = next(
-                        (t for t in _kfb_all
-                         if _normalize_ws(t) and _normalize_ws(t) != ev
-                         and not _BRIEF_CTA_RE.search(t)),
-                        None,
-                    )
-                    if _extra_tok:
-                        ev = f"{ev} / {_extra_tok}" if ev else _extra_tok
-                if role_name == "what":
-                    fb = _normalize_ws(f"{anchor} 已發布模型與產品更新，證據為 {ev or '原文關鍵句'}")
-                elif role_name == "key":
-                    fb = _normalize_ws(f"{anchor} 關鍵細節顯示數據與型號變化，證據為 {ev or '原文關鍵句'}")
-                else:
-                    fb = _normalize_ws(f"{anchor} 變化將影響客戶與營收結果，需追蹤 {ev or '原文關鍵句'}")
-                fb = _brief_norm_bullet(f"{fb}（重點{idx}）")
-                fbl = fb.lower()
-                if fbl in seen:
-                    continue
-                if not _brief_validate_zh_bullet(fb):
-                    continue
-                sink.append(fb)
-                seen.add(fbl)
-
-        _force_fill_role_bullets(
-            role_name="what",
-            pool=_what_pool,
-            target_count=_BRIEF_TARGET_WHAT_BULLETS,
-            sink=what_bullets,
-        )
-        _force_fill_role_bullets(
-            role_name="key",
-            pool=_key_pool if _key_pool else _what_pool,
-            target_count=_BRIEF_TARGET_KEY_BULLETS,
-            sink=key_details_bullets,
-        )
-        _force_fill_role_bullets(
-            role_name="why",
-            pool=_why_pool if _why_pool else _sorted_by_score,
-            target_count=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
-            sink=why_bullets,
+        # Log translation engine stats for this event
+        import logging as _bts_log
+        _bts_log.getLogger(__name__).info(
+            "BRIEF_TRANSLATION_ENGINE=local_qwen event=%s attempts=%d rule_success=%d qwen_success=%d empty=%d error=%d",
+            title[:60],
+            _brief_trans_stats["attempts"],
+            _brief_trans_stats["rule_success"],
+            _brief_trans_stats["qwen_success"],
+            _brief_trans_stats["empty"],
+            _brief_trans_stats["error"],
         )
 
-        # FACT_PACK path: do not add template-based fallback bullets.
+        # FACT_PACK path: no template-based fallback bullets allowed.
         what_fallbacks = []
         key_fallbacks = []
         why_fallbacks = []
@@ -2583,7 +2551,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         key_details_bullets = key_details_bullets[:_BRIEF_TARGET_KEY_BULLETS]
         why_bullets = why_bullets[:_BRIEF_TARGET_WHY_BULLETS_DEFAULT]
         _topic_marker = _brief_topic_marker(title, actor, anchors_all)
-        _anchor_metric = _brief_extract_num_token(quote_1, quote_2, title)
         what_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in what_bullets]
         key_details_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in key_details_bullets]
         why_bullets = [_brief_norm_bullet(_brief_apply_topic_marker(_b, _topic_marker)) for _b in why_bullets]
@@ -2591,20 +2558,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             what_bullets[0] = _brief_norm_bullet(f"{anchor}：{what_bullets[0]}")
         if anchor and why_bullets and (anchor.lower() not in why_bullets[0].lower()):
             why_bullets[0] = _brief_norm_bullet(f"{anchor}：{why_bullets[0]}")
-        if anchor and (not any(_brief_has_anchor_token(_b, [anchor]) for _b in what_bullets)):
-            what_bullets.insert(
-                0,
-                _brief_norm_bullet(
-                    f"{anchor}：已發布模型與產品更新，證據為 {_anchor_metric or _topic_marker or '關鍵數據'}"
-                ),
-            )
-        if anchor and (not any(_brief_has_anchor_token(_b, [anchor]) for _b in why_bullets)):
-            why_bullets.insert(
-                0,
-                _brief_norm_bullet(
-                    f"{anchor}：此變化將影響客戶與營收結果，需追蹤 {_anchor_metric or _topic_marker or '關鍵數據'}"
-                ),
-            )
         what = "\n".join(what_bullets)
         why = "\n".join(why_bullets)
         summary_zh = _normalize_ws(
@@ -3379,6 +3332,68 @@ def _write_supply_fallback_meta() -> None:
         _sfb_p = Path(settings.PROJECT_ROOT) / "outputs" / "supply_fallback.meta.json"
         _sfb_p.parent.mkdir(parents=True, exist_ok=True)
         _sfb_p.write_text(_sfb_json.dumps(_sfb_out, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _write_brief_template_leak_meta(prepared: list[dict]) -> None:
+    """Scan all bullets for known template phrases and write brief_template_leak.meta.json.
+
+    This is an observation meta (no gate threshold change). DoD requires template_leak_events_count=0.
+    """
+    try:
+        import json as _btl_json
+        _TEMPLATE_PHRASES = [
+            "已發布模型與產品更新",
+            "此變化將影響客戶與營收結果",
+            "關鍵細節顯示數據與型號變化",
+            "關鍵細節指出模型與平台數據變化",
+            "可直接回查原文證據",
+            "需追蹤營收與風險影響",
+            "已發布模型與產品更新，證據為",
+            "關鍵細節顯示數據與型號變化，證據為",
+            "變化將影響客戶與營收結果，需追蹤",
+            "重點證據為",
+            "來源機制與限制條件以逐字證據為準",
+        ]
+        leaks: list[dict] = []
+        for p in (prepared or []):
+            title = str(p.get("title", "") or "")
+            url = str(p.get("final_url", "") or "")
+            all_bullets = (
+                list(p.get("what_happened_bullets", []) or [])
+                + list(p.get("key_details_bullets", []) or [])
+                + list(p.get("why_it_matters_bullets", []) or [])
+            )
+            for b in all_bullets:
+                bs = str(b or "")
+                for phrase in _TEMPLATE_PHRASES:
+                    if phrase in bs:
+                        leaks.append({
+                            "title": title[:80],
+                            "final_url": url[:120],
+                            "hit_phrase": phrase,
+                            "sample_bullet": bs[:200],
+                        })
+                        break  # one leak entry per bullet (first hit)
+        # Deduplicate by (title, hit_phrase)
+        seen_keys: set[tuple] = set()
+        unique_leaks: list[dict] = []
+        for lk in leaks:
+            key = (lk["title"][:60], lk["hit_phrase"])
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_leaks.append(lk)
+
+        out = {
+            "template_phrases_scanned": _TEMPLATE_PHRASES,
+            "template_leak_events_count": len({lk["title"] for lk in unique_leaks}),
+            "template_leak_bullets_count": len(unique_leaks),
+            "template_leak_samples": unique_leaks[:5],
+        }
+        out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_template_leak.meta.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_btl_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
 
@@ -5613,6 +5628,7 @@ def run_pipeline() -> None:
                     _backfill_brief_fact_candidates(_final_cards)
                     _write_brief_fact_candidates_hard_meta(_final_cards)
                     _write_brief_fact_pack_hard_meta(_final_cards)
+                    _write_brief_template_leak_meta(_final_cards)
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -6039,6 +6055,7 @@ def run_pipeline() -> None:
                                     _backfill_brief_fact_candidates(_final_cards)
                                     _write_brief_fact_candidates_hard_meta(_final_cards)
                                     _write_brief_fact_pack_hard_meta(_final_cards)
+                                    _write_brief_template_leak_meta(_final_cards)
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)

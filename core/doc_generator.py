@@ -308,7 +308,7 @@ def _generate_brief_docx_only(
             doc.add_paragraph(sanitize(b), style="List Bullet")
 
         _add_heading(doc, "關鍵細節", level=2)
-        for b in (key_bullets if key_bullets else ["來源機制與限制條件以逐字證據為準。"]):
+        for b in key_bullets:
             doc.add_paragraph(sanitize(b), style="List Bullet")
 
         _add_heading(doc, "為什麼重要", level=2)

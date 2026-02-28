@@ -442,7 +442,7 @@ def _generate_brief_ppt_only(
         _key_lines = [safe_text(str(x), 260) for x in (p.get("key_details_bullets", []) or key.replace("\r", "\n").split("\n")) if str(x).strip()]
         _why_lines = [safe_text(str(x), 260) for x in (p.get("why_it_matters_bullets", []) or why.replace("\r", "\n").split("\n")) if str(x).strip()]
         _brief_add_field(slide, 1.65, "發生什麼事", _what_lines if _what_lines else [safe_text(what, 260)], bullet_prefix=True)
-        _brief_add_field(slide, 5.45, "關鍵細節", _key_lines if _key_lines else ["來源機制與限制條件以逐字證據為準。"], bullet_prefix=True)
+        _brief_add_field(slide, 5.45, "關鍵細節", _key_lines, bullet_prefix=True)
         _brief_add_field(slide, 8.95, "為什麼重要", _why_lines if _why_lines else [safe_text(why, 260)], bullet_prefix=True)
         _brief_add_field(slide, 12.45, "證據", [f"quote_1：{safe_text(quote_1, 330)}", f"quote_2：{safe_text(quote_2, 330)}"], bullet_prefix=False)
         _brief_add_field(slide, 16.0, "來源", [f"final_url：{safe_text(final_url, 240)}", f"published_at：{safe_text(published_at, 80)}"], bullet_prefix=False)
