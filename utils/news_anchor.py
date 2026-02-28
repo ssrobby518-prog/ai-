@@ -397,6 +397,7 @@ def extract_anchors_from_card(card) -> dict:
 
     Searches: title_plain, what_happened, evidence_lines, fact_check_confirmed,
               technical_interpretation, observation_metrics.
+    Fallback: summary_zh, card_md, fulltext, raw_text (PH_SUPP / DB cards).
     """
     title = str(getattr(card, "title_plain", "") or "").strip()
 
@@ -414,6 +415,16 @@ def extract_anchors_from_card(card) -> dict:
                 parts.append(v)
 
     anchor_text = " ".join(parts)
+
+    # Fallback for PH_SUPP / DB-backed cards whose structured fields are empty:
+    # search summary_zh / card_md / fulltext / raw_text for entity names.
+    # Limit to first 1500 chars to avoid noise from long bodies.
+    if not anchor_text:
+        for attr in ("summary_zh", "card_md", "fulltext", "raw_text"):
+            val = str(getattr(card, attr, "") or "").strip()
+            if val:
+                anchor_text = val[:1500]
+                break
 
     source_name = str(getattr(card, "source_name", "") or "").strip()
     published_at = ""
