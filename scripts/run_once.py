@@ -613,10 +613,12 @@ _BRIEF_ACTION_WORD_RE = re.compile(
 _BRIEF_EVENT_ACTION_RE = re.compile(
     r"(?:\b(?:launch|release|announce|deploy|acquire|raise|ban|ship|expand|update|introduce|publish|"
     r"train|integrate|partner|merge|fund|cut|block|approve|adopt|close|halt|reduce|increase|"
-    r"improve|complete|end|consider|designate|build|pick|choose|select|will|enable|allow)\b"
+    r"improve|complete|end|consider|designate|build|pick|choose|select|will|enable|allow|"
+    r"achieve|demonstrate|evaluate|establish|outperform|provide|assess|surpass|apply|develop)\b"
     r"|\u767c\u5e03|\u63a8\u51fa|\u5ba3\u5e03|\u5347\u7d1a|\u90e8\u7f72|\u5408\u4f5c|\u6536\u8cfc|\u52df\u8cc7|"
     r"\u64f4\u5927|\u6574\u5408|\u5c0e\u5165|\u4e0a\u7dda|\u6539\u5584|\u63d0\u5347|\u589e\u52a0|\u4e0b\u964d|"
-    r"\u9810\u8a08|\u5c07|\u5141\u8a31|\u5e36\u52d5|\u5f71\u97ff|\u767c\u8868|\u63ed\u793a|\u8868\u660e|\u63d0\u51fa|\u63a8\u9032)",
+    r"\u9810\u8a08|\u5c07|\u5141\u8a31|\u5e36\u52d5|\u5f71\u97ff|\u767c\u8868|\u63ed\u793a|\u8868\u660e|\u63d0\u51fa|\u63a8\u9032|"
+    r"\u5efa\u7acb|\u5be6\u73fe|\u9054\u5230|\u8a55\u4f30|\u5c55\u793a|\u8d85\u8d8a|\u63d0\u4f9b|\u61c9\u7528|\u8a2d\u8a08|\u89e3\u6c7a)",
     re.IGNORECASE,
 )
 
@@ -626,12 +628,14 @@ _BRIEF_EVENT_OBJECT_RE = re.compile(
     r"product|products|feature|service|services|version|chip|algorithm|architecture|"
     r"inference|training|vector|prompt|API|GPU|LLM|parameter|performance|pipeline|"
     r"solution|solutions|capabilit|categor|investment|partner|partnership|funding|"
-    r"contract|market|competition|custom|employee|workforce)\b"
+    r"contract|market|competition|custom|employee|workforce|"
+    r"video|task|tasks|accuracy|encoder|application|applications|approach|result|results)\b"
     r"|\u6a21\u578b|\u4ee3\u7406|\u5de5\u5177|\u5e73\u53f0|\u6846\u67b6|\u8cc7\u6599\u96c6|"
     r"\u7cfb\u7d71|\u7522\u54c1|\u529f\u80fd|\u670d\u52d9|\u7248\u672c|\u6676\u7247|\u6f14\u7b97\u6cd5|"
     r"\u67b6\u69cb|\u63a8\u8ad6|\u8a13\u7df4|API|GPU|LLM|\u53c3\u6578|\u6548\u80fd|\u6d41\u7a0b|"
     r"\u65b9\u6848|\u6295\u8cc7|\u5408\u4f5c|\u878d\u8cc7|\u5408\u7d04|\u5e02\u5834|\u7af6\u722d|"
-    r"\u5ba2\u6236|\u54e1\u5de5|\u4f9b\u61c9\u93c8|\u57fa\u790e\u8a2d\u65bd|\u6210\u679c|\u7814\u7a76|\u8ad6\u6587|\u65b9\u6cd5|\u6280\u8853|\u767c\u73fe)",
+    r"\u5ba2\u6236|\u54e1\u5de5|\u4f9b\u61c9\u93c8|\u57fa\u790e\u8a2d\u65bd|\u6210\u679c|\u7814\u7a76|\u8ad6\u6587|\u65b9\u6cd5|\u6280\u8853|\u767c\u73fe|"
+    r"\u4efb\u52d9|\u7cbe\u5ea6|\u8996\u8a0a|\u8996\u983c|\u61c9\u7528\u5834\u666f|\u7d50\u679c|\u51fa\u80fd|\u6587\u672c)",
     re.IGNORECASE,
 )
 
