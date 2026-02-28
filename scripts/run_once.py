@@ -1878,10 +1878,18 @@ def _brief_translate_fact_sentence_to_bullet(
 
     Translation engine: local Qwen (via llama-server) with rule-based rewriter as primary.
     No template fallback — returns "" on failure so upstream drops the sentence.
+
+    Iteration 19 hardlock: if BRIEF_TRANSLATION_READY != "1" skip rule-based entirely
+    (prevents template Chinese leaking when Qwen is not available).
     """
     source = _normalize_ws(sentence_en)
     if not source:
         return ""
+    # TRANSLATION ENGINE HARDLOCK (Iteration 19):
+    # Rule-based rewriter is DISABLED when BRIEF_TRANSLATION_READY != "1".
+    # Per-sentence Qwen path is still attempted (it self-gates via _llama_ok()).
+    _trans_ready = os.environ.get("BRIEF_TRANSLATION_READY", "0").strip()
+    _rule_based_allowed = (_trans_ready == "1")
 
     _brief_trans_stats["attempts"] += 1
 
@@ -1910,15 +1918,18 @@ def _brief_translate_fact_sentence_to_bullet(
     evidence = " / ".join(token_pack[:2])
 
     # Attempt 1: rule-based ZH rewriter (newsroom_zh_rewrite)
-    zh = _brief_sentence_to_zh_bullet(
-        sentence_en=source,
-        title=title,
-        actor=actor,
-        anchors=anchors,
-        role=role,
-        allow_template_fallback=False,
-    )
-    zh = _normalize_ws(zh)
+    # HARDLOCK: skip when BRIEF_TRANSLATION_READY != "1" (prevents template Chinese).
+    zh = ""
+    if _rule_based_allowed:
+        zh = _brief_sentence_to_zh_bullet(
+            sentence_en=source,
+            title=title,
+            actor=actor,
+            anchors=anchors,
+            role=role,
+            allow_template_fallback=False,
+        )
+        zh = _normalize_ws(zh)
     # NOTE: Do NOT split rule-based output by 。！？ — _brief_sentence_to_zh_bullet
     # already validates the full text internally. Splitting destroys validated bullets.
 
@@ -2037,6 +2048,9 @@ def _brief_batch_translate_event(
     Falls back to empty so caller can use per-sentence rule-based path.
     """
     if not fact_pack_sentences:
+        return [], [], []
+    # TRANSLATION ENGINE HARDLOCK (Iteration 19): require BRIEF_TRANSLATION_READY=1
+    if os.environ.get("BRIEF_TRANSLATION_READY", "0").strip() != "1":
         return [], [], []
     try:
         from utils.llama_openai_client import chat as _llama_chat, is_available as _llama_ok
@@ -3763,7 +3777,10 @@ def _write_brief_template_leak_meta(prepared: list[dict]) -> int:
         leak_events_count = len({lk["title"] for lk in unique_leaks})
         leak_bullets_count = len(unique_leaks)
         gate_result = "PASS" if (leak_events_count == 0 and leak_bullets_count == 0) else "FAIL"
+        from datetime import datetime as _btl_dt, timezone as _btl_tz
         out = {
+            "run_id": os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            "generated_at": _btl_dt.now(_btl_tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "gate_result": gate_result,
             "template_phrases_scanned": _TEMPLATE_PHRASES,
             "template_leak_events_count": leak_events_count,
@@ -5977,6 +5994,23 @@ def run_pipeline() -> None:
                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
                 if _is_brief_mode:
+                    # TRANSLATION ENGINE DOWN fast-path (Iteration 19).
+                    # If BRIEF_TRANSLATION_READY != "1", no ZH bullets can be produced.
+                    # Write NOT_READY immediately — no need to run full brief prep.
+                    if os.environ.get("BRIEF_TRANSLATION_READY", "0").strip() != "1":
+                        _ted_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                        _ted_run_id = os.environ.get("PIPELINE_RUN_ID", "unknown")
+                        _ted_path.write_text(
+                            f"# NOT_READY\n\ngate: TRANSLATION_ENGINE_DOWN\n"
+                            f"run_id: {_ted_run_id}\n"
+                            "reason: BRIEF_TRANSLATION_READY!=1; start scripts/llama_server.ps1 first\n",
+                            encoding="utf-8",
+                        )
+                        # Write a minimal template_leak meta with run_id so gates don't read stale files.
+                        _write_brief_template_leak_meta([])
+                        log.error(
+                            "BRIEF_TRANSLATION_READY!=1 — FAIL-fast: TRANSLATION_ENGINE_DOWN; NOT_READY.md written"
+                        )
                     _brief_diag = {"quote_stoplist_hits_count": 0}
                     _brief_pool = list(_final_cards or [])
                     if len(_brief_pool) < 6:

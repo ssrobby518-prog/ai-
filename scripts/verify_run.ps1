@@ -1304,6 +1304,19 @@ Invoke-MetaGate -Label "BRIEF_TEMPLATE_LEAK_HARD" -MetaFile "brief_template_leak
     param($d)
     "template_leak_events_count=$((Get-MetaInt $d 'template_leak_events_count' 0)) template_leak_bullets_count=$((Get-MetaInt $d 'template_leak_bullets_count' 0))"
 }
+# STALE_META check: meta.run_id must match PIPELINE_RUN_ID for this run
+if ($env:PIPELINE_RUN_ID) {
+    try {
+        $_btlMetaV = Get-Content (Join-Path $repoRoot "outputs\brief_template_leak.meta.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+        $_metaRunIdV = if ($_btlMetaV.PSObject.Properties["run_id"]) { [string]$_btlMetaV.run_id } else { "" }
+        if ($_metaRunIdV -and ($_metaRunIdV -ne [string]$env:PIPELINE_RUN_ID)) {
+            Write-Host ("BRIEF_TEMPLATE_LEAK: STALE_META (meta.run_id={0} != PIPELINE_RUN_ID={1}) => FAIL" -f $_metaRunIdV, $env:PIPELINE_RUN_ID) -ForegroundColor Red
+            exit 1
+        }
+    } catch {
+        Write-Host "BRIEF_TEMPLATE_LEAK: STALE_META check skipped (parse error: $_)" -ForegroundColor DarkYellow
+    }
+}
 
 Write-Host ""
 Write-Host "AI_PURITY_GATES: 14/14 PASS" -ForegroundColor Green

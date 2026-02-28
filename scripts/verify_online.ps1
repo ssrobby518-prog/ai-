@@ -25,6 +25,73 @@ $_voRunId = (Get-Date -Format "yyyyMMdd_HHmmss")
 Write-Output "=== verify_online.ps1 START ==="
 Write-Output ""
 
+# ---------------------------------------------------------------------------
+# Step 0: Translation engine (Qwen) preflight — Iteration 19
+#   Non-blocking: if Qwen not up, try to start llama_server.ps1 and wait <=20s.
+#   Sets $env:BRIEF_TRANSLATION_READY = "1" (ready) or "0" (down).
+#   When -SkipPipeline: assume the previous run had Qwen running (READY=1),
+#   and resolve PIPELINE_RUN_ID from the existing brief_template_leak meta.
+# ---------------------------------------------------------------------------
+Write-Output "[0/4] Translation engine (Qwen) preflight..."
+$_qwenUrl   = "http://127.0.0.1:8080/v1/models"
+$_qwenReady = $false
+$_btlMetaP  = Join-Path $repoRoot "outputs\brief_template_leak.meta.json"
+
+if ($SkipPipeline) {
+    # -SkipPipeline: We are verifying an already-completed run.
+    # Set PIPELINE_RUN_ID from the meta that run wrote, so STALE_META checks pass.
+    Write-Output "  Qwen preflight: SKIPPED (-SkipPipeline)"
+    $env:BRIEF_TRANSLATION_READY = "1"   # translation was required to produce that run
+    if (Test-Path $_btlMetaP) {
+        try {
+            $_btlExisting = Get-Content $_btlMetaP -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($_btlExisting.PSObject.Properties["run_id"] -and [string]$_btlExisting.run_id) {
+                $_voRunId = [string]$_btlExisting.run_id
+                Write-Output ("  PIPELINE_RUN_ID resolved from meta: {0}" -f $_voRunId)
+            }
+        } catch {
+            Write-Output ("  WARN: could not read run_id from brief_template_leak.meta.json: {0}" -f $_)
+        }
+    }
+    Write-Output ("  => BRIEF_TRANSLATION_READY=1  PIPELINE_RUN_ID={0}" -f $_voRunId)
+} else {
+    # Normal run: probe Qwen; auto-start llama_server.ps1 if down.
+    try {
+        $null = Invoke-WebRequest -Uri $_qwenUrl -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+        $_qwenReady = $true
+        Write-Output "  Qwen: already running (llama-server OK)"
+    } catch {
+        Write-Output "  Qwen: not responding — attempting to start scripts\llama_server.ps1 ..."
+        $_lsScript = Join-Path $PSScriptRoot "llama_server.ps1"
+        if (Test-Path $_lsScript) {
+            Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$_lsScript`"" -WindowStyle Hidden
+            $_waitSecs = 20; $_elapsed = 0
+            while ($_elapsed -lt $_waitSecs) {
+                Start-Sleep -Seconds 2; $_elapsed += 2
+                try {
+                    $null = Invoke-WebRequest -Uri $_qwenUrl -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+                    $_qwenReady = $true
+                    Write-Output ("  Qwen: ready after {0}s" -f $_elapsed)
+                    break
+                } catch {}
+            }
+            if (-not $_qwenReady) {
+                Write-Output ("  Qwen: not ready after {0}s" -f $_waitSecs)
+            }
+        } else {
+            Write-Output "  Qwen: llama_server.ps1 not found at $_lsScript"
+        }
+    }
+    if ($_qwenReady) {
+        $env:BRIEF_TRANSLATION_READY = "1"
+        Write-Output "  => BRIEF_TRANSLATION_READY=1"
+    } else {
+        $env:BRIEF_TRANSLATION_READY = "0"
+        Write-Output "  => BRIEF_TRANSLATION_READY=0 (pipeline will FAIL-fast: TRANSLATION_ENGINE_DOWN)"
+    }
+}
+Write-Output ""
+
 # ---- Step 1: Z0 online collection + supply fallback ----
 $_z0Dir          = Join-Path $repoRoot "data\raw\z0"
 $_z0Latest       = Join-Path $_z0Dir   "latest.jsonl"
@@ -2163,9 +2230,18 @@ if (Test-Path $voBtlPath) {
     try {
         $voBtl          = Get-Content $voBtlPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $voBtlGate      = [string]($voBtl.gate_result)
+        $voBtlRunId     = if ($voBtl.PSObject.Properties["run_id"])                    { [string]$voBtl.run_id }                    else { "" }
+        $voBtlGenAt     = if ($voBtl.PSObject.Properties["generated_at"])              { [string]$voBtl.generated_at }              else { "" }
         $voBtlEvents    = if ($voBtl.PSObject.Properties["template_leak_events_count"]) { [int]$voBtl.template_leak_events_count } else { 0 }
         $voBtlBullets   = if ($voBtl.PSObject.Properties["template_leak_bullets_count"]) { [int]$voBtl.template_leak_bullets_count } else { 0 }
+        Write-Output ("  run_id={0}  generated_at={1}" -f $voBtlRunId, $voBtlGenAt)
         Write-Output ("  template_leak_events_count={0}  template_leak_bullets_count={1}" -f $voBtlEvents, $voBtlBullets)
+        # STALE_META check (Iteration 19): meta must belong to the current pipeline run
+        $_expectedRunId = [string]($env:PIPELINE_RUN_ID)
+        if ($voBtlRunId -and $_expectedRunId -and ($voBtlRunId -ne $_expectedRunId)) {
+            Write-Output ("  => BRIEF_TEMPLATE_LEAK_HARD: FAIL (STALE_META: meta.run_id={0} != expected={1})" -f $voBtlRunId, $_expectedRunId)
+            exit 1
+        }
         if ($voBtlGate -eq "PASS") {
             Write-Output "  => BRIEF_TEMPLATE_LEAK_HARD: PASS (leak=0)"
         } else {
