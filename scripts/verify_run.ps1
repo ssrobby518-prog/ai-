@@ -776,6 +776,37 @@ Write-Host "Banned phrases detected: $($notionBannedHits + $docxBannedHits + $pp
 Write-Host "DOCX output: $docxBannedHits hits"
 Write-Host "PPTX output: $pptxBannedHits hits"
 Write-Host ""
+
+# Translation Delivery meta — display + STALE_META guard (Iteration 19)
+# Hard gate (TRANSLATION_DELIVERY_HARD) enforced by verify_online.ps1;
+# here we add run_id STALE check so stale metas from previous runs are rejected.
+$_tdVrPath = Join-Path $PSScriptRoot "..\outputs\translation.meta.json"
+if (Test-Path $_tdVrPath) {
+    try {
+        $tdVrMeta     = Get-Content $_tdVrPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $_tdVrSuccess = if ($tdVrMeta.PSObject.Properties['success'])    { [bool]$tdVrMeta.success }       else { $false }
+        $_tdVrFail    = if ($tdVrMeta.PSObject.Properties['fail_reason']){ [string]$tdVrMeta.fail_reason } else { "" }
+        $_tdVrRunId   = if ($tdVrMeta.PSObject.Properties['run_id'])     { [string]$tdVrMeta.run_id }      else { "" }
+        Write-Host ("TRANSLATION_DELIVERY: success={0}  run_id={1}  fail_reason={2}" -f $_tdVrSuccess, $_tdVrRunId, $_tdVrFail)
+        # STALE_META check: reject meta from a previous pipeline run
+        if ($env:PIPELINE_RUN_ID) {
+            try {
+                if ($_tdVrRunId -and ($_tdVrRunId -ne [string]$env:PIPELINE_RUN_ID)) {
+                    Write-Host ("TRANSLATION_DELIVERY: STALE_META (meta.run_id={0} != PIPELINE_RUN_ID={1}) => FAIL" -f $_tdVrRunId, $env:PIPELINE_RUN_ID) -ForegroundColor Red
+                    exit 1
+                }
+            } catch {
+                Write-Host "TRANSLATION_DELIVERY: STALE_META check skipped (parse error: $_)" -ForegroundColor DarkYellow
+            }
+        }
+    } catch {
+        Write-Host "TRANSLATION_DELIVERY: (parse error)"
+    }
+} else {
+    Write-Host "TRANSLATION_DELIVERY: translation.meta.json not found"
+}
+Write-Host ""
+
 Write-Host "verify_run: 10/10 PASS"
 Write-Host "Working tree: $workingTree"
 Write-Host "Branch: $branchSummary"

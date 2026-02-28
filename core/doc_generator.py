@@ -1191,3 +1191,139 @@ def generate_not_ready_report_docx(
     doc.save(str(output_path))
     return output_path
 
+
+# ---------------------------------------------------------------------------
+# generate_zh_md_docx — Iteration 20: Translation-First ZH Delivery
+# Converts a ZH Markdown string to a Word document.
+# Used to overwrite executive_report.docx with the translated ZH version.
+# ---------------------------------------------------------------------------
+def generate_zh_md_docx(md_text: str, output_path: "Path | str") -> Path:
+    """Generate a Word document from ZH Markdown (translation-first delivery).
+
+    Supports: H1/H2/H3 headings, bullet lists, numbered lists, blockquotes,
+    code blocks (Courier New), horizontal rules, plain paragraphs.
+    No images are inserted (brief mode constraint).
+    """
+    import re as _r
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    doc = Document()
+    normal_style = doc.styles["Normal"]
+    normal_style.font.name = "Calibri"
+    normal_style.font.size = Pt(11)
+
+    lines = md_text.split("\n")
+    in_code = False
+    code_lines: list[str] = []
+    table_rows: list[str] = []
+
+    def _flush_code() -> None:
+        if not code_lines:
+            return
+        p = doc.add_paragraph()
+        run = p.add_run("\n".join(code_lines))
+        run.font.name = "Courier New"
+        run.font.size = Pt(9)
+        run.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
+        p.paragraph_format.left_indent = Cm(1)
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(2)
+        code_lines.clear()
+
+    def _flush_table() -> None:
+        if not table_rows:
+            return
+        # Filter separator rows
+        data_rows = [r for r in table_rows if not _r.match(r"^\|[\s\-|:]+\|$", r.strip())]
+        if not data_rows:
+            table_rows.clear()
+            return
+        cells_list = [
+            [c.strip() for c in row.strip().strip("|").split("|")]
+            for row in data_rows
+        ]
+        if not cells_list:
+            table_rows.clear()
+            return
+        ncols = max(len(c) for c in cells_list)
+        try:
+            tbl = doc.add_table(rows=len(cells_list), cols=ncols)
+            tbl.style = "Table Grid"
+            for ri, cells in enumerate(cells_list):
+                for ci, cell_text in enumerate(cells):
+                    if ci < ncols:
+                        tbl.rows[ri].cells[ci].text = cell_text
+        except Exception:
+            for cells in cells_list:
+                doc.add_paragraph("  |  ".join(cells))
+        table_rows.clear()
+
+    in_table = False
+
+    for line in lines:
+        # Code fence toggle
+        if line.startswith("```"):
+            if in_code:
+                _flush_code()
+                in_code = False
+            else:
+                _flush_table()
+                in_table = False
+                in_code = True
+            continue
+
+        if in_code:
+            code_lines.append(line)
+            continue
+
+        # Table detection
+        if line.startswith("|") and "|" in line[1:]:
+            table_rows.append(line)
+            in_table = True
+            continue
+        elif in_table:
+            _flush_table()
+            in_table = False
+
+        # Headings
+        h3 = _r.match(r"^### (.+)", line)
+        h2 = _r.match(r"^## (.+)", line)
+        h1 = _r.match(r"^# (.+)", line)
+        if h1:
+            doc.add_heading(h1.group(1).strip(), level=1)
+        elif h2:
+            doc.add_heading(h2.group(1).strip(), level=2)
+        elif h3:
+            doc.add_heading(h3.group(1).strip(), level=3)
+        elif line.strip() == "---":
+            p = doc.add_paragraph("\u2500" * 48)
+            p.runs[0].font.size = Pt(8)
+            p.runs[0].font.color.rgb = RGBColor(0xCC, 0xCC, 0xCC)
+        elif line.startswith("> "):
+            p = doc.add_paragraph(line[2:].strip())
+            p.paragraph_format.left_indent = Cm(1)
+            p.runs[0].font.italic = True
+            p.runs[0].font.color.rgb = RGBColor(0x44, 0x44, 0x44)
+        elif _r.match(r"^[-*] ", line):
+            doc.add_paragraph(line[2:].strip(), style="List Bullet")
+        elif _r.match(r"^\d+\. ", line):
+            text = _r.sub(r"^\d+\. ", "", line).strip()
+            doc.add_paragraph(text, style="List Number")
+        elif line.strip() == "":
+            p = doc.add_paragraph("")
+            p.paragraph_format.space_after = Pt(3)
+        else:
+            # Strip common inline Markdown
+            text = _r.sub(r"\*\*(.+?)\*\*", r"\1", line)
+            text = _r.sub(r"\*(.+?)\*", r"\1", text)
+            text = _r.sub(r"`(.+?)`", r"\1", text)
+            doc.add_paragraph(text)
+
+    _flush_code()
+    _flush_table()
+
+    doc.save(str(output_path))
+    return output_path
+

@@ -2719,3 +2719,162 @@ def generate_not_ready_report_pptx(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
     return output_path
+
+
+# ---------------------------------------------------------------------------
+# generate_zh_md_pptx — Iteration 20: Translation-First ZH Delivery
+# Converts a ZH Markdown string to a PowerPoint presentation.
+# Used to overwrite executive_report.pptx with the translated ZH version.
+# No images are inserted (brief mode constraint).
+# ---------------------------------------------------------------------------
+def generate_zh_md_pptx(md_text: str, output_path: "Path | str") -> Path:
+    """Generate a readable PPTX from ZH Markdown (translation-first delivery).
+
+    Layout:
+    - H1 / H2  → new slide with title in top area
+    - H3       → bold bullet in current slide body
+    - ---      → new blank slide (event separator)
+    - > quote  → italic indented text
+    - - bullet → bullet point
+    - code     → monospace text (no images)
+    Max ~20 body lines per slide; auto-continues on new slide if exceeded.
+    """
+    import re as _r
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    prs = Presentation()
+    prs.slide_width = Cm(33.87)   # widescreen 13.33 inch
+    prs.slide_height = Cm(19.05)  # 7.5 inch
+
+    blank_layout = prs.slide_layouts[6]  # blank
+
+    _BG    = RGBColor(0xFF, 0xFF, 0xFF)
+    _TITLE = RGBColor(0x21, 0x28, 0x38)
+    _BODY  = RGBColor(0x22, 0x22, 0x22)
+
+    _ML = Cm(1.8)   # margin left
+    _MT = Cm(1.2)   # margin top
+    _SW = prs.slide_width - 2 * _ML
+    _TH = Cm(2.4)   # title height
+    _BT = _MT + _TH + Cm(0.3)
+    _BH = prs.slide_height - _BT - Cm(0.5)
+
+    MAX_BODY_LINES = 20
+
+    def _new_slide() -> "pptx.slide.Slide":  # type: ignore[name-defined]
+        sl = prs.slides.add_slide(blank_layout)
+        fill = sl.background.fill
+        fill.solid()
+        fill.fore_color.rgb = _BG
+        return sl
+
+    def _set_title(sl: "pptx.slide.Slide", text: str) -> None:  # type: ignore[name-defined]
+        txb = sl.shapes.add_textbox(_ML, _MT, _SW, _TH)
+        tf = txb.text_frame
+        tf.word_wrap = True
+        p = tf.paragraphs[0]
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(26)
+        run.font.bold = True
+        run.font.color.rgb = _TITLE
+
+    def _set_body(sl: "pptx.slide.Slide", lines: list) -> None:  # type: ignore[name-defined]
+        if not lines:
+            return
+        txb = sl.shapes.add_textbox(_ML, _BT, _SW, _BH)
+        tf = txb.text_frame
+        tf.word_wrap = True
+        first = True
+        for (txt, size, bold, italic) in lines:
+            p = tf.paragraphs[0] if first else tf.add_paragraph()
+            first = False
+            run = p.add_run()
+            run.text = txt
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run.font.italic = italic
+            run.font.color.rgb = _BODY
+
+    # Accumulate slides as (title, body_lines)
+    slides_data: list[tuple[str, list]] = []
+    cur_title = ""
+    cur_body: list = []
+
+    def _flush() -> None:
+        if cur_title or cur_body:
+            slides_data.append((cur_title, list(cur_body)))
+
+    def _start(title: str) -> None:
+        nonlocal cur_title, cur_body
+        _flush()
+        cur_title = title
+        cur_body = []
+
+    def _add_body(text: str, size: int = 14, bold: bool = False, italic: bool = False) -> None:
+        nonlocal cur_title, cur_body
+        cur_body.append((text, size, bold, italic))
+        if len(cur_body) >= MAX_BODY_LINES:
+            _start(cur_title + " (續)")
+
+    lines = md_text.split("\n")
+    in_code = False
+
+    for line in lines:
+        if line.startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            _add_body("  " + line, size=10, italic=True)
+            continue
+
+        h1 = _r.match(r"^# (.+)", line)
+        h2 = _r.match(r"^## (.+)", line)
+        h3 = _r.match(r"^### (.+)", line)
+
+        if h1:
+            _start(h1.group(1).strip())
+        elif h2:
+            _start(h2.group(1).strip())
+        elif h3:
+            if not cur_title and not cur_body:
+                _start(h3.group(1).strip())
+            else:
+                _add_body("\u25b6 " + h3.group(1).strip(), size=15, bold=True)
+        elif line.strip() == "---":
+            _start("")
+        elif line.startswith("> "):
+            _add_body("\u300c" + line[2:].strip() + "\u300d", size=13, italic=True)
+        elif _r.match(r"^[-*] ", line):
+            _add_body("\u2022 " + line[2:].strip(), size=14)
+        elif _r.match(r"^\d+\. ", line):
+            _add_body(_r.sub(r"^\d+\. ", "", line).strip(), size=14)
+        elif line.startswith("|"):
+            clean = _r.sub(r"\|", "  ", line).strip()
+            if not _r.match(r"^[-: ]+$", clean):
+                _add_body(clean, size=12)
+        elif line.strip() == "":
+            pass  # skip blank lines
+        else:
+            text = _r.sub(r"\*\*(.+?)\*\*", r"\1", line)
+            text = _r.sub(r"`(.+?)`", r"\1", text)
+            text = _r.sub(r"\*(.+?)\*", r"\1", text)
+            if text.strip():
+                _add_body(text, size=14)
+
+    _flush()
+
+    if not slides_data:
+        slides_data = [("繁中 AI 情報", [("（內容為空）", 16, False, False)])]
+
+    for title, body_lines in slides_data:
+        sl = _new_slide()
+        if title:
+            _set_title(sl, title)
+        if body_lines:
+            _set_body(sl, body_lines)
+
+    prs.save(str(output_path))
+    return output_path

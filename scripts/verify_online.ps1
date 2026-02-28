@@ -66,7 +66,7 @@ if ($SkipPipeline) {
         $_lsScript = Join-Path $PSScriptRoot "llama_server.ps1"
         if (Test-Path $_lsScript) {
             Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$_lsScript`"" -WindowStyle Hidden
-            $_waitSecs = 30; $_elapsed = 0
+            $_waitSecs = 60; $_elapsed = 0
             while ($_elapsed -lt $_waitSecs) {
                 Start-Sleep -Seconds 3; $_elapsed += 3
                 try {
@@ -124,8 +124,9 @@ if ($SkipPipeline) {
             Write-Output "  GPU probe: nvidia-smi not found on PATH — cannot validate GPU usage (assume OK)"
         }
 
-        # Write gpu_probe.meta.json (evidence artifact)
+        # Write gpu_probe.meta.json (evidence artifact, includes run_id for STALE_META checks)
         @{
+            run_id            = $_voRunId
             gpu_process_found = $_gpuFound
             vram_mb           = $_vramMb
             nvidia_smi_found  = $_nvsmiExists
@@ -540,6 +541,34 @@ if ($exitCode -ne 0) {
 
     if (-not $docxHashLockFallback) {
         Write-Output "[verify_online] verify_run.ps1 FAILED (exit $exitCode)."
+        # Generate NOT_READY_report.md/docx/pptx for direct invocation (Iteration 19 DoD FAIL scenario)
+        Write-Output "  Generating NOT_READY_report (calling run_once.py --not-ready-report)..."
+        Set-Location $repoRoot
+        & python (Join-Path $repoRoot "scripts\run_once.py") "--not-ready-report" 2>&1 |
+            ForEach-Object { Write-Output "  [not-ready-report] $_" }
+        # Write LAST_RUN_SUMMARY.txt with FAIL status for direct invocation
+        $_voLrsFailPath = Join-Path $repoRoot "outputs\LAST_RUN_SUMMARY.txt"
+        $_voFailReason  = "PIPELINE_FAIL (verify_run exit $exitCode)"
+        $_voNrMd = Join-Path $repoRoot "outputs\NOT_READY.md"
+        if (Test-Path $_voNrMd) {
+            try { $_voFailReason = ((Get-Content $_voNrMd -Raw -Encoding UTF8).Trim() -replace '[\r\n\s]+',' ') } catch {}
+            if ($_voFailReason.Length -gt 300) { $_voFailReason = $_voFailReason.Substring(0, 300) }
+        }
+        $_voNowFail = (Get-Date -Format "o")
+        @"
+run_id              = $_voRunId
+started_at          = $_voNowFail
+finished_at         = $_voNowFail
+mode                = $(if ($Mode) { $Mode } else { 'manual' })
+report_mode         = brief
+status              = FAIL
+selected_events     = 0
+ai_selected_events  = 0
+canonical_output_dir = outputs
+produced_files      = (none)
+fail_reason         = $_voFailReason
+"@ | Out-File $_voLrsFailPath -Encoding UTF8 -NoNewline
+        Write-Output "LAST_RUN_SUMMARY.txt written: status=FAIL"
         exit $exitCode
     }
 }
@@ -2782,6 +2811,43 @@ if (Test-Path $_btlSumPath) {
     Write-Output "template_leak_events_count: (meta not found)"
 }
 Write-Output ""
+
+# ---------------------------------------------------------------------------
+# Write LAST_RUN_SUMMARY.txt for direct invocation (DoD acceptance — success path)
+# run_pipeline.ps1 will overwrite this with identical content when called via desktop button.
+# ---------------------------------------------------------------------------
+$_voLrsSucPath = Join-Path $repoRoot "outputs\LAST_RUN_SUMMARY.txt"
+$_voSucAiSel   = 0
+# verify_run.ps1 always invokes run_once.py with PIPELINE_REPORT_MODE=brief;
+# prefer brief unless LAST_RUN_SUMMARY.txt explicitly recorded a different mode.
+$_voSucRepMode = if ($reportMode -and $reportMode -ne "full") { $reportMode } else { "brief" }
+if (Test-Path $showcaseReadyPath) {
+    try {
+        $srVoSuc = Get-Content $showcaseReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($srVoSuc.PSObject.Properties['ai_selected_events']) { $_voSucAiSel = [int]$srVoSuc.ai_selected_events }
+    } catch {}
+}
+$_voProdList = @()
+foreach ($__pf in @("latest_brief.md","executive_report.docx","executive_report.pptx")) {
+    if (Test-Path (Join-Path $repoRoot "outputs\$__pf")) { $_voProdList += "outputs\$__pf" }
+}
+$_voProdStr = if ($_voProdList) { $_voProdList -join ", " } else { "(none)" }
+$_voNowSuc  = (Get-Date -Format "o")
+@"
+run_id              = $_voRunId
+started_at          = $_voNowSuc
+finished_at         = $_voNowSuc
+mode                = $(if ($Mode) { $Mode } else { 'manual' })
+report_mode         = $_voSucRepMode
+status              = OK
+selected_events     = $_voSucAiSel
+ai_selected_events  = $_voSucAiSel
+canonical_output_dir = outputs
+produced_files      = $_voProdStr
+"@ | Out-File $_voLrsSucPath -Encoding UTF8 -NoNewline
+Write-Output ("LAST_RUN_SUMMARY.txt written: status=OK  ai_selected_events={0}  report_mode={1}" -f $_voSucAiSel, $_voSucRepMode)
+Write-Output ""
+
 if ($pool85Degraded) {
     Write-Output "=== verify_online.ps1 COMPLETE: DEGRADED RUN (Z0 frontier85_72h below strict target; fallback accepted) ==="
 } else {

@@ -3982,10 +3982,6 @@ def _translate_md_to_zh(md_text: str) -> tuple[bool, str]:
     except ImportError:
         return False, "TRANSLATION_ENGINE_DOWN: llama_openai_client not importable"
 
-    # Allow GPU to cool after Z5 inference burst before starting chunked translation
-    import time as _tr_time
-    _tr_time.sleep(30)
-
     # 1. Extract code fences → placeholders to prevent translation
     _code_store: list[str] = []
 

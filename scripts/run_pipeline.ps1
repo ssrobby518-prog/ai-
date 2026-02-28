@@ -81,8 +81,8 @@ $env:PIPELINE_REPORT_MODE  = $ReportMode
 
 # ?? Run pipeline ??tee stdout+stderr to log AND console ??????????????????????
 Set-Location $RepoRoot
-Write-Host "[1/3] Running pipeline (stdout+stderr ??log)..." -ForegroundColor Yellow
-& $py "$RepoRoot\scripts\run_once.py" --report-mode "$ReportMode" 2>&1 | Tee-Object -FilePath $LogFile -Append
+Write-Host "[1/3] Running pipeline via verify_online.ps1 (GPU preflight + Z0 collect + gates)..." -ForegroundColor Yellow
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\verify_online.ps1" -Mode $Mode 2>&1 | Tee-Object -FilePath $LogFile -Append
 $ExitCode = $LASTEXITCODE
 
 $env:PIPELINE_RUN_ID       = $null
