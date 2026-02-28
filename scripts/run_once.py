@@ -1728,15 +1728,6 @@ def _brief_sentence_to_zh_bullet(
         if _brief_validate_zh_bullet(out):
             return out
     return ""
-def _brief_zh_base_text(zh: str) -> str:
-    """Strip trailing evidence annotation （證據：...） for dedup purposes."""
-    b = _normalize_ws(zh)
-    # Strip （證據：...）, （對照：...）, （metric: ...） etc.
-    b = re.sub(r"（(?:證據|對照|metric|anchor)：[^）]{0,60}）", "", b).strip()
-    b = re.sub(r"\((?:metric|anchor|decision-relevant detail)[^)]{0,60}\)", "", b).strip()
-    return _normalize_ws(b)
-
-
 def _brief_build_role_bullets(
     *,
     role: str,
@@ -1752,12 +1743,9 @@ def _brief_build_role_bullets(
     """Build role bullets exclusively from fact_pack sentences via local Qwen translation.
 
     BRIEF_TRANSLATION_ENGINE=local_qwen — no template fallback allowed.
-    Deduplication is by ZH base text (before evidence suffix) to prevent
-    rewriter from producing N identical ZH sentences with different suffixes.
     """
     out: list[str] = []
-    used_bullets: set[str] = set()      # full bullet dedup
-    used_zh_base: set[str] = set()      # base-ZH dedup (strips evidence suffix)
+    used_bullets: set[str] = set()
     for cand in candidates:
         en = _normalize_ws(str(cand.get("text", "") or ""))
         if not en:
@@ -1776,13 +1764,8 @@ def _brief_build_role_bullets(
         zhl = zh.lower()
         if zhl in used_bullets:
             continue
-        zh_base = _brief_zh_base_text(zh).lower()
-        if zh_base and zh_base in used_zh_base:
-            continue  # same ZH content with different evidence suffix — skip
         out.append(zh)
         used_bullets.add(zhl)
-        if zh_base:
-            used_zh_base.add(zh_base)
         if not allow_reuse_sentences:
             used_sentences.add(en.lower())
         if len(out) >= max(1, int(max_count)):
@@ -2490,7 +2473,6 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             sink: list[str],
         ) -> None:
             seen = {str(x or "").strip().lower() for x in (sink or [])}
-            seen_base = {_brief_zh_base_text(str(x or "")).lower() for x in (sink or [])}
             for cand in (pool or []):
                 if len(sink) >= max(1, int(target_count)):
                     break
@@ -2509,13 +2491,8 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                 zhl = zh.lower()
                 if zhl in seen:
                     continue
-                zh_base = _brief_zh_base_text(zh).lower()
-                if zh_base and zh_base in seen_base:
-                    continue
                 sink.append(zh)
                 seen.add(zhl)
-                if zh_base:
-                    seen_base.add(zh_base)
 
         if len(what_bullets) < _BRIEF_TARGET_WHAT_BULLETS:
             _fill_missing_from_fact_pool(
