@@ -6403,8 +6403,14 @@ def run_pipeline() -> None:
                         )
                         # STYLE_SANITY: injected Q1/Q2 must not contain banned template phrases
                         _dod_style = not bool(_style_bad_re.search(_q1_d + " " + _q2_d))
-                        # NAMING: no banned Chinese transliterations of Claude
-                        _dod_naming = not bool(_naming_bad_re.search(_q1_d + " " + _q2_d))
+                        # NAMING: no banned Chinese transliterations of Claude;
+                        # strip Claude product names (Claude Code/API/Sonnet/Haiku/Opus)
+                        # before checking so they don't falsely trigger the bare-Claude flag.
+                        _q1q2_naming_text = _q1_d + " " + _q2_d
+                        _q1q2_claude_stripped = _re_dod.sub(
+                            r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", _q1q2_naming_text
+                        )
+                        _dod_naming = not bool(_naming_bad_re.search(_q1q2_claude_stripped))
                         # AI_RELEVANCE: title or Q1/Q2 must reference an AI topic
                         _dod_ai_rel = _is_ai_relevant(_title_d, _q1_d, _q2_d, _bq1_d, _bq2_d)
 
