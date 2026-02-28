@@ -4793,7 +4793,10 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
 
         naming_text = " ".join([title, actor, q1, q2] + moves + risks)
         has_bad_trans = bool(naming_bad_re.search(naming_text))
-        has_plain_claude = ("Claude" in naming_text) and ("Claude (Anthropic)" not in naming_text)
+        # Exempt "Claude Code" (product name) from bare-Claude naming check;
+        # only flag when standalone "Claude" appears without "(Anthropic)" gloss.
+        _naming_claude_stripped = re.sub(r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", naming_text)
+        has_plain_claude = ("Claude" in _naming_claude_stripped) and ("Claude (Anthropic)" not in naming_text)
         naming_ok = (not has_bad_trans) and (not has_plain_claude)
 
         # Only use final_url as a sync token when it is a real HTTP URL.
