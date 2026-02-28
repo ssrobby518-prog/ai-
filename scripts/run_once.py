@@ -1736,10 +1736,8 @@ def _brief_sentence_to_zh_bullet(
 
     for cand in candidates:
         out = _brief_norm_bullet(cand)
-        if num and (not re.search(r"\d", out)):
-            out = _brief_norm_bullet(f"{out} (metric: {num})")
-        if anchor and (not _brief_has_anchor_token(out, [anchor])) and (not re.search(r"\d", out)):
-            out = _brief_norm_bullet(f"{out} (anchor: {anchor})")
+        # (A) No template suffix injection — trust bullet as produced.
+        # "(metric: ...)" and "(anchor: ...)" are template phrases; drop bullet if it fails.
         if _brief_validate_zh_bullet(out):
             return out
     return ""
@@ -1900,8 +1898,8 @@ def _brief_translate_fact_sentence_to_bullet(
         allow_template_fallback=False,
     )
     zh = _normalize_ws(zh)
-    if zh:
-        zh = _normalize_ws(re.split(r"[。！？!?]", zh)[0])
+    # NOTE: Do NOT split rule-based output by 。！？ — _brief_sentence_to_zh_bullet
+    # already validates the full text internally. Splitting destroys validated bullets.
 
     if zh:
         _brief_trans_stats["rule_success"] += 1
@@ -1932,7 +1930,8 @@ def _brief_translate_fact_sentence_to_bullet(
                 if _ok and _txt:
                     zh = _normalize_ws(_txt.strip())
                     if zh:
-                        zh = _normalize_ws(re.split(r"[。！？!?]", zh)[0])
+                        # Trim Qwen multi-sentence output to first sentence
+                        zh = _normalize_ws(re.split(r"[。！？!?]", zh)[0]) or zh
                     if zh:
                         _brief_trans_stats["qwen_success"] += 1
                     else:
@@ -3561,7 +3560,12 @@ def _write_brief_template_leak_meta(prepared: list[dict]) -> int:
             "Impact target:",
             "Decision angle:",
             "metric: key metric",
-            "anchor:",
+            "(anchor:",
+            "(metric:",
+            "Source states ",
+            "Key metric is ",
+            "Key detail sentence",
+            "Impact sentence",
         ]
         leaks: list[dict] = []
         for p in (prepared or []):
