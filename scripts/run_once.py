@@ -4792,10 +4792,10 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         quote_lock_ok = quote_lock_q1 and quote_lock_q2 and quote_min_len_ok
 
         naming_text = " ".join([title, actor, q1, q2] + moves + risks)
-        has_bad_trans = bool(naming_bad_re.search(naming_text))
-        # Exempt "Claude Code" (product name) from bare-Claude naming check;
-        # only flag when standalone "Claude" appears without "(Anthropic)" gloss.
+        # Exempt Claude product names (Claude Code/API/Sonnet/Haiku/Opus) from bare-Claude
+        # naming check; these are specific product names that don't require "(Anthropic)" gloss.
         _naming_claude_stripped = re.sub(r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", naming_text)
+        has_bad_trans = bool(naming_bad_re.search(_naming_claude_stripped))
         has_plain_claude = ("Claude" in _naming_claude_stripped) and ("Claude (Anthropic)" not in naming_text)
         naming_ok = (not has_bad_trans) and (not has_plain_claude)
 
