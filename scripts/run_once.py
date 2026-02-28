@@ -2490,10 +2490,26 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
                 target_count=_BRIEF_TARGET_WHAT_BULLETS,
                 sink=what_bullets,
             )
+        if len(what_bullets) < _BRIEF_TARGET_WHAT_BULLETS:
+            # Second pass: widen to full fact pack when dedicated pool exhausted
+            _fill_missing_from_fact_pool(
+                role_name="what",
+                pool=_sorted_by_score,
+                target_count=_BRIEF_TARGET_WHAT_BULLETS,
+                sink=what_bullets,
+            )
         if len(key_details_bullets) < _BRIEF_TARGET_KEY_BULLETS:
             _fill_missing_from_fact_pool(
                 role_name="key",
-                pool=_key_pool if _key_pool else _what_pool,
+                pool=_key_pool if _key_pool else _sorted_by_score,
+                target_count=_BRIEF_TARGET_KEY_BULLETS,
+                sink=key_details_bullets,
+            )
+        if len(key_details_bullets) < _BRIEF_TARGET_KEY_BULLETS:
+            # Second pass: widen to full fact pack (key signals exhausted)
+            _fill_missing_from_fact_pool(
+                role_name="key",
+                pool=_sorted_by_score,
                 target_count=_BRIEF_TARGET_KEY_BULLETS,
                 sink=key_details_bullets,
             )
