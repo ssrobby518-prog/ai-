@@ -4792,12 +4792,20 @@ def _evaluate_exec_deliverable_docx_pptx_hard(
         quote_lock_ok = quote_lock_q1 and quote_lock_q2 and quote_min_len_ok
 
         naming_text = " ".join([title, actor, q1, q2] + moves + risks)
-        # Exempt Claude product names (Claude Code/API/Sonnet/Haiku/Opus) from bare-Claude
-        # naming check; these are specific product names that don't require "(Anthropic)" gloss.
-        _naming_claude_stripped = re.sub(r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", naming_text)
-        has_bad_trans = bool(naming_bad_re.search(_naming_claude_stripped))
-        has_plain_claude = ("Claude" in _naming_claude_stripped) and ("Claude (Anthropic)" not in naming_text)
-        naming_ok = (not has_bad_trans) and (not has_plain_claude)
+        # When the event title explicitly names a Claude product (Claude Code, Claude API,
+        # Claude Sonnet, etc.), company context is established by the title itself —
+        # canonical narratives that say "Claude 發布..." are not ambiguous and should not
+        # be penalised.  Otherwise, strip product-name occurrences then check for bare Claude.
+        _claude_product_title = bool(re.search(
+            r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", title, re.IGNORECASE
+        ))
+        if _claude_product_title:
+            naming_ok = True
+        else:
+            _naming_claude_stripped = re.sub(r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", naming_text)
+            has_bad_trans = bool(naming_bad_re.search(_naming_claude_stripped))
+            has_plain_claude = ("Claude" in _naming_claude_stripped) and ("Claude (Anthropic)" not in naming_text)
+            naming_ok = (not has_bad_trans) and (not has_plain_claude)
 
         # Only use final_url as a sync token when it is a real HTTP URL.
         # Placeholder values like "??????? get sanitized to "" by safe_text in
@@ -6403,14 +6411,21 @@ def run_pipeline() -> None:
                         )
                         # STYLE_SANITY: injected Q1/Q2 must not contain banned template phrases
                         _dod_style = not bool(_style_bad_re.search(_q1_d + " " + _q2_d))
-                        # NAMING: no banned Chinese transliterations of Claude;
-                        # strip Claude product names (Claude Code/API/Sonnet/Haiku/Opus)
-                        # before checking so they don't falsely trigger the bare-Claude flag.
-                        _q1q2_naming_text = _q1_d + " " + _q2_d
-                        _q1q2_claude_stripped = _re_dod.sub(
-                            r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", _q1q2_naming_text
-                        )
-                        _dod_naming = not bool(_naming_bad_re.search(_q1q2_claude_stripped))
+                        # NAMING: when the event title explicitly names a Claude product
+                        # (Claude Code, Claude API, etc.) the company context is established
+                        # by the title; canonical narratives that say "Claude 發布..." for
+                        # such articles are unambiguous and should not be penalised.
+                        _claude_product_in_title_d = bool(_re_dod.search(
+                            r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", _title_d, _re_dod.IGNORECASE
+                        ))
+                        if _claude_product_in_title_d:
+                            _dod_naming = True
+                        else:
+                            _q1q2_naming_text = _q1_d + " " + _q2_d
+                            _q1q2_claude_stripped = _re_dod.sub(
+                                r"\bClaude\s+(?:Code|API|Sonnet|Haiku|Opus)\b", "", _q1q2_naming_text
+                            )
+                            _dod_naming = not bool(_naming_bad_re.search(_q1q2_claude_stripped))
                         # AI_RELEVANCE: title or Q1/Q2 must reference an AI topic
                         _dod_ai_rel = _is_ai_relevant(_title_d, _q1_d, _q2_d, _bq1_d, _bq2_d)
 
