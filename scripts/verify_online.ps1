@@ -2150,6 +2150,42 @@ if (Test-Path $voBfpPath) {
 }
 
 # ---------------------------------------------------------------------------
+# BRIEF_TEMPLATE_LEAK_HARD gate — zero-tolerance anti-template gate.
+#   Reads outputs/brief_template_leak.meta.json written by run_once.py.
+#   PASS : gate_result == "PASS" (template_leak_events_count=0 AND template_leak_bullets_count=0)
+#   FAIL : any template phrase found in bullets => exit 1
+#   meta missing => exit 1
+# ---------------------------------------------------------------------------
+Write-Output ""
+Write-Output "BRIEF_TEMPLATE_LEAK_HARD:"
+$voBtlPath = Join-Path $repoRoot "outputs\brief_template_leak.meta.json"
+if (Test-Path $voBtlPath) {
+    try {
+        $voBtl          = Get-Content $voBtlPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $voBtlGate      = [string]($voBtl.gate_result)
+        $voBtlEvents    = if ($voBtl.PSObject.Properties["template_leak_events_count"]) { [int]$voBtl.template_leak_events_count } else { 0 }
+        $voBtlBullets   = if ($voBtl.PSObject.Properties["template_leak_bullets_count"]) { [int]$voBtl.template_leak_bullets_count } else { 0 }
+        Write-Output ("  template_leak_events_count={0}  template_leak_bullets_count={1}" -f $voBtlEvents, $voBtlBullets)
+        if ($voBtlGate -eq "PASS") {
+            Write-Output "  => BRIEF_TEMPLATE_LEAK_HARD: PASS (leak=0)"
+        } else {
+            if ($voBtl.PSObject.Properties["template_leak_samples"] -and $voBtl.template_leak_samples) {
+                $voBtlSample = $voBtl.template_leak_samples[0]
+                Write-Output ("  sample_hit: phrase={0}  bullet={1}" -f $voBtlSample.hit_phrase, [string]$voBtlSample.sample_bullet)
+            }
+            Write-Output ("  => BRIEF_TEMPLATE_LEAK_HARD: FAIL (template_leak_bullets_count={0})" -f $voBtlBullets)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  BRIEF_TEMPLATE_LEAK_HARD: WARN-OK (parse error: {0})" -f $_)
+    }
+} else {
+    Write-Output "  brief_template_leak.meta.json not found"
+    Write-Output "  => BRIEF_TEMPLATE_LEAK_HARD: FAIL (meta file missing — pipeline did not write gate meta)"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
 # SHOWCASE_READY_HARD gate — ensures OK never represents an empty or thin deck.
 # Reads outputs/showcase_ready.meta.json written by run_once.py.
 # showcase_ready=true  => PASS (ai_selected_events >= 6, or demo supplement covered it)

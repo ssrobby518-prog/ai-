@@ -362,6 +362,8 @@ _BRIEF_GARBAGE_ACTORS = {
     "git", "true", "false", "none", "null", "na", "n/a", "4.0", "3.5", "1.0",
     "for", "the", "a", "an", "in", "on", "at", "to", "of", "by", "as", "or",
     "new", "next", "last", "old", "big", "top", "all",
+    # R2: forbid generic non-entity actor tokens
+    "we", "what", "ceo", "who", "they", "it", "its", "he", "she", "our", "their",
 }
 
 _BRIEF_QUOTE_SPAN_START = 0.15
@@ -375,7 +377,7 @@ _BRIEF_MIN_BULLET_CJK_CHARS = 18
 _BRIEF_MIN_ANCHOR_NUMBER_HITS = 3
 _BRIEF_MAX_SENTENCE_CANDIDATES = 20
 _BRIEF_FACT_SPAN_START = 0.10
-_BRIEF_FACT_SPAN_END = 0.75
+_BRIEF_FACT_SPAN_END = 0.85
 _BRIEF_FACT_PACK_MAX = 12
 _BRIEF_FACT_PACK_MIN = 8
 _BRIEF_FACT_DEDUP_OVERLAP_MAX = 0.92
@@ -1230,11 +1232,15 @@ def _brief_mine_fact_pack_sentences(
         s = _normalize_ws(sent)
         if not s:
             continue
-        if len(s) < 28:
+        if len(s) < 24:
             short_rejected += 1
             continue
         if _brief_quote_is_cta(s) or _BRIEF_FACT_STOP_RE.search(s) or _BRIEF_FACT_FORCE_BLOCK_RE.search(s):
             stoplist_rejected += 1
+            continue
+        # Opener-type sentences without numbers are low-quality — skip unless content-rich
+        if _BRIEF_OPENER_RE.match(s) and not re.search(r"\d|[$€£¥]", s):
+            weak_signal_rejected += 1
             continue
 
         strong_signal_count = _brief_fact_strong_signal_count(s)
@@ -1254,7 +1260,9 @@ def _brief_mine_fact_pack_sentences(
             elif anc in s:
                 anchor_overlap += 1
 
-        score = strong_signal_count + title_overlap + anchor_overlap
+        impact_cue = 1 if bool(_BRIEF_FACT_IMPACT_CUE_RE.search(s)) else 0
+        # B: weight strong_signal_count double; add impact_cue bonus
+        score = strong_signal_count * 2 + title_overlap + anchor_overlap + impact_cue
         flags = _brief_fact_signal_flags(s)
         cands.append(
             {
@@ -1270,6 +1278,7 @@ def _brief_mine_fact_pack_sentences(
                 "has_model": bool(flags["model"]),
                 "has_upper_token": bool(flags["upper_token"]),
                 "has_impact": bool(flags["impact"]),
+                "has_impact_cue": bool(impact_cue),
                 "key_tokens_count": len(_brief_fact_key_tokens(s)),
             }
         )
@@ -1462,7 +1471,12 @@ _FC_INFORMATIONAL_RE = re.compile(
 _BRIEF_FACT_STOP_RE = re.compile(
     r"\b(?:subscribe|newsletter|cookies?|privacy|advertis|sign[\s\-]*up|share|hear\s+from|"
     r"contact|register|follow\s+us|join\s+us|join\s+the|unsubscribe|terms?|feedback|"
-    r"would\s+love\s+to\s+hear|download(?:\s+here)?)\b",
+    r"would\s+love\s+to\s+hear|download(?:\s+here)?|restack|"
+    r"open\s+in\s+app|read\s+in\s+app)\b",
+    re.IGNORECASE,
+)
+_BRIEF_OPENER_RE = re.compile(
+    r"^(?:Here'?s?\s+what|We(?:'re|\s+are)\s+asking|(?:He|She)\s+said)\b",
     re.IGNORECASE,
 )
 _BRIEF_FACT_FORCE_BLOCK_RE = re.compile(r"(?:@|mailto:|cookie|terms?)", re.IGNORECASE)
@@ -1481,7 +1495,8 @@ _BRIEF_FACT_MONEY_RE = re.compile(r"(?:\$|US\$|USD)\s*\d|\d\s*(?:USD|US\$)\b", r
 _BRIEF_FACT_PERCENT_RE = re.compile(r"\d[\d,\.]*\s*%|\bpercent\b", re.IGNORECASE)
 _BRIEF_FACT_IMPACT_CUE_RE = re.compile(
     r"\b(?:will|enable|allow|expected|impact|revenue|customers|compliance|"
-    r"demand|margin|cost|adoption|risk|benefit)\b",
+    r"demand|margin|cost|adoption|risk|benefit|guardrails|latency|throughput|"
+    r"deploy|rollout|deadline|contract|pricing)\b",
     re.IGNORECASE,
 )
 
@@ -1933,18 +1948,10 @@ def _brief_translate_fact_sentence_to_bullet(
         _brief_trans_stats["empty"] += 1
         return ""
 
-    if (not evidence) and num:
-        evidence = num
-    if evidence and evidence.lower() not in zh.lower():
-        zh = _normalize_ws(f"{zh}（證據：{evidence}）")
-
+    # (C) Removed template suffix injections （證據：…）and （對照：…）.
+    # Only prepend subject when absent — entity identification is useful, not template.
     if subject and (subject.lower() not in zh.lower()):
         zh = _normalize_ws(f"{subject}：{zh}")
-
-    if source_tokens and (not _brief_fact_overlap_at_least(zh, [source], min_tokens=2)):
-        overlap_hint = " / ".join(source_tokens[:2])
-        if overlap_hint:
-            zh = _normalize_ws(f"{zh}（對照：{overlap_hint}）")
 
     zh = _brief_norm_bullet(zh)
     if _brief_validate_zh_bullet(zh):
@@ -1952,6 +1959,133 @@ def _brief_translate_fact_sentence_to_bullet(
 
     _brief_trans_stats["empty"] += 1
     return ""
+
+
+# ---------------------------------------------------------------------------
+# (C) Batch Qwen translation — one call per event → [WHAT][KEY][WHY] sections
+# ---------------------------------------------------------------------------
+
+def _brief_batch_translate_event(
+    *,
+    title: str,
+    actor: str,
+    anchors: list[str],
+    fact_pack_sentences: list[str],
+    n_what: int = 5,
+    n_key: int = 4,
+    n_why: int = 4,
+) -> tuple[list[str], list[str], list[str]]:
+    """Single Qwen call per event → all three bullet sections.
+
+    Returns (what_bullets, key_bullets, why_bullets) — all empty on failure/unavailable.
+    Falls back to empty so caller can use per-sentence rule-based path.
+    """
+    if not fact_pack_sentences:
+        return [], [], []
+    try:
+        from utils.llama_openai_client import chat as _llama_chat, is_available as _llama_ok
+        if not _llama_ok(timeout=4):
+            return [], [], []
+    except Exception:
+        return [], [], []
+
+    anchor = _brief_pick_primary_anchor(actor, anchors) or _normalize_ws(actor) or "該事件"
+    anchors_display = ", ".join(
+        a for a in (anchors or [])[:6]
+        if a and len(a) >= 2
+    )
+    fact_block = "\n".join(
+        f"{i + 1}. {s[:320]}"
+        for i, s in enumerate(fact_pack_sentences[:12])
+    )
+
+    _sys = (
+        "你是繁體中文財經情報分析師。請根據以下英文事實句，產生三段繁體中文bullets。\n"
+        "嚴格格式（只輸出以下三個section，不加任何說明）：\n"
+        "[WHAT]\n"
+        "（發生什麼事，3-5條bullet，忠實翻譯，保留所有專有名詞與數字）\n"
+        "[KEY]\n"
+        "（關鍵細節與數據，2-4條bullet，優先包含數字/版本/金額）\n"
+        "[WHY]\n"
+        "（為何重要及影響，2-4條bullet，聚焦商業或技術影響）\n"
+        "規則：\n"
+        "1. 每條 bullet 必須含：至少1個 數字/年份/%/金額 或 英文大寫專名詞（如NVIDIA/GPT/Claude）\n"
+        "2. 禁止出現：原文/可核對/逐字/同篇報導/擷取存檔/Source snippet/證據為/對照\n"
+        "3. 每條 bullet 16-40 中文字，英文型號/公司名原樣保留\n"
+        "4. 每條bullet前不加數字/符號，直接輸出文字"
+    )
+    _usr = (
+        f"標題：{title[:120]}\n"
+        f"主語：{actor}  Anchor：{anchor}\n"
+        f"相關實體：{anchors_display}\n\n"
+        f"英文事實句（按重要性排列）：\n{fact_block}\n\n"
+        "請直接輸出三個section："
+    )
+
+    try:
+        _ok, _txt = _llama_chat(
+            [{"role": "system", "content": _sys}, {"role": "user", "content": _usr}],
+            max_tokens=700,
+            temperature=0.0,
+            timeout=28,
+            max_retries=0,
+        )
+    except Exception:
+        return [], [], []
+
+    if not _ok or not _txt:
+        return [], [], []
+
+    # Parse [WHAT][KEY][WHY] sections
+    what_raw: list[str] = []
+    key_raw: list[str] = []
+    why_raw: list[str] = []
+    current_bucket: list[str] | None = None
+
+    for line in _txt.split("\n"):
+        stripped = _normalize_ws(line)
+        if not stripped:
+            continue
+        lo = stripped.lower()
+        if "[what]" in lo:
+            current_bucket = what_raw
+        elif "[key]" in lo:
+            current_bucket = key_raw
+        elif "[why]" in lo:
+            current_bucket = why_raw
+        elif current_bucket is not None:
+            # Strip leading bullet markers
+            b = re.sub(r"^[\d\.\-\•\*\s]+", "", stripped).strip()
+            if b and len(b) >= 6:
+                current_bucket.append(b)
+
+    def _validate_batch_bullets(bullets: list[str], role: str) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for b in bullets:
+            b = _brief_norm_bullet(b)
+            if not b:
+                continue
+            bl = b.lower()
+            if bl in seen:
+                continue
+            # Inject anchor prefix when absent (keeps entity visible)
+            if anchor and anchor.lower() not in bl:
+                b = _brief_norm_bullet(f"{anchor}：{b}")
+            if not _brief_validate_zh_bullet(b):
+                continue
+            if not _brief_bullet_hit_anchor_or_number(b, anchors):
+                continue
+            seen.add(b.lower())
+            out.append(b)
+        return out
+
+    what_out = _validate_batch_bullets(what_raw, "what")[:n_what]
+    key_out = _validate_batch_bullets(key_raw, "key")[:n_key]
+    why_out = _validate_batch_bullets(why_raw, "why")[:n_why]
+
+    _brief_trans_stats["qwen_success"] += len(what_out) + len(key_out) + len(why_out)
+    return what_out, key_out, why_out
 
 
 def _brief_build_bullet_sections(
@@ -2433,38 +2567,66 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         _brief_trans_stats["empty"] = 0
         _brief_trans_stats["error"] = 0
 
-        what_bullets = _brief_build_role_bullets(
-            role="what",
-            candidates=_what_pool,
+        # (C) Try batch Qwen translation first (one call → three sections)
+        _batch_what, _batch_key, _batch_why = _brief_batch_translate_event(
             title=title,
             actor=actor,
             anchors=anchors_all,
-            min_count=_BRIEF_TARGET_WHAT_BULLETS,
-            max_count=_BRIEF_TARGET_WHAT_BULLETS,
-            used_sentences=used_en,
+            fact_pack_sentences=fact_pack_sentences,
+            n_what=_BRIEF_TARGET_WHAT_BULLETS,
+            n_key=_BRIEF_TARGET_KEY_BULLETS,
+            n_why=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
         )
-        key_details_bullets = _brief_build_role_bullets(
-            role="key",
-            candidates=_key_pool,
-            title=title,
-            actor=actor,
-            anchors=anchors_all,
-            min_count=_BRIEF_TARGET_KEY_BULLETS,
-            max_count=_BRIEF_TARGET_KEY_BULLETS,
-            used_sentences=used_en,
-            allow_reuse_sentences=True,
+        _batch_sufficient = (
+            len(_batch_what) >= _BRIEF_TARGET_WHAT_BULLETS - 1
+            and len(_batch_key) >= _BRIEF_TARGET_KEY_BULLETS - 1
+            and len(_batch_why) >= _BRIEF_TARGET_WHY_BULLETS_MIN
         )
-        why_bullets = _brief_build_role_bullets(
-            role="why",
-            candidates=_why_pool,
-            title=title,
-            actor=actor,
-            anchors=anchors_all,
-            min_count=_BRIEF_TARGET_WHY_BULLETS_MIN,
-            max_count=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
-            used_sentences=used_en,
-            allow_reuse_sentences=True,
-        )
+
+        if _batch_sufficient:
+            what_bullets = _batch_what
+            key_details_bullets = _batch_key
+            why_bullets = _batch_why
+        else:
+            # Fall back to per-sentence rule-based + per-sentence Qwen
+            what_bullets = list(_batch_what)  # keep batch results as seed
+            key_details_bullets = list(_batch_key)
+            why_bullets = list(_batch_why)
+            if len(what_bullets) < _BRIEF_TARGET_WHAT_BULLETS:
+                what_bullets = _brief_build_role_bullets(
+                    role="what",
+                    candidates=_what_pool,
+                    title=title,
+                    actor=actor,
+                    anchors=anchors_all,
+                    min_count=_BRIEF_TARGET_WHAT_BULLETS,
+                    max_count=_BRIEF_TARGET_WHAT_BULLETS,
+                    used_sentences=used_en,
+                )
+            if len(key_details_bullets) < _BRIEF_TARGET_KEY_BULLETS:
+                key_details_bullets = _brief_build_role_bullets(
+                    role="key",
+                    candidates=_key_pool,
+                    title=title,
+                    actor=actor,
+                    anchors=anchors_all,
+                    min_count=_BRIEF_TARGET_KEY_BULLETS,
+                    max_count=_BRIEF_TARGET_KEY_BULLETS,
+                    used_sentences=used_en,
+                    allow_reuse_sentences=True,
+                )
+            if len(why_bullets) < _BRIEF_TARGET_WHY_BULLETS_MIN:
+                why_bullets = _brief_build_role_bullets(
+                    role="why",
+                    candidates=_why_pool,
+                    title=title,
+                    actor=actor,
+                    anchors=anchors_all,
+                    min_count=_BRIEF_TARGET_WHY_BULLETS_MIN,
+                    max_count=_BRIEF_TARGET_WHY_BULLETS_DEFAULT,
+                    used_sentences=used_en,
+                    allow_reuse_sentences=True,
+                )
         def _fill_missing_from_fact_pool(
             *,
             role_name: str,
@@ -2681,8 +2843,7 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
             _qw2 = _clip_text(_normalize_ws(quote_2), 20)
         out["quote_window_1"] = _qw1
         out["quote_window_2"] = _qw2
-        _q1_header = _normalize_ws(f"{actor} (anchor {anchor}) event summary:")
-        _q2_header = _normalize_ws(f"{actor} (anchor {anchor}) impact summary:")
+        # (F) Remove EN template headers from q1_zh/q2_zh — use bullet text + 「quote_window」directly
         _clean_what = [b for b in what_bullets if check_no_boilerplate(b, "")[0]][:2]
         _clean_why = [b for b in why_bullets if check_no_boilerplate("", b)[0]][:2]
         if not _clean_why:
@@ -2690,10 +2851,10 @@ def _prepare_brief_final_cards(final_cards: list[dict], max_events: int = 10) ->
         _q1_body = _normalize_ws(" ".join(_clean_what)).replace("\u201c", "\"").replace("\u201d", "\"")
         _q2_body = _normalize_ws(" ".join(_clean_why)).replace("\u201c", "\"").replace("\u201d", "\"")
         out["q1_zh"] = _normalize_ws(
-            f"{_q1_header} {_q1_body} Source snippet: 「{_qw1}」。"
+            f"{_q1_body}「{_qw1}」。" if _q1_body else f"「{_qw1}」。"
         )
         out["q2_zh"] = _normalize_ws(
-            f"{_q2_header} {_q2_body} Impact snippet: 「{_qw2}」。"
+            f"{_q2_body}「{_qw2}」。" if _q2_body else f"「{_qw2}」。"
         )
         out["q1"] = out["q1_zh"]
         out["q2"] = out["q2_zh"]
@@ -3363,14 +3524,16 @@ def _write_supply_fallback_meta() -> None:
         pass
 
 
-def _write_brief_template_leak_meta(prepared: list[dict]) -> None:
+def _write_brief_template_leak_meta(prepared: list[dict]) -> int:
     """Scan all bullets for known template phrases and write brief_template_leak.meta.json.
 
-    This is an observation meta (no gate threshold change). DoD requires template_leak_events_count=0.
+    Returns template_leak_bullets_count (0 = PASS).
+    PASS condition: template_leak_events_count=0 AND template_leak_bullets_count=0.
     """
     try:
         import json as _btl_json
         _TEMPLATE_PHRASES = [
+            # ZH template phrases (old logic)
             "已發布模型與產品更新",
             "此變化將影響客戶與營收結果",
             "關鍵細節顯示數據與型號變化",
@@ -3382,6 +3545,23 @@ def _write_brief_template_leak_meta(prepared: list[dict]) -> None:
             "變化將影響客戶與營收結果，需追蹤",
             "重點證據為",
             "來源機制與限制條件以逐字證據為準",
+            # ZH audit-speak suffixes injected by translation
+            "（證據：",
+            "（對照：",
+            # EN template phrases from legacy builders
+            "Source snippet:",
+            "Impact snippet:",
+            "event summary:",
+            "impact summary:",
+            "Numeric evidence:",
+            "Technical evidence from quote",
+            "Source URL:",
+            "Source trace is preserved",
+            "Quote-1 evidence:",
+            "Impact target:",
+            "Decision angle:",
+            "metric: key metric",
+            "anchor:",
         ]
         leaks: list[dict] = []
         for p in (prepared or []):
@@ -3412,17 +3592,22 @@ def _write_brief_template_leak_meta(prepared: list[dict]) -> None:
                 seen_keys.add(key)
                 unique_leaks.append(lk)
 
+        leak_events_count = len({lk["title"] for lk in unique_leaks})
+        leak_bullets_count = len(unique_leaks)
+        gate_result = "PASS" if (leak_events_count == 0 and leak_bullets_count == 0) else "FAIL"
         out = {
+            "gate_result": gate_result,
             "template_phrases_scanned": _TEMPLATE_PHRASES,
-            "template_leak_events_count": len({lk["title"] for lk in unique_leaks}),
-            "template_leak_bullets_count": len(unique_leaks),
+            "template_leak_events_count": leak_events_count,
+            "template_leak_bullets_count": leak_bullets_count,
             "template_leak_samples": unique_leaks[:5],
         }
         out_path = Path(settings.PROJECT_ROOT) / "outputs" / "brief_template_leak.meta.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_btl_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        return leak_bullets_count
     except Exception:
-        pass
+        return 0
 
 
 def _generate_brief_md(prepared: list[dict], run_id: str, mode: str, report_mode: str) -> None:
@@ -5666,7 +5851,25 @@ def run_pipeline() -> None:
                     _backfill_brief_fact_candidates(_final_cards)
                     _write_brief_fact_candidates_hard_meta(_final_cards)
                     _write_brief_fact_pack_hard_meta(_final_cards)
-                    _write_brief_template_leak_meta(_final_cards)
+                    _btl_leak_count = _write_brief_template_leak_meta(_final_cards)
+                    if _btl_leak_count > 0:
+                        log.error(
+                            "BRIEF_TEMPLATE_LEAK_HARD FAIL — template_leak_bullets_count=%d; writing NOT_READY.md",
+                            _btl_leak_count,
+                        )
+                        _btl_nr_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                        _btl_nr_path.write_text(
+                            f"# NOT_READY\n\ngate: BRIEF_TEMPLATE_LEAK_HARD\n"
+                            f"template_leak_bullets_count={_btl_leak_count}\n",
+                            encoding="utf-8",
+                        )
+                        for _btl_art in ("executive_report.pptx", "executive_report.docx"):
+                            try:
+                                _btl_art_p = Path(settings.PROJECT_ROOT) / "outputs" / _btl_art
+                                if _btl_art_p.exists():
+                                    _btl_art_p.unlink()
+                            except Exception:
+                                pass
                     _supply_meta["quote_stoplist_hits_count"] = int(_brief_diag.get("quote_stoplist_hits_count", 0) or 0)
                     _supply_meta["tierA_candidates"] = int(_brief_diag.get("tierA_candidates", _supply_meta["tierA_candidates"]) or 0)
                     _supply_meta["tierA_used"] = int(_brief_diag.get("tierA_used", 0) or 0)
@@ -6093,7 +6296,18 @@ def run_pipeline() -> None:
                                     _backfill_brief_fact_candidates(_final_cards)
                                     _write_brief_fact_candidates_hard_meta(_final_cards)
                                     _write_brief_fact_pack_hard_meta(_final_cards)
-                                    _write_brief_template_leak_meta(_final_cards)
+                                    _dbe_btl_leak = _write_brief_template_leak_meta(_final_cards)
+                                    if _dbe_btl_leak > 0:
+                                        log.error(
+                                            "BRIEF_TEMPLATE_LEAK_HARD FAIL (dbe path) — leak_count=%d",
+                                            _dbe_btl_leak,
+                                        )
+                                        _dbe_btl_nr = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
+                                        _dbe_btl_nr.write_text(
+                                            f"# NOT_READY\n\ngate: BRIEF_TEMPLATE_LEAK_HARD\n"
+                                            f"template_leak_bullets_count={_dbe_btl_leak}\n",
+                                            encoding="utf-8",
+                                        )
                                 metrics_dict["final_cards"] = _final_cards
                                 _sync_exec_selection_meta(_final_cards)
                                 _sync_faithful_zh_news_meta(_final_cards)

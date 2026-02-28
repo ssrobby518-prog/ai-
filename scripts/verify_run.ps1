@@ -1299,7 +1299,14 @@ Invoke-MetaGate -Label "BRIEF_FACT_PACK_HARD" -MetaFile "brief_fact_pack_hard.me
 }
 
 Write-Host ""
-Write-Host "AI_PURITY_GATES: 13/13 PASS" -ForegroundColor Green
+Write-Host "[AI Purity Gate] BRIEF_TEMPLATE_LEAK_HARD..." -ForegroundColor Yellow
+Invoke-MetaGate -Label "BRIEF_TEMPLATE_LEAK_HARD" -MetaFile "brief_template_leak.meta.json" -InfoBuilder {
+    param($d)
+    "template_leak_events_count=$((Get-MetaInt $d 'template_leak_events_count' 0)) template_leak_bullets_count=$((Get-MetaInt $d 'template_leak_bullets_count' 0))"
+}
+
+Write-Host ""
+Write-Host "AI_PURITY_GATES: 14/14 PASS" -ForegroundColor Green
 
 # FULLTEXT_FIDELITY OBSERVATION (non-fatal) — reads fulltext_fidelity.meta.json
 $fidelityMetaPath = Join-Path $PSScriptRoot "..\outputs\fulltext_fidelity.meta.json"
