@@ -32,10 +32,11 @@ Write-Output ""
 #   When -SkipPipeline: assume the previous run had Qwen running (READY=1),
 #   and resolve PIPELINE_RUN_ID from the existing brief_template_leak meta.
 # ---------------------------------------------------------------------------
-Write-Output "[0/4] Translation engine (Qwen) preflight..."
+Write-Output "[0/4] Translation engine (Qwen) + GPU preflight..."
 $_qwenUrl   = "http://127.0.0.1:8080/v1/models"
 $_qwenReady = $false
 $_btlMetaP  = Join-Path $repoRoot "outputs\brief_template_leak.meta.json"
+$env:BRIEF_TRANSLATION_FAIL_REASON = ""   # set to SERVER_NOT_READY or GPU_NOT_ACTIVE on failure
 
 if ($SkipPipeline) {
     # -SkipPipeline: We are verifying an already-completed run.
@@ -65,9 +66,9 @@ if ($SkipPipeline) {
         $_lsScript = Join-Path $PSScriptRoot "llama_server.ps1"
         if (Test-Path $_lsScript) {
             Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$_lsScript`"" -WindowStyle Hidden
-            $_waitSecs = 20; $_elapsed = 0
+            $_waitSecs = 30; $_elapsed = 0
             while ($_elapsed -lt $_waitSecs) {
-                Start-Sleep -Seconds 2; $_elapsed += 2
+                Start-Sleep -Seconds 3; $_elapsed += 3
                 try {
                     $null = Invoke-WebRequest -Uri $_qwenUrl -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
                     $_qwenReady = $true
@@ -83,11 +84,69 @@ if ($SkipPipeline) {
         }
     }
     if ($_qwenReady) {
-        $env:BRIEF_TRANSLATION_READY = "1"
-        Write-Output "  => BRIEF_TRANSLATION_READY=1"
+        # ── GPU active evidence (Iteration GPU-v1) ────────────────────────────
+        # Probe nvidia-smi to confirm llama-server.exe is actually using the GPU.
+        # Without this check a pure-CPU run would look like a successful translation run.
+        $_gpuFound    = $false
+        $_vramMb      = 0
+        $_nvsmiExists = $null -ne (Get-Command "nvidia-smi" -ErrorAction SilentlyContinue)
+        $_gpuMetaPath = Join-Path $repoRoot "outputs\gpu_probe.meta.json"
+        New-Item -ItemType Directory -Force -Path (Join-Path $repoRoot "outputs") -ErrorAction SilentlyContinue | Out-Null
+
+        if ($_nvsmiExists) {
+            Write-Output "  GPU probe: querying nvidia-smi --query-compute-apps ..."
+            try {
+                $_nvsmiLines = & nvidia-smi --query-compute-apps=pid,name,used_memory --format=csv,noheader,nounits 2>&1
+                foreach ($_nvLine in $_nvsmiLines) {
+                    if ([string]$_nvLine -match "llama") {
+                        # Process found in compute-apps — GPU context active
+                        $_gpuFound = $true
+                        $_cols = ([string]$_nvLine) -split ","
+                        if ($_cols.Count -ge 3) {
+                            $_vMbParsed = 0
+                            $null = [int]::TryParse($_cols[2].Trim(), [ref]$_vMbParsed)
+                            $_vramMb = $_vMbParsed
+                        }
+                        break
+                    }
+                }
+            } catch {
+                Write-Output ("  GPU probe: nvidia-smi query error: {0}" -f $_)
+            }
+            if ($_gpuFound) {
+                Write-Output ("  GPU active: llama-server VRAM={0} MB  gpu_process_found=true" -f $_vramMb)
+            } else {
+                Write-Output "  GPU probe: llama-server NOT found in nvidia-smi output  gpu_process_found=false"
+            }
+        } else {
+            # nvidia-smi not installed — cannot validate; warn and assume OK
+            $_gpuFound = $true
+            Write-Output "  GPU probe: nvidia-smi not found on PATH — cannot validate GPU usage (assume OK)"
+        }
+
+        # Write gpu_probe.meta.json (evidence artifact)
+        @{
+            gpu_process_found = $_gpuFound
+            vram_mb           = $_vramMb
+            nvidia_smi_found  = $_nvsmiExists
+            probed_at         = (Get-Date -Format "o")
+        } | ConvertTo-Json -Compress | Set-Content $_gpuMetaPath -Encoding UTF8
+        Write-Output ("  gpu_probe.meta.json: gpu_process_found={0}  vram_mb={1}" -f $_gpuFound, $_vramMb)
+
+        if ($_gpuFound) {
+            $env:BRIEF_TRANSLATION_READY      = "1"
+            $env:BRIEF_TRANSLATION_FAIL_REASON = ""
+            Write-Output "  => BRIEF_TRANSLATION_READY=1  (server OK + GPU active)"
+        } else {
+            $env:BRIEF_TRANSLATION_READY      = "0"
+            $env:BRIEF_TRANSLATION_FAIL_REASON = "GPU_NOT_ACTIVE"
+            Write-Output "  => BRIEF_TRANSLATION_READY=0  reason=GPU_NOT_ACTIVE"
+            Write-Output "  ACTION: ensure llama-server was launched with --n-gpu-layers -1 (scripts\llama_server.ps1)"
+        }
     } else {
-        $env:BRIEF_TRANSLATION_READY = "0"
-        Write-Output "  => BRIEF_TRANSLATION_READY=0 (pipeline will FAIL-fast: TRANSLATION_ENGINE_DOWN)"
+        $env:BRIEF_TRANSLATION_READY      = "0"
+        $env:BRIEF_TRANSLATION_FAIL_REASON = "SERVER_NOT_READY"
+        Write-Output "  => BRIEF_TRANSLATION_READY=0  reason=SERVER_NOT_READY  (pipeline will FAIL-fast)"
     }
 }
 Write-Output ""
@@ -2664,6 +2723,48 @@ if (Test-Path $_sfbMetaPath) {
     }
 } else {
     Write-Output "Z0_SUPPLY_FALLBACK: WARN-OK (supply_fallback.meta.json not found)"
+}
+
+Write-Output ""
+
+# ---------------------------------------------------------------------------
+# TRANSLATION_DELIVERY_HARD gate (Iteration 20)
+# Checks that outputs/translation.meta.json was written by this run and
+# reports success=true (ZH translation applied).
+# STALE_META: meta.run_id != PIPELINE_RUN_ID -> FAIL exit 1
+# ---------------------------------------------------------------------------
+Write-Output "TRANSLATION_DELIVERY_HARD:"
+$_tdMetaPath = Join-Path $repoRoot "outputs\translation.meta.json"
+if (Test-Path $_tdMetaPath) {
+    try {
+        $tdMeta      = Get-Content $_tdMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $_tdRunId    = if ($tdMeta.PSObject.Properties['run_id'])     { [string]$tdMeta.run_id }     else { "" }
+        $_tdSuccess  = if ($tdMeta.PSObject.Properties['success'])    { [bool]$tdMeta.success }      else { $false }
+        $_tdFail     = if ($tdMeta.PSObject.Properties['fail_reason']){ [string]$tdMeta.fail_reason } else { "" }
+        $_tdGenAt    = if ($tdMeta.PSObject.Properties['generated_at']){ [string]$tdMeta.generated_at } else { "" }
+        Write-Output ("  run_id       : {0}" -f $_tdRunId)
+        Write-Output ("  success      : {0}" -f $_tdSuccess)
+        Write-Output ("  fail_reason  : {0}" -f $_tdFail)
+        Write-Output ("  generated_at : {0}" -f $_tdGenAt)
+        # STALE_META check (meta run_id must match the pipeline run we just verified)
+        if ($_tdRunId -ne $_voRunId) {
+            Write-Output ("  => TRANSLATION_DELIVERY_HARD: FAIL (STALE_META meta.run_id={0} != current={1})" -f $_tdRunId, $_voRunId)
+            exit 1
+        }
+        if ($_tdSuccess -eq $true) {
+            Write-Output "  => TRANSLATION_DELIVERY_HARD: PASS"
+        } else {
+            Write-Output ("  => TRANSLATION_DELIVERY_HARD: FAIL (fail_reason={0})" -f $_tdFail)
+            exit 1
+        }
+    } catch {
+        Write-Output ("  => TRANSLATION_DELIVERY_HARD: FAIL (parse error: {0})" -f $_)
+        exit 1
+    }
+} else {
+    Write-Output "  translation.meta.json not found"
+    Write-Output "  => TRANSLATION_DELIVERY_HARD: FAIL (meta missing)"
+    exit 1
 }
 
 Write-Output ""

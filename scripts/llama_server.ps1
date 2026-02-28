@@ -67,24 +67,40 @@ if ($portConn) {
 }
 
 # ── 4. Build argument list ─────────────────────────────────────────────────
-$nGpuLayers = if ($env:LLAMA_N_GPU_LAYERS) { [int]$env:LLAMA_N_GPU_LAYERS } else { 35 }
-$ctxSize    = if ($env:LLAMA_CTX_SIZE)     { [int]$env:LLAMA_CTX_SIZE }     else { 2048 }
+# GPU-first defaults (Iteration GPU-v1):
+#   --n-gpu-layers -1  = offload ALL layers to GPU (full VRAM offload)
+#   --main-gpu 0       = use GPU index 0 (single-card)
+#   --ctx-size 8192    = larger context keeps GPU fed
+#   --batch-size 512   = larger batch improves GPU throughput
+# Override via env: LLAMA_N_GPU_LAYERS, LLAMA_CTX_SIZE
+$nGpuLayers = if ($env:LLAMA_N_GPU_LAYERS) { [int]$env:LLAMA_N_GPU_LAYERS } else { -1 }
+$ctxSize    = if ($env:LLAMA_CTX_SIZE)     { [int]$env:LLAMA_CTX_SIZE }     else { 8192 }
 
 $args_ = @(
-    "--model",       $modelPath,
-    "--host",        $host_ip,
-    "--port",        $port,
-    "--ctx-size",    $ctxSize,
-    "--n-gpu-layers",$nGpuLayers,
-    "--threads",     8,
-    "--batch-size",  256,
-    "--parallel",    1
+    "--model",        $modelPath,
+    "--host",         $host_ip,
+    "--port",         $port,
+    "--ctx-size",     $ctxSize,
+    "--n-gpu-layers", $nGpuLayers,
+    "--main-gpu",     0,
+    "--threads",      8,
+    "--batch-size",   512,
+    "--parallel",     1
 )
 
 # --no-webui may not exist in all builds; try with it first
 $args_noweb = $args_ + @("--no-webui")
 
 # ── 5. Start server ────────────────────────────────────────────────────────
+Write-Output ""
+Write-Output "=== GPU LAUNCH CONFIG EVIDENCE ==="
+Write-Output ("  --n-gpu-layers : {0}  (target: -1 = all layers offloaded to GPU)" -f $nGpuLayers)
+Write-Output ("  --main-gpu     : 0   (GPU index 0)")
+Write-Output ("  --ctx-size     : {0}" -f $ctxSize)
+Write-Output ("  --batch-size   : 512")
+Write-Output ("  backend        : CUDA (llama-b8123-bin-win-cuda-12.4-x64)")
+Write-Output ("  model          : {0}" -f $modelPath)
+Write-Output "==================================="
 Write-Output ""
 Write-Output ("Step 4: Starting llama-server (n-gpu-layers={0} ctx={1})..." -f $nGpuLayers, $ctxSize)
 

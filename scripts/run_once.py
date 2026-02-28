@@ -1889,11 +1889,10 @@ def _brief_translate_fact_sentence_to_bullet(
     source = _normalize_ws(sentence_en)
     if not source:
         return ""
-    # TRANSLATION ENGINE HARDLOCK (Iteration 19):
-    # Rule-based rewriter is DISABLED when BRIEF_TRANSLATION_READY != "1".
+    # TRANSLATION ENGINE HARDLOCK (Iteration 19/20):
+    # Rule-based rewriter is DISABLED when translation engine not ready.
     # Per-sentence Qwen path is still attempted (it self-gates via _llama_ok()).
-    _trans_ready = os.environ.get("BRIEF_TRANSLATION_READY", "0").strip()
-    _rule_based_allowed = (_trans_ready == "1")
+    _rule_based_allowed = _is_translation_engine_ready()
 
     _brief_trans_stats["attempts"] += 1
 
@@ -1922,7 +1921,7 @@ def _brief_translate_fact_sentence_to_bullet(
     evidence = " / ".join(token_pack[:2])
 
     # Attempt 1: rule-based ZH rewriter (newsroom_zh_rewrite)
-    # HARDLOCK: skip when BRIEF_TRANSLATION_READY != "1" (prevents template Chinese).
+    # HARDLOCK: skip when translation engine not ready (prevents template Chinese).
     zh = ""
     if _rule_based_allowed:
         zh = _brief_sentence_to_zh_bullet(
@@ -2053,8 +2052,8 @@ def _brief_batch_translate_event(
     """
     if not fact_pack_sentences:
         return [], [], []
-    # TRANSLATION ENGINE HARDLOCK (Iteration 19): require BRIEF_TRANSLATION_READY=1
-    if os.environ.get("BRIEF_TRANSLATION_READY", "0").strip() != "1":
+    # TRANSLATION ENGINE HARDLOCK (Iteration 19/20): require translation engine
+    if not _is_translation_engine_ready():
         return [], [], []
     try:
         from utils.llama_openai_client import chat as _llama_chat, is_available as _llama_ok
@@ -3914,6 +3913,169 @@ def _generate_brief_md(prepared: list[dict], run_id: str, mode: str, report_mode
     except Exception as _bmd_exc:
         import logging as _bmd_log2
         _bmd_log2.getLogger("ai_intel").warning("latest_brief.md generation failed (non-fatal): %s", _bmd_exc)
+
+
+# ---------------------------------------------------------------------------
+# _is_translation_engine_ready — Iteration 20
+# Checks if Qwen is available for translation.
+# Priority: BRIEF_TRANSLATION_READY env var (set by verify_online.ps1) →
+#           direct llama-server probe (desktop button / run_pipeline.ps1 path).
+# ---------------------------------------------------------------------------
+def _is_translation_engine_ready() -> bool:
+    """Return True if Qwen llama-server is reachable for translation.
+
+    When BRIEF_TRANSLATION_READY="1" (set by verify_online.ps1): trust it.
+    When BRIEF_TRANSLATION_READY="0" (explicitly set as down): return False.
+    When BRIEF_TRANSLATION_READY is not set (desktop button / run_pipeline.ps1
+    path): probe llama-server directly so the desktop button works without
+    needing verify_online.ps1 to set the env var first.
+    """
+    _tr_env = os.environ.get("BRIEF_TRANSLATION_READY", "").strip()
+    if _tr_env == "1":
+        return True
+    if _tr_env == "0":
+        return False
+    # Not explicitly set → probe Qwen directly (desktop button path)
+    try:
+        from utils.llama_openai_client import is_available as _qw_is_avail
+        return _qw_is_avail(timeout=5)
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# _translate_md_to_zh — Iteration 20: Translation-First ZH Delivery
+# Translates an English Markdown string to Traditional Chinese via local Qwen.
+# ---------------------------------------------------------------------------
+def _translate_md_to_zh(md_text: str) -> tuple[bool, str]:
+    """Translate English Markdown to Traditional Chinese via local Qwen llama-server.
+
+    Returns (True, translated_zh_text) on success.
+    Returns (False, fail_reason_str) on failure.
+    Code blocks and URLs are passed through unchanged (placeholders).
+    Output is validated against a banlist of template/audit-speak phrases.
+    """
+    import re as _tr_re
+
+    if not _is_translation_engine_ready():
+        return False, "TRANSLATION_ENGINE_DOWN"
+
+    _SYS = (
+        "你是一個「繁體中文技術翻譯器」。只做忠實翻譯，不做摘要、不改寫、不補充推論。\n"
+        "【任務】把我提供的 Markdown 內容中「英文」翻譯成「繁體中文」。\n"
+        "【硬規則】\n"
+        "必須保留原本 Markdown 結構：標題(#)、列表(-/*/1.)、引用(>)、表格、連結、圖片語法、分隔線、空行位置。\n"
+        "必須保留 code block（三個反引號內）完全不改；程式碼、命令、log 原樣保留。\n"
+        "必須保留所有 URL 原樣不改。\n"
+        "專有名詞與產品名（OpenAI / Anthropic / NVIDIA / H100 / Blackwell / GPT / Claude / Qwen 等）原樣保留。\n"
+        "所有數字、金額、百分比、單位原樣保留。\n"
+        "不允許出現「近日/備受/可核對/原文提到/本文指出/總結來說」等模板或審計口吻。\n"
+        "輸出只包含翻譯後的 Markdown，不要額外解釋。"
+    )
+    # Bare "備受" is a legitimate translation for "widely/broadly received";
+    # only compound template phrases are banned in translation output.
+    _BANLIST = re.compile(r"近日|備受矚目|備受關注|可核對|原文提到|本文指出|總結來說")
+    _MAX_CHUNK = 1000
+
+    try:
+        from utils.llama_openai_client import chat as _qw
+    except ImportError:
+        return False, "TRANSLATION_ENGINE_DOWN: llama_openai_client not importable"
+
+    # Allow GPU to cool after Z5 inference burst before starting chunked translation
+    import time as _tr_time
+    _tr_time.sleep(30)
+
+    # 1. Extract code fences → placeholders to prevent translation
+    _code_store: list[str] = []
+
+    def _save_code(m: "re.Match") -> str:
+        _code_store.append(m.group(0))
+        return f"\x00CB{len(_code_store) - 1}\x00"
+
+    text_no_code = re.sub(r"```[\s\S]*?```", _save_code, md_text)
+
+    # 2. Split into paragraph blocks at blank lines
+    blocks = text_no_code.split("\n\n")
+
+    # 3. Group blocks into chunks of max _MAX_CHUNK chars
+    chunks: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+
+    for block in blocks:
+        blen = len(block) + 2
+        # Force new chunk at H1/H2/H3 to keep sections together
+        _is_heading = bool(_tr_re.match(r"^#{1,3} ", block.lstrip()))
+        if (_is_heading or cur_len + blen > _MAX_CHUNK) and cur:
+            chunks.append("\n\n".join(cur))
+            cur = [block]
+            cur_len = blen
+        else:
+            cur.append(block)
+            cur_len += blen
+    if cur:
+        chunks.append("\n\n".join(cur))
+
+    # 4. Translate each chunk
+    translated: list[str] = []
+    for i, chunk in enumerate(chunks):
+        # Check if chunk has non-placeholder, non-whitespace content
+        clean = _tr_re.sub(r"\x00CB\d+\x00", "", chunk)
+        if not clean.strip():
+            translated.append(chunk)
+            continue
+
+        ok, resp = _qw(
+            messages=[
+                {"role": "system", "content": _SYS},
+                {"role": "user", "content": chunk},
+            ],
+            temperature=0.1,
+            max_tokens=400,
+            timeout=240,
+            max_retries=0,
+        )
+        if not ok:
+            return False, f"TRANSLATION_FAILED: chunk {i}: {resp[:200]}"
+        translated.append(resp.strip())
+
+    # 5. Restore code blocks
+    result = "\n\n".join(translated)
+    for idx, cb in enumerate(_code_store):
+        result = result.replace(f"\x00CB{idx}\x00", cb)
+
+    # 6. Banlist check
+    hits = _BANLIST.findall(result)
+    if hits:
+        return False, f"TRANSLATION_FAILED_BANLIST: {hits[:5]}"
+
+    return True, result
+
+
+def _write_translation_meta(
+    run_id: str,
+    success: bool,
+    fail_reason: str,
+    banlist_hits: int = 0,
+    source_file: str = "outputs/latest_brief.md",
+) -> None:
+    """Write outputs/translation.meta.json for TRANSLATION_DELIVERY_HARD gate."""
+    import json as _tj
+    from datetime import datetime as _tdt, timezone as _ttz
+
+    _out = Path(settings.PROJECT_ROOT) / "outputs" / "translation.meta.json"
+    _out.parent.mkdir(parents=True, exist_ok=True)
+    _meta = {
+        "run_id": run_id,
+        "generated_at": _tdt.now(_ttz.utc).isoformat(),
+        "success": success,
+        "fail_reason": fail_reason,
+        "banlist_hits": banlist_hits,
+        "source_file": source_file,
+        "gate": "TRANSLATION_DELIVERY_HARD",
+    }
+    _out.write_text(_tj.dumps(_meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _sanitize_quote_for_delivery(text: str) -> str:
@@ -5998,22 +6160,38 @@ def run_pipeline() -> None:
                 if os.environ.get("PIPELINE_MODE", "manual") == "demo" and _final_cards:
                     _final_cards = _apply_demo_bucket_cycle(_final_cards)
                 if _is_brief_mode:
-                    # TRANSLATION ENGINE DOWN fast-path (Iteration 19).
-                    # If BRIEF_TRANSLATION_READY != "1", no ZH bullets can be produced.
-                    # Write NOT_READY immediately — no need to run full brief prep.
-                    if os.environ.get("BRIEF_TRANSLATION_READY", "0").strip() != "1":
+                    # TRANSLATION ENGINE DOWN fast-path (Iteration 19/20/GPU-v1).
+                    # Uses _is_translation_engine_ready() so the desktop button
+                    # (run_pipeline.ps1 path, no BRIEF_TRANSLATION_READY env)
+                    # also correctly probes Qwen directly.
+                    if not _is_translation_engine_ready():
+                        # Honour specific reason set by verify_online.ps1 GPU preflight:
+                        #   GPU_NOT_ACTIVE  — server up but GPU not in nvidia-smi
+                        #   SERVER_NOT_READY — server unreachable after 30s
+                        # Falls back to TRANSLATION_ENGINE_DOWN for desktop-button path.
+                        _ted_fail_reason = (
+                            os.environ.get("BRIEF_TRANSLATION_FAIL_REASON", "").strip()
+                            or "TRANSLATION_ENGINE_DOWN"
+                        )
                         _ted_path = Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md"
                         _ted_run_id = os.environ.get("PIPELINE_RUN_ID", "unknown")
                         _ted_path.write_text(
-                            f"# NOT_READY\n\ngate: TRANSLATION_ENGINE_DOWN\n"
+                            f"# NOT_READY\n\ngate: {_ted_fail_reason}\n"
                             f"run_id: {_ted_run_id}\n"
-                            "reason: BRIEF_TRANSLATION_READY!=1; start scripts/llama_server.ps1 first\n",
+                            f"reason: {_ted_fail_reason}; start scripts/llama_server.ps1 with --n-gpu-layers -1\n",
                             encoding="utf-8",
                         )
                         # Write a minimal template_leak meta with run_id so gates don't read stale files.
                         _write_brief_template_leak_meta([])
+                        # Write translation.meta.json — FAIL-fast path (Iteration GPU-v1)
+                        _write_translation_meta(
+                            run_id=os.environ.get("PIPELINE_RUN_ID", "unknown"),
+                            success=False,
+                            fail_reason=_ted_fail_reason,
+                        )
                         log.error(
-                            "BRIEF_TRANSLATION_READY!=1 — FAIL-fast: TRANSLATION_ENGINE_DOWN; NOT_READY.md written"
+                            "BRIEF_TRANSLATION_READY!=1 — FAIL-fast: %s; NOT_READY.md written",
+                            _ted_fail_reason,
                         )
                     _brief_diag = {"quote_stoplist_hits_count": 0}
                     _brief_pool = list(_final_cards or [])
@@ -8258,13 +8436,106 @@ def run_pipeline() -> None:
     )
 
     # Generate outputs/latest_brief.md (success path, brief mode only)
+    _tfd_run_id = os.environ.get("PIPELINE_RUN_ID", "unknown")
     if _is_brief_mode and not (Path(settings.PROJECT_ROOT) / "outputs" / "NOT_READY.md").exists():
         _generate_brief_md(
             list(_final_cards or []),
-            os.environ.get("PIPELINE_RUN_ID", "unknown"),
+            _tfd_run_id,
             os.environ.get("PIPELINE_MODE", "manual"),
             os.environ.get("PIPELINE_REPORT_MODE", "brief"),
         )
+
+        # ---------------------------------------------------------------
+        # Iteration 20: Translation-First ZH Delivery
+        # Read English MD → translate to ZH via Qwen → overwrite all 3
+        # deliverables (latest_brief.md, executive_report.docx, .pptx).
+        # FAIL-fast: on any error write NOT_READY.md + delete artifacts.
+        # ---------------------------------------------------------------
+        _tfd_outputs = Path(settings.PROJECT_ROOT) / "outputs"
+        _tfd_en_path = _tfd_outputs / "latest_brief.md"
+        if _tfd_en_path.exists():
+            try:
+                _tfd_en_md = _tfd_en_path.read_text(encoding="utf-8")
+            except Exception as _tfd_read_exc:
+                _tfd_en_md = ""
+                log.warning("Translation-First: failed to read latest_brief.md: %s", _tfd_read_exc)
+
+            if _tfd_en_md.strip():
+                _tfd_ok, _tfd_result = _translate_md_to_zh(_tfd_en_md)
+                if not _tfd_ok:
+                    # Translation failed → write NOT_READY.md, delete artifacts
+                    _tfd_nr = _tfd_outputs / "NOT_READY.md"
+                    _tfd_nr.write_text(
+                        f"# NOT_READY\n\ngate: TRANSLATION_DELIVERY_HARD\n"
+                        f"run_id: {_tfd_run_id}\n"
+                        f"reason: {_tfd_result}\n",
+                        encoding="utf-8",
+                    )
+                    for _tfd_art in ("executive_report.docx", "executive_report.pptx"):
+                        try:
+                            (_tfd_outputs / _tfd_art).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                    _write_translation_meta(
+                        run_id=_tfd_run_id,
+                        success=False,
+                        fail_reason=_tfd_result,
+                    )
+                    log.error(
+                        "Translation-First FAIL-fast: %s — NOT_READY.md written; artifacts removed",
+                        _tfd_result,
+                    )
+                else:
+                    # Translation succeeded → overwrite deliverables with ZH
+                    _tfd_zh = _tfd_result
+                    try:
+                        # Overwrite latest_brief.md with ZH
+                        _tfd_en_path.write_text(_tfd_zh, encoding="utf-8")
+                        # Archive copy
+                        _tfd_archive = _tfd_outputs / "runs" / _tfd_run_id
+                        _tfd_archive.mkdir(parents=True, exist_ok=True)
+                        (_tfd_archive / "brief_zh.md").write_text(_tfd_zh, encoding="utf-8")
+                        # Overwrite executive_report.docx with ZH
+                        try:
+                            from core.doc_generator import generate_zh_md_docx as _gen_zh_docx
+                            _gen_zh_docx(_tfd_zh, _tfd_outputs / "executive_report.docx")
+                            log.info("Translation-First: ZH DOCX written: outputs/executive_report.docx")
+                        except Exception as _tfd_docx_exc:
+                            log.warning("Translation-First: ZH DOCX generation failed (non-fatal): %s", _tfd_docx_exc)
+                        # Overwrite executive_report.pptx with ZH
+                        try:
+                            from core.ppt_generator import generate_zh_md_pptx as _gen_zh_pptx
+                            _gen_zh_pptx(_tfd_zh, _tfd_outputs / "executive_report.pptx")
+                            log.info("Translation-First: ZH PPTX written: outputs/executive_report.pptx")
+                        except Exception as _tfd_pptx_exc:
+                            log.warning("Translation-First: ZH PPTX generation failed (non-fatal): %s", _tfd_pptx_exc)
+                        _write_translation_meta(
+                            run_id=_tfd_run_id,
+                            success=True,
+                            fail_reason="",
+                        )
+                        log.info("Translation-First: ZH delivery complete (run_id=%s)", _tfd_run_id)
+                    except Exception as _tfd_write_exc:
+                        log.warning("Translation-First: ZH write failed (non-fatal): %s", _tfd_write_exc)
+                        _write_translation_meta(
+                            run_id=_tfd_run_id,
+                            success=False,
+                            fail_reason=f"WRITE_FAILED: {_tfd_write_exc}",
+                        )
+            else:
+                # Empty English MD → skip translation, write meta as skipped
+                _write_translation_meta(
+                    run_id=_tfd_run_id,
+                    success=False,
+                    fail_reason="TRANSLATION_FAILED: source latest_brief.md is empty",
+                )
+        else:
+            # latest_brief.md not produced → write meta indicating skip
+            _write_translation_meta(
+                run_id=_tfd_run_id,
+                success=False,
+                fail_reason="TRANSLATION_FAILED: latest_brief.md not found after _generate_brief_md",
+            )
 
     # Notifications
     send_all_notifications(t_start_iso, len(all_results), True, str(digest_path))
